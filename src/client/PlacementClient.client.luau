@@ -82,6 +82,41 @@ title.TextScaled = true
 title.Font = Enum.Font.GothamBold
 title.Parent = gui
 
+-- ===== "ESPERE SUA VEZ" (mesmo flash da batalha) =====
+local waitFlashLabel = Instance.new("TextLabel")
+waitFlashLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+waitFlashLabel.Size = UDim2.new(0, 400, 0, 70)
+waitFlashLabel.Position = UDim2.new(0.5, 0, 0.4, 0)
+waitFlashLabel.BackgroundTransparency = 1
+waitFlashLabel.TextColor3 = Color3.fromRGB(255, 150, 150)
+waitFlashLabel.TextStrokeTransparency = 1
+waitFlashLabel.TextScaled = true
+waitFlashLabel.Font = Enum.Font.GothamBlack
+waitFlashLabel.Text = "Espere sua vez"
+waitFlashLabel.TextTransparency = 1
+waitFlashLabel.ZIndex = 40
+waitFlashLabel.Parent = gui
+
+local waitFlashToken = 0
+
+local function warnNotYourTurn()
+	waitFlashToken += 1
+	local token = waitFlashToken
+
+	waitFlashLabel.TextTransparency = 1
+	waitFlashLabel.TextStrokeTransparency = 1
+	TweenService:Create(waitFlashLabel, TweenInfo.new(0.2), {
+		TextTransparency = 0, TextStrokeTransparency = 0.3,
+	}):Play()
+
+	task.delay(1.1, function()
+		if waitFlashToken ~= token then return end
+		TweenService:Create(waitFlashLabel, TweenInfo.new(0.4), {
+			TextTransparency = 1, TextStrokeTransparency = 1,
+		}):Play()
+	end)
+end
+
 local bar = Instance.new("Frame")
 bar.Size = UDim2.new(1, -24, 0, 112)
 bar.Position = UDim2.new(0, 12, 1, -124)
@@ -483,7 +518,14 @@ end
 
 local function startDrag(data, input)
 	if drag then return end -- um arraste por vez
-	if not currentState or not currentState.isMyPlacement then return end
+	if not currentState then return end
+
+	-- mexer nas cartas na vez do adversário não fazia nada e nem avisava
+	if not currentState.isMyPlacement then
+		warnNotYourTurn()
+		return
+	end
+
 	if usedHeroIdSet[data.id] then return end
 
 	local startPosition = Vector2.new(input.Position.X, input.Position.Y)
@@ -540,6 +582,17 @@ end)
 UserInputService.InputEnded:Connect(function(input)
 	if not belongsToDrag(input, true) then return end
 	finishDrag()
+end)
+
+-- tocar direto no tabuleiro enquanto o adversário escolhe também recebe o aviso
+mouse.Button1Down:Connect(function()
+	if not currentState or currentState.phase ~= "placement" then return end
+	if currentState.isMyPlacement then return end
+
+	local target = mouse.Target
+	if target and (target:GetAttribute("HexId") or target:GetAttribute("HeroUid")) then
+		warnNotYourTurn()
+	end
 end)
 
 -- ===== ESTADO =====

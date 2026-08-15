@@ -92,19 +92,50 @@ timerLabel.Text = ""
 timerLabel.Visible = false
 timerLabel.Parent = gui
 
--- ===== "SUA VEZ" (flash centralizado na tela) =====
+-- ===== "SUA VEZ" / "ESPERE SUA VEZ" (flash centralizado na tela) =====
+local MY_TURN_COLOR = Color3.fromRGB(255, 235, 150)
+local WAIT_TURN_COLOR = Color3.fromRGB(255, 150, 150)
+
 local turnFlashLabel = Instance.new("TextLabel")
 turnFlashLabel.AnchorPoint = Vector2.new(0.5, 0.5)
 turnFlashLabel.Size = UDim2.new(0, 400, 0, 70)
 turnFlashLabel.Position = UDim2.new(0.5, 0, 0.4, 0)
 turnFlashLabel.BackgroundTransparency = 1
-turnFlashLabel.TextColor3 = Color3.fromRGB(255, 235, 150)
+turnFlashLabel.TextColor3 = MY_TURN_COLOR
 turnFlashLabel.TextStrokeTransparency = 1
 turnFlashLabel.TextScaled = true
 turnFlashLabel.Font = Enum.Font.GothamBlack
 turnFlashLabel.Text = "Sua vez!"
 turnFlashLabel.TextTransparency = 1
 turnFlashLabel.Parent = gui
+
+-- O token evita que o fade-out de um flash antigo apague o que acabou de
+-- aparecer: quem chegou por último é o único que tem direito de sumir.
+local flashToken = 0
+
+local function flashTurnBanner(text, color)
+	flashToken += 1
+	local token = flashToken
+
+	turnFlashLabel.Text = text
+	turnFlashLabel.TextColor3 = color
+	turnFlashLabel.TextTransparency = 1
+	turnFlashLabel.TextStrokeTransparency = 1
+	TweenService:Create(turnFlashLabel, TweenInfo.new(0.2), {
+		TextTransparency = 0, TextStrokeTransparency = 0.3,
+	}):Play()
+
+	task.delay(1.1, function()
+		if flashToken ~= token then return end
+		TweenService:Create(turnFlashLabel, TweenInfo.new(0.4), {
+			TextTransparency = 1, TextStrokeTransparency = 1,
+		}):Play()
+	end)
+end
+
+local function warnNotYourTurn()
+	flashTurnBanner("Espere sua vez", WAIT_TURN_COLOR)
+end
 
 local messageLabel = Instance.new("TextLabel")
 messageLabel.Size = UDim2.new(0, 460, 0, 30)
@@ -138,7 +169,11 @@ endTurnCheck.Font = Enum.Font.GothamBlack
 endTurnCheck.Parent = endTurnButton
 
 endTurnButton.MouseButton1Click:Connect(function()
-	if not (state and state.isMyTurn) then return end
+	if not state or state.phase ~= "battle" then return end
+	if not state.isMyTurn then
+		warnNotYourTurn()
+		return
+	end
 	GameAction:FireServer("endTurn")
 end)
 
@@ -348,13 +383,22 @@ end
 
 -- ===== CLIQUES =====
 mouse.Button1Down:Connect(function()
-	if not state or state.phase ~= "battle" or not state.isMyTurn then return end
+	if not state or state.phase ~= "battle" then return end
 
 	local target = mouse.Target
 	if not target then return end
 
 	local heroUid = target:GetAttribute("HeroUid")
 	local hexId = target:GetAttribute("HexId")
+
+	-- fora do turno o clique não faz nada, mas ficar em silêncio parecia bug:
+	-- avisa sempre que a tentativa foi no tabuleiro (casa ou herói)
+	if not state.isMyTurn then
+		if heroUid or hexId then
+			warnNotYourTurn()
+		end
+		return
+	end
 
 	if heroUid then
 		local hero = heroByUid(heroUid)
@@ -483,16 +527,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		and Color3.fromRGB(255, 140, 140) or Color3.new(1, 1, 1)
 
 	if state.isMyTurn and not wasMyTurn then
-		turnFlashLabel.TextTransparency = 1
-		turnFlashLabel.TextStrokeTransparency = 1
-		TweenService:Create(turnFlashLabel, TweenInfo.new(0.2), {
-			TextTransparency = 0, TextStrokeTransparency = 0.3,
-		}):Play()
-		task.delay(1.1, function()
-			TweenService:Create(turnFlashLabel, TweenInfo.new(0.4), {
-				TextTransparency = 1, TextStrokeTransparency = 1,
-			}):Play()
-		end)
+		flashTurnBanner("Sua vez!", MY_TURN_COLOR)
 	end
 	wasMyTurn = state.isMyTurn
 

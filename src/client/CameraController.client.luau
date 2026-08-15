@@ -164,7 +164,34 @@ end
 -- inferior esquerdo da tela e comem o toque antes dele chegar no tabuleiro —
 -- era por isso que as casas da esquerda não respondiam. Como o personagem fica
 -- parado durante a partida, os controles são desligados por completo.
+--
+-- Só o controls:Disable() não bastava: o DynamicThumbstick deixa a TouchGui
+-- montada, e o frame dele ocupa ~40% da esquerda da tela inteira. Ele aparece
+-- como aquela mancha mais escura e continua engolindo o toque antes do
+-- mouse.Target, então a metade esquerda do tabuleiro ficava morta. Desligar a
+-- TouchGui junto tira as duas coisas durante a partida e devolve no lobby.
+local controlsEnabled = true
+
+local function applyTouchGui()
+	local playerGui = player:FindFirstChild("PlayerGui")
+	local touchGui = playerGui and playerGui:FindFirstChild("TouchGui")
+	if touchGui then
+		touchGui.Enabled = controlsEnabled
+	end
+end
+
+-- a TouchGui é criada pelo PlayerModule depois que o script já rodou, e volta
+-- a existir em alguns respawns: reaplica o estado atual quando ela aparecer
+player:WaitForChild("PlayerGui").ChildAdded:Connect(function(child)
+	if child.Name == "TouchGui" then
+		task.defer(applyTouchGui)
+	end
+end)
+
 local function setDefaultControls(enabled)
+	controlsEnabled = enabled
+	applyTouchGui()
+
 	local playerScripts = player:FindFirstChild("PlayerScripts")
 	local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
 	if not playerModule then return end
