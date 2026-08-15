@@ -304,6 +304,14 @@ local function selectHero(uid)
 		return
 	end
 
+	-- mesma corrida da zona de largada: nos primeiros frames o Board pode
+	-- ainda não ter sido replicado e o paint falharia calado
+	if not Workspace:FindFirstChild("Board") then
+		task.delay(0.15, function()
+			if selectedUid == uid then selectHero(uid) end
+		end)
+	end
+
 	selectedUid = uid
 
 	local blocked, enemyAt = {}, {}

@@ -160,6 +160,27 @@ local function buildStandPlatform(standPos, groundY)
 	platform.Parent = workspace
 end
 
+-- No mobile, o thumbstick e o botão de pulo do Roblox ficam por cima do canto
+-- inferior esquerdo da tela e comem o toque antes dele chegar no tabuleiro —
+-- era por isso que as casas da esquerda não respondiam. Como o personagem fica
+-- parado durante a partida, os controles são desligados por completo.
+local function setDefaultControls(enabled)
+	local playerScripts = player:FindFirstChild("PlayerScripts")
+	local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
+	if not playerModule then return end
+
+	local ok, controls = pcall(function()
+		return require(playerModule):GetControls()
+	end)
+	if not ok or not controls then return end
+
+	if enabled then
+		controls:Enable()
+	else
+		controls:Disable()
+	end
+end
+
 local function placeCharacter(character, standPos, lookAt)
 	local humanoid = character:WaitForChild("Humanoid")
 	local rootPart = character:WaitForChild("HumanoidRootPart")
@@ -171,29 +192,45 @@ local function placeCharacter(character, standPos, lookAt)
 	humanoid.JumpHeight = 0
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
+
+	setDefaultControls(false)
 end
 
+-- Só spawns perto do centro do lobby. Os 19 pontos se espalham até ~30 studs,
+-- e o pad de PvP está a ~33 — voltar pro lobby podia jogar o jogador em cima
+-- do pad e disparar a fila sozinho.
 local function lobbyCFrame()
 	local spawnsFolder = workspace:FindFirstChild("Folder") and workspace.Folder:FindFirstChild("Lobby")
 	spawnsFolder = spawnsFolder and spawnsFolder:FindFirstChild("Spawns")
 
-	local candidates = {}
+	local parts = {}
+	local sum = Vector3.new()
+
 	if spawnsFolder then
 		for _, child in ipairs(spawnsFolder:GetChildren()) do
-			if child:IsA("SpawnLocation") or child:IsA("BasePart") then
-				table.insert(candidates, child)
+			if child:IsA("BasePart") then
+				table.insert(parts, child)
+				sum += child.Position
 			end
 		end
 	end
 
-	local spawnLocation = #candidates > 0
-		and candidates[math.random(#candidates)]
-		or workspace:FindFirstChild("SpawnLocation", true)
-
-	if spawnLocation then
-		return spawnLocation.CFrame + Vector3.new(0, 3, 0)
+	if #parts == 0 then
+		local fallback = workspace:FindFirstChild("SpawnLocation", true)
+		return fallback and (fallback.CFrame + Vector3.new(0, 3, 0)) or CFrame.new(0, 5, 0)
 	end
-	return CFrame.new(0, 5, 0)
+
+	local center = sum / #parts
+	local near = {}
+	for _, part in ipairs(parts) do
+		local flat = Vector3.new(part.Position.X - center.X, 0, part.Position.Z - center.Z)
+		if flat.Magnitude <= GameConfig.LOBBY_SPAWN_RADIUS then
+			table.insert(near, part)
+		end
+	end
+
+	local pool = #near > 0 and near or parts
+	return pool[math.random(#pool)].CFrame + Vector3.new(0, 3, 0)
 end
 
 local function returnToLobby()
@@ -205,6 +242,7 @@ local function returnToLobby()
 	if platform then platform:Destroy() end
 
 	camera.CameraType = Enum.CameraType.Custom
+	setDefaultControls(true) -- devolve o thumbstick pra andar pelo lobby
 
 	local character = player.Character
 	if character then

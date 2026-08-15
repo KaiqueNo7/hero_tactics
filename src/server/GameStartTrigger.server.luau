@@ -13,6 +13,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 
@@ -81,6 +82,59 @@ end
 
 DecoratePad(botPad, Color3.fromRGB(60, 170, 130), "JOGAR CONTRA O BOT", "pise para começar")
 DecoratePad(pvpPad, Color3.fromRGB(200, 70, 70), "JOGAR CONTRA JOGADOR", "pise para entrar na fila")
+
+-- O cenário da arena é persistente: só constrói se ainda não existir no place
+BoardSpawner.EnsureArena()
+
+-- ===================== RAIO DE SPAWN =====================
+-- Os 19 SpawnLocations do lobby chegam a ~30 studs do centro e o pad de PvP
+-- está a ~33 — dava pra renascer praticamente em cima do pad e entrar na fila
+-- sem querer. Desliga os pontos mais afastados; os de dentro do raio bastam.
+local function TrimSpawnRadius()
+	local lobby = Workspace:FindFirstChild("Folder")
+	lobby = lobby and lobby:FindFirstChild("Lobby")
+	local spawns = lobby and lobby:FindFirstChild("Spawns")
+	if not spawns then return end
+
+	local parts = {}
+	local sum = Vector3.new()
+
+	for _, child in ipairs(spawns:GetChildren()) do
+		if child:IsA("SpawnLocation") then
+			table.insert(parts, child)
+			sum += child.Position
+		end
+	end
+
+	if #parts == 0 then return end
+
+	local center = sum / #parts
+	local kept = 0
+
+	for _, spawn in ipairs(parts) do
+		local flat = Vector3.new(spawn.Position.X - center.X, 0, spawn.Position.Z - center.Z)
+		local inside = flat.Magnitude <= GameConfig.LOBBY_SPAWN_RADIUS
+		spawn.Enabled = inside
+		if inside then kept += 1 end
+	end
+
+	-- se o raio for apertado demais, mantém o mais próximo do centro ligado
+	if kept == 0 then
+		local closest, bestDistance = parts[1], math.huge
+		for _, spawn in ipairs(parts) do
+			local distance = (spawn.Position - center).Magnitude
+			if distance < bestDistance then
+				closest, bestDistance = spawn, distance
+			end
+		end
+		closest.Enabled = true
+		kept = 1
+	end
+
+	print(("GameStartTrigger: %d de %d spawns ativos (raio %d)."):format(kept, #parts, GameConfig.LOBBY_SPAWN_RADIUS))
+end
+
+TrimSpawnRadius()
 
 local function SetPvpSubtitle(text)
 	local label = pvpPad:FindFirstChild("PadLabel")

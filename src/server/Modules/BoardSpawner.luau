@@ -17,6 +17,11 @@ local TILE_FILL = 0.94
 local TILE_THICKNESS = 1
 local ARENA_OFFSET = Vector3.new(300, 0, 300)
 
+-- O cenário mora fora do folder Board (que é destruído a cada partida) e
+-- PERSISTE no place. Assim dá pra ver e personalizar a taverna no Studio sem
+-- dar play, e o que você editar continua lá — o código só constrói se faltar.
+local ARENA_FOLDER_NAME = "Arena"
+
 -- ===== CONFIG =====
 local POINTY_TO_FLAT_ROTATION = 30
 local COLOR_A = Color3.fromRGB(120, 170, 220)
@@ -206,10 +211,10 @@ local function BuildTorch(parent, position, faceDirection)
 	fire.Parent = flame
 end
 
-local function BuildTavern(parent)
+local function BuildTavern()
 	local folder = Instance.new("Folder")
-	folder.Name = "Tavern"
-	folder.Parent = parent
+	folder.Name = ARENA_FOLDER_NAME
+	folder.Parent = Workspace
 
 	local minV, maxV = HexGrid.GetBoardBounds()
 	local floorY = ARENA_OFFSET.Y - 0.5 -- topo do piso encosta na base dos hexágonos
@@ -305,6 +310,20 @@ local function BuildTavern(parent)
 	return folder
 end
 
+-- Garante que o cenário existe, sem recriar o que já estiver lá. Pode ser
+-- chamado no Studio em modo Edit pra materializar a taverna e personalizar
+-- à mão — a partida reaproveita o que estiver salvo no place.
+function BoardSpawner.EnsureArena()
+	HexGrid.SetHexSize(HEX_RADIUS)
+	HexGrid.SetBoardOffset(ARENA_OFFSET)
+	HexGrid.Generate()
+
+	local existing = Workspace:FindFirstChild(ARENA_FOLDER_NAME)
+	if existing then return existing end
+
+	return BuildTavern()
+end
+
 -- Bonequin do bot no slot 2, ao lado do jogador. Em PvP o slot 2 é o outro
 -- jogador de verdade, então o bonequin nem é criado.
 local function SpawnBotDummy(boardFolder, groundY)
@@ -361,7 +380,7 @@ function BoardSpawner.SpawnBoard(withBotDummy)
 	print(("BoardSpawner: %d hexágonos, raio %.1f, tabuleiro %.0f x %.0f studs.")
 		:format(#allHexes, HEX_RADIUS, maxV.X - minV.X, maxV.Z - minV.Z))
 
-	BuildTavern(boardFolder)
+	BoardSpawner.EnsureArena()
 	if withBotDummy then
 		SpawnBotDummy(boardFolder, ARENA_OFFSET.Y)
 	end

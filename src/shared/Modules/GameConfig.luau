@@ -42,4 +42,10 @@ GameConfig.BOT_PLACE_DELAY = 0.8 -- pausa antes do bot escolher, pra dar pra aco
 GameConfig.PLAYER_SIDE_MARGIN = 9 -- distância à esquerda da borda do tabuleiro
 GameConfig.PLAYER_STAND_SPACING = 7 -- distância entre os dois competidores
 
+-- ===== RAIO DE SPAWN DO LOBBY =====
+-- Os 19 SpawnLocations do lobby se espalham até ~30 studs do centro, e o pad
+-- de PvP está a ~33 studs — um respawn azarado caía praticamente em cima do
+-- pad e disparava a fila sozinho. Só valem spawns dentro deste raio.
+GameConfig.LOBBY_SPAWN_RADIUS = 18
+
 return GameConfig

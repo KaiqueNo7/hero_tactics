@@ -17,6 +17,12 @@ local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Trava o jogo em paisagem já na abertura, sem depender do jeito que o celular
+-- estava segurado. LandscapeSensor deixa girar entre as duas paisagens, mas
+-- nunca cai em retrato — o tabuleiro é largo demais pra caber em pé.
+playerGui.ScreenOrientation = Enum.ScreenOrientation.LandscapeSensor
 
 local FADE_TIME = 0.25
 local TOAST_TIME = 2.5

@@ -301,6 +301,16 @@ local function Snapshot(viewerId)
 		winner = (match.winner == viewerId) and "win" or "loss"
 	end
 
+	-- Vai como ARRAY, não como dicionário {[id] = true}: dicionário com chave
+	-- numérica atravessa o RemoteEvent de forma inconsistente (às vezes chega
+	-- com chave string), e era por isso que o herói escolhido pelo adversário
+	-- nem sempre aparecia marcado como usado no cliente.
+	local usedHeroIds = {}
+	for dataId in pairs(match.usedHeroIds) do
+		table.insert(usedHeroIds, dataId)
+	end
+	table.sort(usedHeroIds)
+
 	return {
 		phase = match.phase,
 		deployZone = viewerSide.zone,
@@ -308,7 +318,7 @@ local function Snapshot(viewerId)
 		opponentPlacedCount = opponent.placedCount,
 		isMyPlacement = match.sides[match.placementSide].id == viewerId,
 		heroesPerPlayer = GameConfig.HEROES_PER_PLAYER,
-		usedHeroIds = match.usedHeroIds,
+		usedHeroIds = usedHeroIds,
 		heroes = heroes,
 		turnNumber = match.turn and match.turn.number or 0,
 		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,

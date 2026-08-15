@@ -62,6 +62,7 @@ local paintedTiles = {}
 local heroCards = {}
 local drag = nil
 local hoveredHex = nil
+local usedHeroIdSet = {} -- montado a partir do array que o servidor envia
 
 -- ===== UI BASE =====
 local gui = Instance.new("ScreenGui")
@@ -309,13 +310,16 @@ local function showDetail(data)
 		:format(data.attack, data.hp, data.ability or "sem passiva")
 
 	local lines = {}
+	-- "•" em vez de "▸": o triângulo não existe nas fontes do Roblox e saía
+	-- como quadradinho de caractere desconhecido, igual ao "✕" do botão fechar.
+	-- O "•" já é usado no painel de batalha e renderiza normal.
 	if data.ability and HeroData.ABILITY_INFO[data.ability] then
-		table.insert(lines, ("▸ %s — %s"):format(data.ability, HeroData.ABILITY_INFO[data.ability]))
+		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.ABILITY_INFO[data.ability]))
 	end
 	for _, key in ipairs(data.abilities) do
 		local info = HeroData.SKILL_INFO[key]
 		if info then
-			table.insert(lines, ("▸ %s — %s"):format(info.name, info.desc))
+			table.insert(lines, ("•  %s — %s"):format(info.name, info.desc))
 		end
 	end
 	detailAbilities.Text = table.concat(lines, "\n\n")
@@ -351,20 +355,56 @@ local function paint(hexId, color)
 	return tile
 end
 
+-- O Board é replicado de forma assíncrona: nas primeiras atualizações ele (ou
+-- algumas casas) ainda não existe no cliente, e o paint falhava calado — era
+-- por isso que a zona de largada às vezes não ficava verde. Agora espera as
+-- casas aparecerem; o token cancela a espera se um estado novo chegar antes.
+local highlightToken = 0
+
+local function waitForTile(board, hexId, token)
+	local tile = board:FindFirstChild(hexId)
+	local waited = 0
+
+	while not tile and waited < 3 and highlightToken == token do
+		task.wait(0.05)
+		waited += 0.05
+		tile = board:FindFirstChild(hexId)
+	end
+
+	return tile
+end
+
 local function highlightDeployZone()
 	clearHighlights()
 	if not currentState or not currentState.isMyPlacement then return end
 
-	local occupied = {}
-	for _, hero in ipairs(currentState.heroes) do
-		occupied[hero.position] = true
-	end
+	highlightToken += 1
+	local token = highlightToken
+	local state = currentState
 
-	for _, hexId in ipairs(currentState.deployZone) do
-		if not occupied[hexId] then
-			paint(hexId, HIGHLIGHT_COLOR)
+	task.spawn(function()
+		local board = Workspace:FindFirstChild("Board")
+		local waited = 0
+		while not board and waited < 10 and highlightToken == token do
+			task.wait(0.1)
+			waited += 0.1
+			board = Workspace:FindFirstChild("Board")
 		end
-	end
+
+		if not board or highlightToken ~= token then return end
+
+		local occupied = {}
+		for _, hero in ipairs(state.heroes) do
+			occupied[hero.position] = true
+		end
+
+		for _, hexId in ipairs(state.deployZone) do
+			if highlightToken ~= token then return end
+			if not occupied[hexId] and waitForTile(board, hexId, token) then
+				paint(hexId, HIGHLIGHT_COLOR)
+			end
+		end
+	end)
 end
 
 local function isFreeDeployHex(hexId)
@@ -410,14 +450,27 @@ local function updateDrag(screenPosition)
 	end
 end
 
+-- Rede de segurança: no mobile dava pra encostar em várias cartas ao mesmo
+-- tempo, cada toque criava um ghost novo e só o último ficava em `drag` —
+-- os anteriores viravam sprites órfãos espalhados pela tela.
+local function destroyStrayGhosts()
+	for _, child in ipairs(gui:GetChildren()) do
+		if child.Name == "DragGhost" then
+			child:Destroy()
+		end
+	end
+end
+
 local function finishDrag()
 	if not drag then return end
 
 	local dropHex = hoveredHex
-	drag.ghost:Destroy()
 	local dataId = drag.data.id
 	local moved = drag.moved
+
+	drag.ghost:Destroy()
 	drag = nil
+	destroyStrayGhosts()
 
 	if dropHex and isFreeDeployHex(dropHex) then
 		PlaceHero:FireServer(dataId, dropHex)
@@ -428,16 +481,23 @@ local function finishDrag()
 	highlightDeployZone()
 end
 
-local function startDrag(data, startPosition)
+local function startDrag(data, input)
+	if drag then return end -- um arraste por vez
 	if not currentState or not currentState.isMyPlacement then return end
-	if currentState.usedHeroIds[data.id] or currentState.usedHeroIds[tostring(data.id)] then return end
+	if usedHeroIdSet[data.id] then return end
 
+	local startPosition = Vector2.new(input.Position.X, input.Position.Y)
+
+	destroyStrayGhosts()
 	PlayUiSound("HeroSelect")
+
 	drag = {
 		data = data,
 		ghost = makeGhost(data),
 		origin = startPosition,
 		moved = false,
+		input = input,
+		isTouch = input.UserInputType == Enum.UserInputType.Touch,
 	}
 	updateDrag(startPosition)
 end
@@ -446,15 +506,29 @@ for id, entry in pairs(heroCards) do
 	entry.card.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1
 			or input.UserInputType == Enum.UserInputType.Touch then
-			startDrag(entry.data, Vector2.new(input.Position.X, input.Position.Y))
+			startDrag(entry.data, input)
 		end
 	end)
 end
 
+-- No toque, o mesmo InputObject atravessa Began/Changed/Ended, então dá pra
+-- casar exatamente o dedo que iniciou o arraste. No mouse não: o movimento
+-- vem como MouseMovement, um objeto diferente do MouseButton1.
+local function belongsToDrag(input, endedPhase)
+	if not drag then return false end
+
+	if drag.isTouch then
+		return input == drag.input
+	end
+
+	if endedPhase then
+		return input.UserInputType == Enum.UserInputType.MouseButton1
+	end
+	return input.UserInputType == Enum.UserInputType.MouseMovement
+end
+
 UserInputService.InputChanged:Connect(function(input)
-	if not drag then return end
-	if input.UserInputType ~= Enum.UserInputType.MouseMovement
-		and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	if not belongsToDrag(input, false) then return end
 
 	local position = Vector2.new(input.Position.X, input.Position.Y)
 	if (position - drag.origin).Magnitude > DRAG_THRESHOLD then
@@ -464,15 +538,19 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-		finishDrag()
-	end
+	if not belongsToDrag(input, true) then return end
+	finishDrag()
 end)
 
 -- ===== ESTADO =====
 MatchUpdate.OnClientEvent:Connect(function(state)
 	currentState = state
+
+	-- o servidor manda um array de ids; vira set aqui pra consulta direta
+	usedHeroIdSet = {}
+	for _, dataId in ipairs(state.usedHeroIds or {}) do
+		usedHeroIdSet[dataId] = true
+	end
 
 	if state.phase ~= "placement" then
 		gui.Enabled = false
@@ -482,6 +560,7 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 			drag.ghost:Destroy()
 			drag = nil
 		end
+		destroyStrayGhosts()
 		return
 	end
 
@@ -497,8 +576,8 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 	end
 
 	for id, entry in pairs(heroCards) do
-		local used = state.usedHeroIds[id] or state.usedHeroIds[tostring(id)]
-		entry.taken.Visible = used and true or false
+		local used = usedHeroIdSet[id] == true
+		entry.taken.Visible = used
 		entry.taken.BackgroundTransparency = used and 0.55 or 1
 		entry.card.BackgroundTransparency = myTurn and 0 or 0.45
 		entry.stroke.Thickness = 0
