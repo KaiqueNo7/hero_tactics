@@ -32,9 +32,19 @@ local botPad = Workspace:WaitForChild("StartBotMatch")
 local pvpPad = Workspace:WaitForChild("StartPvpMatch")
 
 -- ===== MONTAGEM =====
+-- CFrame.new(pos, lookAt) trava quando o vetor de mira é puramente vertical
+-- (não dá pra calcular um "up" estável) — foi o que deixou o placar deitado
+-- ao mirar num ponto logo abaixo dele. A mira agora fica na MESMA altura do
+-- placar, olhando perpendicular à linha entre os dois pads, então o vetor é
+-- sempre horizontal e a peça fica em pé.
 local midpoint = (botPad.Position + pvpPad.Position) / 2
 local boardPos = midpoint + Vector3.new(0, BOARD_HEIGHT, 0)
-local lookAt = midpoint + Vector3.new(0, 3, 0)
+
+local padDelta = pvpPad.Position - botPad.Position
+local sideways = Vector3.new(-padDelta.Z, 0, padDelta.X)
+if sideways.Magnitude < 0.01 then sideways = Vector3.new(0, 0, 1) end
+
+local lookAt = boardPos + sideways.Unit
 
 local board = Instance.new("Part")
 board.Name = "LeaderboardBoard"
