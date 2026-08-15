@@ -316,6 +316,24 @@ UserInputService.InputChanged:Connect(function(input, processed)
 	end
 end)
 
+-- ===== ZOOM POR PINÇA (mobile) =====
+-- UserInputService.TouchPinch é um evento cru, independente de CameraType —
+-- por isso o zoom de mouse funcionava e o de celular não: não existia
+-- nenhum código escutando o gesto.
+local pinchStartRadius = 0
+
+UserInputService.TouchPinch:Connect(function(_touchPositions, scale, _velocity, state, processed)
+	if not activated or freeFlying or processed then return end
+
+	if state == Enum.UserInputState.Begin then
+		pinchStartRadius = radius
+	elseif state == Enum.UserInputState.Change then
+		-- afastar os dedos (scale > 1) = zoom in = distância menor
+		radius = math.clamp(pinchStartRadius / scale, minRadius, maxRadius)
+		applyCamera()
+	end
+end)
+
 RunService.RenderStepped:Connect(function(dt)
 	if freeFlying then
 		updateFreeFly(dt)

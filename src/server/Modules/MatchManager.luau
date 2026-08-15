@@ -23,6 +23,7 @@ local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local Skills = require(ServerScriptService.Modules.Skills)
 local HeroView = require(ServerScriptService.Modules.HeroView)
+local LeaderboardService = require(ServerScriptService.Modules.LeaderboardService)
 
 local MatchUpdate = ReplicatedStorage.Remotes.MatchUpdate
 
@@ -375,7 +376,13 @@ local function CheckGameOver()
 	if aliveOne == 0 and aliveTwo == 0 then
 		match.winner = "draw"
 	else
-		match.winner = (aliveTwo == 0) and match.sides[1].id or match.sides[2].id
+		local winningSide = (aliveTwo == 0) and match.sides[1] or match.sides[2]
+		match.winner = winningSide.id
+
+		-- ranking global conta vitória em qualquer modo, menos do próprio bot
+		if not winningSide.isBot then
+			LeaderboardService.RecordWin(tonumber(winningSide.id))
+		end
 	end
 	return true
 end

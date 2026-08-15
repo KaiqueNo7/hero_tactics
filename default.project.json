@@ -13,6 +13,9 @@
       "GameStartTrigger": {
         "$path": "src/server/GameStartTrigger.server.luau"
       },
+      "LeaderboardBoard": {
+        "$path": "src/server/LeaderboardBoard.server.luau"
+      },
       "Modules": {
         "$path": "src/server/Modules"
       }
