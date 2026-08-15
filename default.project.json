@@ -40,6 +40,9 @@
         },
         "LobbyClient": {
           "$path": "src/client/LobbyClient.client.luau"
+        },
+        "SoundClient": {
+          "$path": "src/client/SoundClient.client.luau"
         }
       }
     }

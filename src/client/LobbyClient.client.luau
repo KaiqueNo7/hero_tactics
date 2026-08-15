@@ -15,6 +15,7 @@ local RunService = game:GetService("RunService")
 local LobbyStatus = ReplicatedStorage.Remotes:WaitForChild("LobbyStatus")
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
+local ProfileUpdate = ReplicatedStorage.Remotes:WaitForChild("ProfileUpdate")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -130,6 +131,134 @@ cancelButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("cancelQueue")
 end)
 
+-- ===== CRACHÁ DE NÍVEL (canto superior direito do lobby) =====
+-- ScreenGui própria, e não dentro da LobbyGui: aquela vive apagada e só acende
+-- na fila/carregamento, enquanto o crachá tem que ficar visível o lobby inteiro.
+-- IgnoreGuiInset fica falso de propósito, pra ele descer abaixo da barra do
+-- Roblox em vez de brigar por espaço com ela.
+local profileGui = Instance.new("ScreenGui")
+profileGui.Name = "ProfileGui"
+profileGui.ResetOnSpawn = false
+profileGui.DisplayOrder = 20
+profileGui.Parent = playerGui
+
+local levelBadge = Instance.new("Frame")
+levelBadge.Name = "LevelBadge"
+levelBadge.AnchorPoint = Vector2.new(1, 0)
+levelBadge.Position = UDim2.new(1, -12, 0, 8)
+levelBadge.Size = UDim2.new(0, 136, 0, 46)
+levelBadge.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
+levelBadge.BackgroundTransparency = 0.2
+levelBadge.BorderSizePixel = 0
+levelBadge.Parent = profileGui
+
+local badgeCorner = Instance.new("UICorner")
+badgeCorner.CornerRadius = UDim.new(0, 8)
+badgeCorner.Parent = levelBadge
+
+local levelLabel = Instance.new("TextLabel")
+levelLabel.Size = UDim2.new(0.55, 0, 0, 22)
+levelLabel.Position = UDim2.new(0, 10, 0, 4)
+levelLabel.BackgroundTransparency = 1
+levelLabel.Text = "Nível 1"
+levelLabel.TextColor3 = Color3.fromRGB(255, 226, 150)
+levelLabel.TextXAlignment = Enum.TextXAlignment.Left
+levelLabel.TextScaled = true
+levelLabel.Font = Enum.Font.GothamBlack
+levelLabel.Parent = levelBadge
+
+local xpLabel = Instance.new("TextLabel")
+xpLabel.Size = UDim2.new(0.45, -10, 0, 16)
+xpLabel.Position = UDim2.new(0.55, 0, 0, 8)
+xpLabel.BackgroundTransparency = 1
+xpLabel.Text = ""
+xpLabel.TextColor3 = Color3.fromRGB(190, 200, 220)
+xpLabel.TextXAlignment = Enum.TextXAlignment.Right
+xpLabel.TextScaled = true
+xpLabel.Font = Enum.Font.GothamBold
+xpLabel.Parent = levelBadge
+
+local xpTrack = Instance.new("Frame")
+xpTrack.Size = UDim2.new(1, -20, 0, 6)
+xpTrack.Position = UDim2.new(0, 10, 1, -13)
+xpTrack.BackgroundColor3 = Color3.fromRGB(38, 44, 60)
+xpTrack.BorderSizePixel = 0
+xpTrack.ClipsDescendants = true
+xpTrack.Parent = levelBadge
+
+local xpTrackCorner = Instance.new("UICorner")
+xpTrackCorner.CornerRadius = UDim.new(1, 0)
+xpTrackCorner.Parent = xpTrack
+
+local xpFill = Instance.new("Frame")
+xpFill.Size = UDim2.new(0, 0, 1, 0)
+xpFill.BackgroundColor3 = Color3.fromRGB(120, 180, 255)
+xpFill.BorderSizePixel = 0
+xpFill.Parent = xpTrack
+
+local xpFillCorner = Instance.new("UICorner")
+xpFillCorner.CornerRadius = UDim.new(1, 0)
+xpFillCorner.Parent = xpFill
+
+-- "+60 XP" logo abaixo do crachá quando a partida termina
+local gainLabel = Instance.new("TextLabel")
+gainLabel.AnchorPoint = Vector2.new(1, 0)
+gainLabel.Position = UDim2.new(1, -12, 0, 58)
+gainLabel.Size = UDim2.new(0, 136, 0, 22)
+gainLabel.BackgroundTransparency = 1
+gainLabel.Text = ""
+gainLabel.TextColor3 = Color3.fromRGB(150, 240, 170)
+gainLabel.TextStrokeTransparency = 1
+gainLabel.TextXAlignment = Enum.TextXAlignment.Right
+gainLabel.TextScaled = true
+gainLabel.Font = Enum.Font.GothamBlack
+gainLabel.TextTransparency = 1
+gainLabel.Parent = profileGui
+
+local gainToken = 0
+
+local function flashGain(amount)
+	if not amount or amount <= 0 then return end
+
+	gainToken += 1
+	local token = gainToken
+
+	gainLabel.Text = ("+%d XP"):format(amount)
+	gainLabel.TextTransparency = 1
+	TweenService:Create(gainLabel, TweenInfo.new(0.2), {
+		TextTransparency = 0, TextStrokeTransparency = 0.4,
+	}):Play()
+
+	task.delay(2.2, function()
+		if gainToken ~= token then return end
+		TweenService:Create(gainLabel, TweenInfo.new(0.5), {
+			TextTransparency = 1, TextStrokeTransparency = 1,
+		}):Play()
+	end)
+end
+
+-- info vem pronto do servidor: { level, xpIntoLevel, xpForNext, totalXp, gained }
+local function renderProfile(info)
+	levelLabel.Text = ("Nível %d"):format(info.level or 1)
+
+	local intoLevel = info.xpIntoLevel or 0
+	local forNext = info.xpForNext or 0
+
+	if forNext > 0 then
+		xpLabel.Text = ("%d/%d"):format(intoLevel, forNext)
+		TweenService:Create(xpFill, TweenInfo.new(0.35), {
+			Size = UDim2.fromScale(math.clamp(intoLevel / forNext, 0, 1), 1),
+		}):Play()
+	else
+		xpLabel.Text = "MAX"
+		xpFill.Size = UDim2.fromScale(1, 1)
+	end
+
+	flashGain(info.gained)
+end
+
+ProfileUpdate.OnClientEvent:Connect(renderProfile)
+
 -- ===== ANIMAÇÃO =====
 RunService.RenderStepped:Connect(function()
 	if not visible then return end
@@ -211,6 +340,9 @@ end)
 
 -- Quando o primeiro estado da partida chega, a arena já está montada
 MatchUpdate.OnClientEvent:Connect(function(state)
+	-- o crachá é do lobby: durante draft/batalha ele sairia por cima do timer
+	profileGui.Enabled = state.phase == "lobby"
+
 	if state.phase == "lobby" then
 		currentState = "idle"
 		fade(false)

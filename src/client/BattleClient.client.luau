@@ -313,8 +313,10 @@ local function clearHighlights()
 	savedColors, moveTargets, attackTargets = {}, {}, {}
 end
 
+-- O tabuleiro vem no snapshot: com várias partidas rodando, procurar "Board"
+-- pelo nome no Workspace acharia a arena de outra dupla.
 local function paint(hexId, color)
-	local board = Workspace:FindFirstChild("Board")
+	local board = state and state.boardFolder
 	local tile = board and board:FindFirstChild(hexId)
 	if tile and tile:IsA("BasePart") then
 		if savedColors[tile] == nil then savedColors[tile] = true end
@@ -341,7 +343,7 @@ local function selectHero(uid)
 
 	-- mesma corrida da zona de largada: nos primeiros frames o Board pode
 	-- ainda não ter sido replicado e o paint falharia calado
-	if not Workspace:FindFirstChild("Board") then
+	if not (state.boardFolder and state.boardFolder.Parent) then
 		task.delay(0.15, function()
 			if selectedUid == uid then selectHero(uid) end
 		end)

@@ -8,6 +8,13 @@
 	Texto flutuante agora é uma FILA por herói: uma mensagem de cada vez,
 	como tooltip de navegador, em vez de várias empilhadas no mesmo ponto.
 	Cada tipo (dano, cura, buff) e cada skill tem sua própria identidade.
+
+	Com partidas simultâneas, nada aqui pode ser global. Cada partida monta uma
+	`view` — { origin, heroesFolder, gravesFolder, players } — e todo herói
+	carrega a sua em `hero.view`. É por ela que sai a posição no mundo, a pasta
+	onde o modelo mora e, principalmente, PRA QUEM o som toca: som em
+	SoundService é 2D e sairia na tela de todo mundo no servidor, inclusive de
+	quem está em outra partida.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -79,40 +86,53 @@ local TEXT_STYLES = {
 local sayQueue, sayRunning = {}, {}
 
 -- ===== SOM =====
--- Sons de gameplay tocam em 2D (SoundService), não presos ao Part do herói.
--- Motivo: a câmera fica travada a ~90 studs do tabuleiro, e som 3D com
--- EmitterSize padrão (10) cairia pra ~10% do volume nessa distância.
-local function PlaySound(name, volumeScale)
-	local template = Sounds:FindFirstChild(name)
-	if not template then return end
+-- Sons de gameplay tocam em 2D, não presos ao Part do herói: a câmera fica
+-- travada a ~90 studs do tabuleiro, e som 3D com EmitterSize padrão (10) cairia
+-- pra ~10% do volume nessa distância.
+--
+-- Mas 2D no servidor toca pra TODO MUNDO. Com partidas simultâneas, o jogador
+-- ouviria o golpe da arena vizinha como se fosse na dele. Então o servidor não
+-- toca nada: manda o nome do som pelos clientes daquela partida, e cada um toca
+-- localmente (SoundClient). `view.players` é a plateia — em partida contra bot,
+-- é uma pessoa só.
+local MatchSound = ReplicatedStorage:WaitForChild("Remotes"):FindFirstChild("MatchSound")
+if not MatchSound then
+	MatchSound = Instance.new("RemoteEvent")
+	MatchSound.Name = "MatchSound"
+	MatchSound.Parent = ReplicatedStorage.Remotes
+end
 
-	local sound = template:Clone()
-	sound.Volume = template.Volume * (volumeScale or 1)
-	sound.Parent = SoundService
-	sound:Play()
-	Debris:AddItem(sound, (sound.TimeLength > 0 and sound.TimeLength or 5) + 0.5)
+local function PlaySound(name, view, volumeScale)
+	if not Sounds:FindFirstChild(name) then return end
+	if not view then return end
+
+	for _, player in ipairs(view.players or {}) do
+		if player.Parent then
+			MatchSound:FireClient(player, name, volumeScale)
+		end
+	end
 end
 
 HeroView.PlaySound = PlaySound
 
-function HeroView.PlayGlobalSound(name)
-	PlaySound(name)
+function HeroView.PlayMatchSound(view, name)
+	PlaySound(name, view)
 end
 
 function HeroView.PlayAttackSound(hero)
 	if hero.name == "Blade" then
-		PlaySound("SwordSwing")
+		PlaySound("SwordSwing", hero.view)
 	elseif table.find(hero.abilities, "poisonAttack") then
-		PlaySound("PoisonHiss")
+		PlaySound("PoisonHiss", hero.view)
 	end
 end
 
 function HeroView.PlayHealSound(hero)
-	PlaySound("Heal")
+	PlaySound("Heal", hero.view)
 end
 
-function HeroView.PlayPlaceSound()
-	PlaySound("HeroPlace")
+function HeroView.PlayPlaceSound(view)
+	PlaySound("HeroPlace", view)
 end
 
 -- Habilidades que ganharam som próprio. A skill chama isso só quando o efeito
@@ -123,9 +143,9 @@ local SKILL_SOUNDS = {
 	brokenDefense = "SkillBrokenDefense",
 }
 
-function HeroView.PlaySkillSound(key)
+function HeroView.PlaySkillSound(key, view)
 	local name = SKILL_SOUNDS[key]
-	if name then PlaySound(name) end
+	if name then PlaySound(name, view) end
 end
 
 -- Bolinha de energia viajando do atacante até o alvo + reticícula no impacto,
@@ -191,12 +211,31 @@ local function GetFolder(name)
 	return folder
 end
 
-local function GroundCFrame(hexId)
-	return CFrame.new(HexGrid.GetWorldPosition(hexId) + Vector3.new(0, TILE_TOP_Y, 0))
+-- Cada partida tem suas pastas e sua origem no mundo. Chamada uma vez pelo
+-- MatchManager; o resultado vive em match.view e em hero.view.
+function HeroView.CreateView(matchId, origin, players)
+	return {
+		id = matchId,
+		origin = origin,
+		players = players,
+		heroesFolder = GetFolder("Heroes_" .. matchId),
+		gravesFolder = GetFolder("Graves_" .. matchId),
+	}
 end
 
-local function AnchorCFrame(hexId)
-	return GroundCFrame(hexId) * CFrame.new(0, ANCHOR_LIFT, 0)
+function HeroView.DestroyView(view)
+	if not view then return end
+	for _, folder in ipairs({ view.heroesFolder, view.gravesFolder }) do
+		if folder and folder.Parent then folder:Destroy() end
+	end
+end
+
+local function GroundCFrame(hexId, origin)
+	return CFrame.new(HexGrid.GetWorldPosition(hexId, origin) + Vector3.new(0, TILE_TOP_Y, 0))
+end
+
+local function AnchorCFrame(hexId, origin)
+	return GroundCFrame(hexId, origin) * CFrame.new(0, ANCHOR_LIFT, 0)
 end
 
 -- A cor vem do lado (1 = azul, 2 = vermelho), não de "é o bot?": em PvP os
@@ -220,8 +259,8 @@ local function AttachTo(anchor, part)
 	weld.Parent = anchor
 end
 
-local function BuildTeamRing(anchor, hexId, color)
-	local center = HexGrid.GetWorldPosition(hexId) + Vector3.new(0, TILE_TOP_Y + RING_HEIGHT, 0)
+local function BuildTeamRing(anchor, hexId, color, origin)
+	local center = HexGrid.GetWorldPosition(hexId, origin) + Vector3.new(0, TILE_TOP_Y + RING_HEIGHT, 0)
 	local circumradius = HexGrid.GetHexSize() * RING_SCALE
 	local apothem = circumradius * math.sqrt(3) / 2
 
@@ -314,12 +353,13 @@ end
 -- ===== CRIAÇÃO =====
 function HeroView.Create(hero)
 	local data = HeroData.GetById(hero.dataId)
-	local folder = GetFolder("Heroes")
+	local view = hero.view
+	local folder = view.heroesFolder
 
 	local anchor = Instance.new("Part")
 	anchor.Name = hero.uid
 	anchor.Size = Vector3.new(SPRITE_WIDTH * 0.6, SPRITE_HEIGHT * 0.8, SPRITE_WIDTH * 0.6)
-	anchor.CFrame = AnchorCFrame(hero.position)
+	anchor.CFrame = AnchorCFrame(hero.position, view.origin)
 	anchor.Transparency = 1
 	anchor.Anchored = true
 	anchor.CanCollide = false
@@ -327,7 +367,7 @@ function HeroView.Create(hero)
 	anchor:SetAttribute("HeroUid", hero.uid)
 	anchor.Parent = folder
 
-	BuildTeamRing(anchor, hero.position, TeamColor(hero))
+	BuildTeamRing(anchor, hero.position, TeamColor(hero), view.origin)
 
 	if SPRITES_ENABLED then
 		local spriteGui = Instance.new("BillboardGui")
@@ -351,7 +391,7 @@ function HeroView.Create(hero)
 		body.Name = "Body"
 		body.Shape = Enum.PartType.Cylinder
 		body.Size = Vector3.new(SPRITE_HEIGHT * 0.7, SPRITE_WIDTH * 0.62, SPRITE_WIDTH * 0.62)
-		body.CFrame = AnchorCFrame(hero.position) * CFrame.Angles(0, 0, math.rad(90))
+		body.CFrame = AnchorCFrame(hero.position, view.origin) * CFrame.Angles(0, 0, math.rad(90))
 		body.Color = data.color
 		body.Material = Enum.Material.SmoothPlastic
 		AttachTo(anchor, body)
@@ -497,7 +537,7 @@ end
 -- ===== MOVIMENTO =====
 function HeroView.SetPosition(hero, hexId)
 	if not hero.part then return end
-	hero.part.CFrame = AnchorCFrame(hexId)
+	hero.part.CFrame = AnchorCFrame(hexId, hero.view.origin)
 end
 
 function HeroView.WalkPath(hero, path)
@@ -509,10 +549,10 @@ function HeroView.WalkPath(hero, path)
 		local tween = TweenService:Create(
 			hero.part,
 			TweenInfo.new(MOVE_STEP_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
-			{ CFrame = AnchorCFrame(hexId) }
+			{ CFrame = AnchorCFrame(hexId, hero.view.origin) }
 		)
 		tween:Play()
-		PlaySound("FootstepWood")
+		PlaySound("FootstepWood", hero.view)
 		task.wait(MOVE_STEP_TIME)
 	end
 end
@@ -531,10 +571,10 @@ function HeroView.PlayAnimation(hero, animationName)
 			image.ImageColor3 = Color3.fromRGB(255, 110, 110)
 			TweenService:Create(image, TweenInfo.new(0.35), { ImageColor3 = Color3.new(1, 1, 1) }):Play()
 		end
-		PlaySound("Hit")
+		PlaySound("Hit", hero.view)
 
 	elseif animationName == "die" then
-		PlaySound("HeroDeath")
+		PlaySound("HeroDeath", hero.view)
 
 	elseif animationName == "attack" then
 		local base = hero.part.CFrame
@@ -560,12 +600,12 @@ function HeroView.Destroy(hero)
 end
 
 function HeroView.CreateGrave(hero)
-	local folder = GetFolder("Graves")
+	local folder = hero.view.gravesFolder
 
 	local stone = Instance.new("Part")
 	stone.Name = "Grave_" .. hero.uid
 	stone.Size = Vector3.new(2.6, 3, 0.7)
-	stone.CFrame = GroundCFrame(hero.position) * CFrame.new(0, 1.5, 0)
+	stone.CFrame = GroundCFrame(hero.position, hero.view.origin) * CFrame.new(0, 1.5, 0)
 	stone.Color = Color3.fromRGB(105, 108, 118)
 	stone.Material = Enum.Material.Slate
 	stone.Anchored = true
@@ -591,28 +631,46 @@ function HeroView.CreateGrave(hero)
 	TweenService:Create(stone, TweenInfo.new(0.45), { Transparency = 0 }):Play()
 	TweenService:Create(top, TweenInfo.new(0.45), { Transparency = 0 }):Play()
 
+	-- O nome ficava grande e flutuando ACIMA da lápide, bem em cima das casas
+	-- vizinhas — e BillboardGui come o clique de quem estiver atrás dela. Agora
+	-- é uma etiqueta pequena no pé do túmulo, dentro da própria casa, e sem a
+	-- caveira (que só engordava o texto).
 	local label = Instance.new("BillboardGui")
-	label.Size = UDim2.new(0, 90, 0, 22)
-	label.StudsOffset = Vector3.new(0, 3, 0)
+	label.Name = "GraveLabel"
+	label.Size = UDim2.new(0, 52, 0, 12)
+	label.StudsOffset = Vector3.new(0, -1.75, 0)
 	label.AlwaysOnTop = true
 	label.Parent = stone
 
 	local text = Instance.new("TextLabel")
 	text.Size = UDim2.fromScale(1, 1)
 	text.BackgroundTransparency = 1
-	text.Text = "☠ " .. hero.name
+	text.Text = hero.name
 	text.TextColor3 = TeamColor(hero)
-	text.TextStrokeTransparency = 0.4
+	text.TextStrokeTransparency = 0.5
 	text.TextScaled = true
 	text.Font = Enum.Font.GothamBold
 	text.Parent = label
 end
 
-function HeroView.ClearAll()
-	sayQueue, sayRunning = {}, {}
-	for _, name in ipairs({ "Heroes", "Graves" }) do
-		local folder = Workspace:FindFirstChild(name)
-		if folder then folder:Destroy() end
+-- Limpa só o que é daquela partida: as outras continuam rodando ao lado.
+-- As filas de fala são varridas pelo prefixo do uid (matchId_...), porque herói
+-- morto já perdeu o Part e não apareceria mais na pasta.
+function HeroView.ClearMatch(view)
+	if not view then return end
+
+	local prefix = tostring(view.id) .. "_"
+	for uid in pairs(sayQueue) do
+		if uid:sub(1, #prefix) == prefix then sayQueue[uid] = nil end
+	end
+	for uid in pairs(sayRunning) do
+		if uid:sub(1, #prefix) == prefix then sayRunning[uid] = nil end
+	end
+
+	for _, folder in ipairs({ view.heroesFolder, view.gravesFolder }) do
+		if folder and folder.Parent then
+			folder:ClearAllChildren()
+		end
 	end
 end
 

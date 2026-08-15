@@ -376,8 +376,10 @@ local function clearHighlights()
 	hoveredHex = nil
 end
 
+-- O tabuleiro vem no snapshot: com várias partidas rodando, procurar "Board"
+-- pelo nome no Workspace acharia a arena de outra dupla.
 local function paint(hexId, color)
-	local board = Workspace:FindFirstChild("Board")
+	local board = currentState and currentState.boardFolder
 	local tile = board and board:FindFirstChild(hexId)
 	if tile and tile:IsA("BasePart") then
 		paintedTiles[tile] = true
@@ -419,12 +421,12 @@ local function highlightDeployZone()
 	local state = currentState
 
 	task.spawn(function()
-		local board = Workspace:FindFirstChild("Board")
+		local board = state.boardFolder
 		local waited = 0
-		while not board and waited < 10 and highlightToken == token do
+		while (not board or not board.Parent) and waited < 10 and highlightToken == token do
 			task.wait(0.1)
 			waited += 0.1
-			board = Workspace:FindFirstChild("Board")
+			board = currentState and currentState.boardFolder
 		end
 
 		if not board or highlightToken ~= token then return end

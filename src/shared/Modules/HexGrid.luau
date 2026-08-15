@@ -9,6 +9,15 @@
 	  Phaser: xOffset += hexWidth * 0.75  ->  aqui: x = 1.5 * R * q
 	  Phaser: yOffset += hexHeight        ->  aqui: z = sqrt(3) * R * r
 	  Phaser: colunas ímpares -= hexHeight/2 (e 7 casas) -> aqui: offsetToAxial
+
+	SÓ TOPOLOGIA. Com várias partidas ao mesmo tempo, todo tabuleiro tem
+	exatamente as mesmas casas, vizinhos e distâncias — o que muda de uma partida
+	pra outra é (a) onde ela fica no mundo e (b) quem está ocupando cada casa.
+	Por isso:
+	  - a geometria aceita um `offset` por chamada (a arena daquela partida);
+	  - a ocupação NÃO mora aqui. Cada partida guarda a sua e passa um `isFree`
+	    pras buscas. Antes era estado de módulo, e duas partidas simultâneas
+	    enxergariam os heróis uma da outra.
 ]]
 
 local GameConfig = require(script.Parent.GameConfig)
@@ -74,7 +83,6 @@ function HexGrid.Generate()
 				q = q,
 				r = r,
 				s = -q - r,
-				occupiedBy = nil,
 			}
 
 			hexes[id] = hex
@@ -132,35 +140,35 @@ function HexGrid.GetNeighbors(id)
 	return neighbors
 end
 
-function HexGrid.IsFree(id)
-	local hex = hexes[id]
-	return hex ~= nil and hex.occupiedBy == nil
+-- Casa existe e (na visão de quem perguntou) está vazia. Sem `isFree` assume
+-- tabuleiro vazio: serve pro cliente, que já filtra pelo próprio snapshot.
+function HexGrid.Exists(id)
+	return hexes[id] ~= nil
 end
 
-function HexGrid.SetOccupant(id, characterRef)
-	local hex = hexes[id]
-	if hex then hex.occupiedBy = characterRef end
-end
-
-function HexGrid.ClearOccupant(id)
-	local hex = hexes[id]
-	if hex then hex.occupiedBy = nil end
+local function AlwaysFree(id)
+	return hexes[id] ~= nil
 end
 
 -- ===== GEOMETRIA =====
-function HexGrid.GetWorldPosition(id)
+-- `offset` desloca o tabuleiro inteiro. O servidor passa a arena da partida; o
+-- cliente omite e cai no BOARD_OFFSET de módulo, que vale pra única partida
+-- que ele está jogando.
+function HexGrid.GetWorldPosition(id, offset)
 	local hex = hexes[id]
 	if not hex then return nil end
+
+	offset = offset or BOARD_OFFSET
 
 	local x = HEX_SIZE * (3 / 2 * hex.q)
 	local z = HEX_SIZE * (math.sqrt(3) / 2 * hex.q + math.sqrt(3) * hex.r)
 
-	return Vector3.new(x + BOARD_OFFSET.X, BOARD_OFFSET.Y, z + BOARD_OFFSET.Z)
+	return Vector3.new(x + offset.X, offset.Y, z + offset.Z)
 end
 
 -- Cantos do tabuleiro (já incluindo a largura das peças da borda).
 -- A câmera usa isso pra enquadrar o tabuleiro inteiro sem hardcodar hex nenhum.
-function HexGrid.GetBoardBounds()
+function HexGrid.GetBoardBounds(offset)
 	if #hexList == 0 then
 		HexGrid.Generate()
 	end
@@ -169,7 +177,7 @@ function HexGrid.GetBoardBounds()
 	local minZ, maxZ = math.huge, -math.huge
 
 	for _, hex in ipairs(hexList) do
-		local pos = HexGrid.GetWorldPosition(hex.id)
+		local pos = HexGrid.GetWorldPosition(hex.id, offset)
 		minX = math.min(minX, pos.X)
 		maxX = math.max(maxX, pos.X)
 		minZ = math.min(minZ, pos.Z)
@@ -183,17 +191,17 @@ function HexGrid.GetBoardBounds()
 	return Vector3.new(minX - padX, 0, minZ - padZ), Vector3.new(maxX + padX, 0, maxZ + padZ)
 end
 
-function HexGrid.GetBoardCenter()
-	local minV, maxV = HexGrid.GetBoardBounds()
+function HexGrid.GetBoardCenter(offset)
+	local minV, maxV = HexGrid.GetBoardBounds(offset)
 	return (minV + maxV) / 2
 end
 
 -- Onde cada competidor fica de pé: os dois à esquerda do tabuleiro, lado a
 -- lado. Slot 1 fica mais ao fundo (-Z), slot 2 à frente. Client e server
 -- chamam a mesma função pra não haver divergência de posição.
-function HexGrid.GetStandPosition(slot, groundY)
-	local minV = HexGrid.GetBoardBounds()
-	local center = HexGrid.GetBoardCenter()
+function HexGrid.GetStandPosition(slot, groundY, offset)
+	local minV = HexGrid.GetBoardBounds(offset)
+	local center = HexGrid.GetBoardCenter(offset)
 	local half = GameConfig.PLAYER_STAND_SPACING / 2
 
 	return Vector3.new(
@@ -208,7 +216,7 @@ end
 -- Retorna { [hexId] = distância }. `isFree` é injetável porque o client
 -- calcula ocupação a partir do snapshot, não do estado do servidor.
 function HexGrid.ComputeReach(originId, maxSteps, isFree)
-	isFree = isFree or HexGrid.IsFree
+	isFree = isFree or AlwaysFree
 
 	local dist = { [originId] = 0 }
 	local queue = { originId }
@@ -259,7 +267,7 @@ end
 -- Retorna a lista de hexes do primeiro passo até o destino (sem a origem),
 -- ou nil se não houver caminho. Usado pra animar o herói casa por casa.
 function HexGrid.FindPath(fromId, toId, maxSteps, isFree)
-	isFree = isFree or HexGrid.IsFree
+	isFree = isFree or AlwaysFree
 
 	local dist = { [fromId] = 0 }
 	local cameFrom = {}

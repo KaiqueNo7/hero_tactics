@@ -3,8 +3,10 @@
 	Script — ServerScriptService
 
 	Porta de entrada do lobby: dois pads (bot e PvP) e a fila de espera do PvP.
-	Uma partida por servidor — enquanto uma estiver rodando, os pads recusam
-	novos jogadores em vez de atropelar o tabuleiro.
+
+	Várias partidas rodam ao mesmo tempo, cada uma na sua arena. O pad só recusa
+	quando (a) as arenas acabaram — MAX_SIMULTANEOUS_MATCHES — ou (b) o jogador
+	já está numa partida.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -12,12 +14,10 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 
-local BoardReady = ReplicatedStorage.Remotes.BoardReady
 local PlaceHero = ReplicatedStorage.Remotes.PlaceHero
 local GameAction = ReplicatedStorage.Remotes.GameAction
 local LobbyStatus = ReplicatedStorage.Remotes.LobbyStatus
@@ -83,8 +83,10 @@ end
 DecoratePad(botPad, Color3.fromRGB(60, 170, 130), "JOGAR CONTRA O BOT", "pise para começar")
 DecoratePad(pvpPad, Color3.fromRGB(200, 70, 70), "JOGAR CONTRA JOGADOR", "pise para entrar na fila")
 
--- O cenário da arena é persistente: só constrói se ainda não existir no place
-BoardSpawner.EnsureArena()
+-- O cenário da arena é persistente: só constrói se ainda não existir no place.
+-- As arenas dos slots seguintes são clonadas sob demanda, na primeira partida
+-- que precisar delas.
+BoardSpawner.EnsureArena(1)
 
 -- ===================== RAIO DE SPAWN =====================
 -- Os 19 SpawnLocations do lobby chegam a ~30 studs do centro e o pad de PvP
@@ -167,23 +169,19 @@ local function LeaveQueue(player, notify)
 end
 
 -- ===================== PARTIDA =====================
-local function BeginMatch(playerOne, playerTwo)
-	BoardSpawner.SpawnBoard(playerTwo == nil)
-
-	local hexSize, offset = HexGrid.GetHexSize(), HexGrid.GetBoardOffset()
-	BoardReady:FireClient(playerOne, hexSize, offset, 1)
-	if playerTwo then
-		BoardReady:FireClient(playerTwo, hexSize, offset, 2)
-	end
-
-	MatchManager.StartMatch(playerOne, playerTwo)
-end
-
+-- O MatchManager é quem escolhe a arena livre, monta o tabuleiro e avisa os
+-- clientes: daqui em diante o pad só decide QUEM joga com QUEM.
 local function CanStart(player)
-	if MatchManager.IsActive() then
-		SendStatus(player, "busy", "Já existe uma partida em andamento neste servidor")
+	if MatchManager.IsInMatch(player) then
+		SendStatus(player, "busy", "Você já está numa partida")
 		return false
 	end
+
+	if not MatchManager.HasFreeSlot() then
+		SendStatus(player, "busy", "Todas as arenas estão ocupadas — tente em instantes")
+		return false
+	end
+
 	return true
 end
 
@@ -192,7 +190,11 @@ local function OnBotPadTouched(player)
 
 	LeaveQueue(player, false)
 	SendStatus(player, "loading", "Preparando a arena...")
-	BeginMatch(player, nil)
+
+	-- corrida: entre o CanStart e aqui, outra pessoa pode ter pego a última arena
+	if not MatchManager.StartMatch(player, nil) then
+		SendStatus(player, "busy", "Todas as arenas estão ocupadas — tente em instantes")
+	end
 end
 
 local function OnPvpPadTouched(player)
@@ -211,7 +213,11 @@ local function OnPvpPadTouched(player)
 	SendStatus(playerOne, "loading", "Oponente encontrado! Preparando a arena...")
 	SendStatus(playerTwo, "loading", "Oponente encontrado! Preparando a arena...")
 
-	BeginMatch(playerOne, playerTwo)
+	if not MatchManager.StartMatch(playerOne, playerTwo) then
+		-- sem arena livre: devolve os dois pra fila em vez de perder o par
+		SendStatus(playerOne, "busy", "Todas as arenas estão ocupadas — tente em instantes")
+		SendStatus(playerTwo, "busy", "Todas as arenas estão ocupadas — tente em instantes")
+	end
 end
 
 -- ===================== ENTRADA =====================

@@ -15,12 +15,25 @@ local BoardSpawner = {}
 local HEX_RADIUS = 6
 local TILE_FILL = 0.94
 local TILE_THICKNESS = 1
-local ARENA_OFFSET = Vector3.new(300, 0, 300)
+local ARENA_OFFSET = GameConfig.ArenaOrigin(1)
 
 -- O cenário mora fora do folder Board (que é destruído a cada partida) e
 -- PERSISTE no place. Assim dá pra ver e personalizar a taverna no Studio sem
 -- dar play, e o que você editar continua lá — o código só constrói se faltar.
+--
+-- Com várias partidas ao mesmo tempo, a arena do slot 1 é a original (a que
+-- você edita à mão) e as dos slots seguintes são CLONES dela, deslocados no X.
+-- É de propósito: assim o layout é literalmente o mesmo em todas, e qualquer
+-- móvel que você mudar na primeira aparece nas outras na próxima partida.
 local ARENA_FOLDER_NAME = "Arena"
+
+local function ArenaFolderName(slot)
+	return slot <= 1 and ARENA_FOLDER_NAME or (ARENA_FOLDER_NAME .. "_" .. slot)
+end
+
+local function BoardFolderName(slot)
+	return "Board_" .. slot
+end
 
 -- ===== CONFIG =====
 local POINTY_TO_FLAT_ROTATION = 30
@@ -211,13 +224,13 @@ local function BuildTorch(parent, position, faceDirection)
 	fire.Parent = flame
 end
 
-local function BuildTavern()
+local function BuildTavern(origin)
 	local folder = Instance.new("Folder")
 	folder.Name = ARENA_FOLDER_NAME
 	folder.Parent = Workspace
 
-	local minV, maxV = HexGrid.GetBoardBounds()
-	local floorY = ARENA_OFFSET.Y - 0.5 -- topo do piso encosta na base dos hexágonos
+	local minV, maxV = HexGrid.GetBoardBounds(origin)
+	local floorY = origin.Y - 0.5 -- topo do piso encosta na base dos hexágonos
 
 	local minX = minV.X - TAVERN_MARGIN_LEFT
 	local maxX = maxV.X + TAVERN_MARGIN_RIGHT
@@ -268,7 +281,7 @@ local function BuildTavern()
 	-- onde os dois competidores ficam de pé: nada de tralha em cima deles
 	local reserved = {}
 	for slot = 1, 2 do
-		local stand = HexGrid.GetStandPosition(slot, floorY)
+		local stand = HexGrid.GetStandPosition(slot, floorY, origin)
 		table.insert(reserved, Vector2.new(stand.X, stand.Z))
 	end
 
@@ -313,26 +326,49 @@ end
 -- Garante que o cenário existe, sem recriar o que já estiver lá. Pode ser
 -- chamado no Studio em modo Edit pra materializar a taverna e personalizar
 -- à mão — a partida reaproveita o que estiver salvo no place.
-function BoardSpawner.EnsureArena()
+--
+-- As arenas ficam montadas mesmo sem partida rodando: são cenário, custam nada
+-- parado, e evitam o custo de reconstruir a cada início.
+function BoardSpawner.EnsureArena(slot)
+	slot = slot or 1
+
 	HexGrid.SetHexSize(HEX_RADIUS)
-	HexGrid.SetBoardOffset(ARENA_OFFSET)
 	HexGrid.Generate()
 
-	local existing = Workspace:FindFirstChild(ARENA_FOLDER_NAME)
+	local name = ArenaFolderName(slot)
+	local existing = Workspace:FindFirstChild(name)
 	if existing then return existing end
 
-	return BuildTavern()
+	if slot <= 1 then
+		return BuildTavern(GameConfig.ArenaOrigin(1))
+	end
+
+	-- clona a arena original em vez de reconstruir: o layout tem que ser
+	-- idêntico, inclusive o que foi editado à mão no Studio
+	local source = BoardSpawner.EnsureArena(1)
+	local delta = GameConfig.ArenaOrigin(slot) - GameConfig.ArenaOrigin(1)
+
+	local clone = source:Clone()
+	clone.Name = name
+	for _, descendant in ipairs(clone:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.CFrame = descendant.CFrame + delta
+		end
+	end
+	clone.Parent = Workspace
+
+	return clone
 end
 
 -- Bonequin do bot no slot 2, ao lado do jogador. Em PvP o slot 2 é o outro
 -- jogador de verdade, então o bonequin nem é criado.
-local function SpawnBotDummy(boardFolder, groundY)
+local function SpawnBotDummy(boardFolder, origin)
 	local template = ReplicatedStorage:FindFirstChild("BotDummyTemplate")
 	local source = template and template:FindFirstChildWhichIsA("Model")
 	if not source then return end
 
-	local boardCenter = HexGrid.GetBoardCenter()
-	local dummyPos = HexGrid.GetStandPosition(2, groundY + 3)
+	local boardCenter = HexGrid.GetBoardCenter(origin)
+	local dummyPos = HexGrid.GetStandPosition(2, origin.Y + 3, origin)
 	local lookAt = Vector3.new(boardCenter.X, dummyPos.Y, boardCenter.Z)
 
 	local dummy = source:Clone()
@@ -350,39 +386,42 @@ local function SpawnBotDummy(boardFolder, groundY)
 	dummy.Parent = boardFolder
 end
 
--- withBotDummy = false nas partidas PvP, onde o slot 2 é um jogador de verdade
-function BoardSpawner.SpawnBoard(withBotDummy)
+-- Monta o tabuleiro do slot pedido. withBotDummy = false nas partidas PvP, onde
+-- o slot 2 é um jogador de verdade. Devolve o folder pra partida guardar — o
+-- cliente recebe essa referência no snapshot e nunca procura "o Board" pelo
+-- nome, que com várias partidas seria ambíguo.
+function BoardSpawner.SpawnBoard(slot, withBotDummy)
+	slot = slot or 1
+
 	local template = ReplicatedStorage:FindFirstChild("HexTile")
 	if not template then
 		error("BoardSpawner: não encontrei 'HexTile' em ReplicatedStorage. Confira o nome exato.")
 	end
 
+	local origin = GameConfig.ArenaOrigin(slot)
+
 	HexGrid.SetHexSize(HEX_RADIUS)
-	HexGrid.SetBoardOffset(ARENA_OFFSET)
 	HexGrid.Generate()
 
-	local boardFolder = Workspace:FindFirstChild("Board")
-	if boardFolder then
-		boardFolder:Destroy()
+	local existing = Workspace:FindFirstChild(BoardFolderName(slot))
+	if existing then
+		existing:Destroy()
 	end
-	boardFolder = Instance.new("Folder")
-	boardFolder.Name = "Board"
+
+	local boardFolder = Instance.new("Folder")
+	boardFolder.Name = BoardFolderName(slot)
 	boardFolder.Parent = Workspace
 
 	local allHexes = HexGrid.GetAllHexes()
 	for _, hex in ipairs(allHexes) do
-		local worldPos = HexGrid.GetWorldPosition(hex.id)
+		local worldPos = HexGrid.GetWorldPosition(hex.id, origin)
 		local color = (hex.col % 2 == 0) and COLOR_A or COLOR_B
 		CreateHexTile(template, worldPos, color, hex.id).Parent = boardFolder
 	end
 
-	local minV, maxV = HexGrid.GetBoardBounds()
-	print(("BoardSpawner: %d hexágonos, raio %.1f, tabuleiro %.0f x %.0f studs.")
-		:format(#allHexes, HEX_RADIUS, maxV.X - minV.X, maxV.Z - minV.Z))
-
-	BoardSpawner.EnsureArena()
+	BoardSpawner.EnsureArena(slot)
 	if withBotDummy then
-		SpawnBotDummy(boardFolder, ARENA_OFFSET.Y)
+		SpawnBotDummy(boardFolder, origin)
 	end
 
 	return boardFolder

@@ -42,6 +42,18 @@ GameConfig.BOT_PLACE_DELAY = 0.8 -- pausa antes do bot escolher, pra dar pra aco
 GameConfig.PLAYER_SIDE_MARGIN = 9 -- distância à esquerda da borda do tabuleiro
 GameConfig.PLAYER_STAND_SPACING = 7 -- distância entre os dois competidores
 
+-- ===== ARENAS SIMULTÂNEAS =====
+-- Cada partida ocupa uma arena própria, lado a lado no eixo X. A taverna mede
+-- ~100 studs de largura, então 200 de espaçamento deixa um corredor vazio entre
+-- elas — nem a luz das tochas (Range 34) alcança a vizinha.
+GameConfig.ARENA_ORIGIN = Vector3.new(300, 0, 300)
+GameConfig.ARENA_SPACING = 200
+GameConfig.MAX_SIMULTANEOUS_MATCHES = 6
+
+function GameConfig.ArenaOrigin(slot)
+	return GameConfig.ARENA_ORIGIN + Vector3.new((slot - 1) * GameConfig.ARENA_SPACING, 0, 0)
+end
+
 -- ===== RAIO DE SPAWN DO LOBBY =====
 -- Os 19 SpawnLocations do lobby se espalham até ~30 studs do centro, e o pad
 -- de PvP está a ~33 studs — um respawn azarado caía praticamente em cima do

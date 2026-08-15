@@ -2,16 +2,18 @@
 	MatchManager.lua
 	ModuleScript — ServerScriptService/Modules/MatchManager
 
-	Estado autoritativo da partida: draft alternado (1,2,1,2), movimento,
-	combate, skills, turnos cronometrados e revanche.
+	Regras da partida: draft alternado, turnos, combate, skills e o bot.
 
-	A partida tem sempre DOIS lados. O lado 2 pode ser um bot (partida solo)
-	ou outro jogador (PvP) — o resto do módulo não faz distinção, só olha
-	`side.isBot` na hora de decidir quem joga sozinho. Cada jogador recebe seu
-	próprio snapshot, com `isMine`/`isMyTurn`/`winner` já do ponto de vista dele.
+	VÁRIAS PARTIDAS AO MESMO TEMPO
+	Antes existia um único `match` de módulo — um jogo por servidor. Agora o
+	módulo é um registro: cada partida é uma tabela própria, com o seu tabuleiro
+	num slot de arena diferente (GameConfig.ArenaOrigin), suas pastas de heróis e
+	túmulos, sua ocupação de casas e sua plateia de som. Toda função interna
+	recebe o `match` em que está mexendo; nenhuma lê estado global. É isso que
+	garante que uma partida não enxergue nem atrapalhe a outra.
 
-	Não desenha nada: toda a apresentação está no HeroView. Este módulo só
-	decide o que aconteceu e manda o HeroView mostrar.
+	Cada jogador recebe o seu próprio snapshot, com `isMine`/`isMyTurn`/`winner`
+	já do ponto de vista dele.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23,15 +25,14 @@ local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local Skills = require(ServerScriptService.Modules.Skills)
 local HeroView = require(ServerScriptService.Modules.HeroView)
+local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local LeaderboardService = require(ServerScriptService.Modules.LeaderboardService)
+local ProgressionService = require(ServerScriptService.Modules.ProgressionService)
 
 local MatchUpdate = ReplicatedStorage.Remotes.MatchUpdate
+local BoardReady = ReplicatedStorage.Remotes.BoardReady
 
 local MatchManager = {}
-
--- aliases: mantêm as chamadas de sempre funcionando, agora servidas pelo HeroView
-local UpdateHeroVisual = HeroView.UpdateStats
-local Say = HeroView.Say
 
 -- ===== AJUSTE FINO =====
 local BOT_ACTION_DELAY = 0.7
@@ -39,12 +40,13 @@ local COUNTER_ATTACK_DELAY = 0.4
 
 local BOT_ID = "BOT"
 
-local match = nil
-local turnToken = 0
-local SkillApi
+-- ===== REGISTRO DE PARTIDAS =====
+local matches = {} -- [matchId] = match
+local matchBySlot = {} -- [slot] = match
+local nextMatchId = 0
 
 -- declaradas cedo porque se chamam entre si
-local BeginTurn, BotPlayTurn, BotPlaceOne, AdvancePlacement
+local BeginTurn, BotPlayTurn, BotPlaceOne, AdvancePlacement, CheckGameOver
 
 -- ===================== ZONAS =====================
 -- Casas de largada fixas, uma por coluna, na primeira fileira de cada lado.
@@ -56,7 +58,7 @@ local DEPLOY_ZONES = {
 local function BuildDeployZone(hexIds)
 	local zone = {}
 	for _, hexId in ipairs(hexIds) do
-		if HexGrid.GetHex(hexId) then
+		if HexGrid.Exists(hexId) then
 			table.insert(zone, hexId)
 		else
 			warn("MatchManager: hex de largada inexistente: " .. hexId)
@@ -66,30 +68,52 @@ local function BuildDeployZone(hexIds)
 end
 
 -- ===================== LADOS =====================
-local function SideOf(ownerId)
+local function SideOf(match, ownerId)
 	local index = match.sideIndexById[ownerId]
 	return index and match.sides[index] or nil
 end
 
-local function OpponentSide(ownerId)
+local function OpponentSide(match, ownerId)
 	local index = match.sideIndexById[ownerId]
 	return match.sides[index == 1 and 2 or 1]
 end
 
-local function SideOfPlayer(player)
+local function SideOfPlayer(match, player)
 	for _, side in ipairs(match.sides) do
 		if side.player == player then return side end
 	end
 	return nil
 end
 
--- ===================== CONSULTAS =====================
-local function GetHeroAt(hexId)
-	local hex = HexGrid.GetHex(hexId)
-	return hex and hex.occupiedBy or nil
+-- Ponte entre o RemoteEvent (que só traz o Player) e a partida dele
+local function MatchOfPlayer(player)
+	if not player then return nil end
+	for _, match in pairs(matches) do
+		if SideOfPlayer(match, player) then return match end
+	end
+	return nil
 end
 
-local function GetAlliesInRange(hero, range)
+-- ===================== OCUPAÇÃO =====================
+-- Mora na partida, não no HexGrid: duas partidas usam as MESMAS casas (A1, B2...)
+-- e com ocupação global uma bloquearia a outra.
+local function GetHeroAt(match, hexId)
+	return match.occupied[hexId]
+end
+
+local function IsFree(match, hexId)
+	return HexGrid.Exists(hexId) and match.occupied[hexId] == nil
+end
+
+-- fecha sobre a partida: é o que vai pro ComputeReach/FindPath do HexGrid
+local function FreeChecker(match)
+	return function(hexId)
+		return IsFree(match, hexId)
+	end
+end
+
+-- ===================== CONSULTAS =====================
+local function GetAlliesInRange(match, hero, range)
 	local allies = {}
 	for _, other in pairs(match.heroes) do
 		if other ~= hero and other.isAlive and other.ownerId == hero.ownerId then
@@ -101,7 +125,7 @@ local function GetAlliesInRange(hero, range)
 	return allies
 end
 
-local function LivingHeroesOf(ownerId)
+local function LivingHeroesOf(match, ownerId)
 	local result = {}
 	for _, hero in pairs(match.heroes) do
 		if hero.ownerId == ownerId and hero.isAlive then
@@ -112,7 +136,7 @@ local function LivingHeroesOf(ownerId)
 end
 
 -- ===================== SKILLS =====================
-local function TriggerSkills(hero, triggerName, target, isCounterAttack, ctx)
+local function TriggerSkills(match, hero, triggerName, target, isCounterAttack, ctx)
 	if not hero.isAlive and triggerName ~= "onDie" then return end
 
 	for _, key in ipairs(hero.abilities) do
@@ -124,13 +148,13 @@ local function TriggerSkills(hero, triggerName, target, isCounterAttack, ctx)
 			scope.isCounterAttack = isCounterAttack or false
 			scope.api = setmetatable({
 				Say = function(target, text) HeroView.Say(target, text, key) end,
-			}, { __index = SkillApi })
+			}, { __index = match.skillApi })
 
 			local ok, err = pcall(skill.apply, scope)
 			if not ok then
 				warn(("Skill %s falhou em %s: %s"):format(key, hero.name, tostring(err)))
 			end
-			UpdateHeroVisual(hero)
+			HeroView.UpdateStats(hero)
 		end
 	end
 end
@@ -138,19 +162,17 @@ end
 -- ===================== DANO / CURA =====================
 local ApplyDamage, KillHero
 
-function KillHero(hero)
+function KillHero(match, hero)
 	hero.isAlive = false
 	-- a casa NÃO é liberada: o túmulo continua ocupando o hex
-	TriggerSkills(hero, "onDie")
+	TriggerSkills(match, hero, "onDie")
 
 	HeroView.PlayAnimation(hero, "die")
 	HeroView.Destroy(hero)
 	HeroView.CreateGrave(hero)
-
-	print(("%s foi derrotado! O túmulo bloqueia %s."):format(hero.name, hero.position))
 end
 
-function ApplyDamage(hero, amount, attacker, isCounterAttack)
+function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 	if not hero.isAlive then return end
 
 	-- passivas que reduzem dano recebido (ex: autoDefense do Ralph)
@@ -169,29 +191,29 @@ function ApplyDamage(hero, amount, attacker, isCounterAttack)
 	end
 
 	hero.currentHp -= amount
-	UpdateHeroVisual(hero)
+	HeroView.UpdateStats(hero)
 	HeroView.PlayAnimation(hero, "hit")
-	Say(hero, "-" .. tostring(amount), "damage")
+	HeroView.Say(hero, "-" .. tostring(amount), "damage")
 
 	if hero.currentHp <= 0 then
-		KillHero(hero)
+		KillHero(match, hero)
 	else
-		TriggerSkills(hero, "onDamage", attacker, isCounterAttack)
+		TriggerSkills(match, hero, "onDamage", attacker, isCounterAttack)
 	end
 end
 
-local function Heal(hero, amount)
+local function Heal(match, hero, amount)
 	if not hero.isAlive then return end
 	hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp)
-	UpdateHeroVisual(hero)
+	HeroView.UpdateStats(hero)
 	HeroView.PlayHealSound(hero)
-	Say(hero, "+" .. tostring(amount), "heal")
+	HeroView.Say(hero, "+" .. tostring(amount), "heal")
 end
 
 local function IncreaseAttack(hero, amount)
 	hero.attack += amount
-	UpdateHeroVisual(hero)
-	Say(hero, (amount > 0 and "+" or "") .. tostring(amount) .. " ATK", amount > 0 and "buff" or "debuff")
+	HeroView.UpdateStats(hero)
+	HeroView.Say(hero, (amount > 0 and "+" or "") .. tostring(amount) .. " ATK", amount > 0 and "buff" or "debuff")
 end
 
 -- ===================== STATUS EFFECTS =====================
@@ -204,21 +226,21 @@ end
 
 local function ApplyStatusEffect(hero, effect)
 	table.insert(hero.statusEffects, effect)
-	UpdateHeroVisual(hero)
+	HeroView.UpdateStats(hero)
 end
 
 local function ClearStatusEffects(hero)
 	hero.statusEffects = {}
-	UpdateHeroVisual(hero)
+	HeroView.UpdateStats(hero)
 end
 
 -- Roda no fim do turno do próprio herói: aplica o efeito e decrementa
-local function ProcessStatusEffects(hero)
+local function ProcessStatusEffects(match, hero)
 	local remaining = {}
 
 	for _, effect in ipairs(hero.statusEffects) do
 		if effect.damagePerTurn then
-			ApplyDamage(hero, effect.damagePerTurn, nil, false)
+			ApplyDamage(match, hero, effect.damagePerTurn, nil, false)
 		end
 		if effect.duration > 1 then
 			effect.duration -= 1
@@ -227,42 +249,47 @@ local function ProcessStatusEffects(hero)
 	end
 
 	hero.statusEffects = remaining
-	UpdateHeroVisual(hero)
+	HeroView.UpdateStats(hero)
 end
 
 -- ===================== MOVIMENTO =====================
 -- Reposiciona sem bookkeeping de turno — usado pelo empurrão do rage
-local function ForceMove(hero, hexId)
-	if not HexGrid.IsFree(hexId) then return false end
+local function ForceMove(match, hero, hexId)
+	if not IsFree(match, hexId) then return false end
 
-	HexGrid.ClearOccupant(hero.position)
+	match.occupied[hero.position] = nil
 	hero.position = hexId
-	HexGrid.SetOccupant(hexId, hero)
+	match.occupied[hexId] = hero
 	HeroView.SetPosition(hero, hexId)
 	return true
 end
 
 -- ===================== API DAS SKILLS =====================
-SkillApi = {
-	ApplyDamage = function(hero, amount, attacker, isCounterAttack)
-		ApplyDamage(hero, amount, attacker, isCounterAttack)
-	end,
-	Heal = Heal,
-	IncreaseAttack = IncreaseAttack,
-	GetHeroAt = GetHeroAt,
-	GetAlliesInRange = GetAlliesInRange,
-	GetLineBeyond = HexGrid.GetLineBeyond,
-	IsFree = HexGrid.IsFree,
-	ForceMove = ForceMove,
-	FindStatusEffect = FindStatusEffect,
-	ApplyStatusEffect = ApplyStatusEffect,
-	ClearStatusEffects = ClearStatusEffects,
-	PlaySkillSound = HeroView.PlaySkillSound,
-	Say = Say,
-}
+-- Uma API por partida: as closures já sabem em qual tabuleiro mexer, então a
+-- skill continua escrita como antes (ctx.api.ApplyDamage(...)) sem saber que
+-- existem outras partidas rodando.
+local function BuildSkillApi(match)
+	return {
+		ApplyDamage = function(hero, amount, attacker, isCounterAttack)
+			ApplyDamage(match, hero, amount, attacker, isCounterAttack)
+		end,
+		Heal = function(hero, amount) Heal(match, hero, amount) end,
+		IncreaseAttack = IncreaseAttack,
+		GetHeroAt = function(hexId) return GetHeroAt(match, hexId) end,
+		GetAlliesInRange = function(hero, range) return GetAlliesInRange(match, hero, range) end,
+		GetLineBeyond = HexGrid.GetLineBeyond,
+		IsFree = function(hexId) return IsFree(match, hexId) end,
+		ForceMove = function(hero, hexId) return ForceMove(match, hero, hexId) end,
+		FindStatusEffect = FindStatusEffect,
+		ApplyStatusEffect = ApplyStatusEffect,
+		ClearStatusEffects = ClearStatusEffects,
+		PlaySkillSound = function(key) HeroView.PlaySkillSound(key, match.view) end,
+		Say = HeroView.Say,
+	}
+end
 
 -- ===================== SNAPSHOT =====================
-local function TurnSecondsLeft()
+local function TurnSecondsLeft(match)
 	if not match.turn or GameConfig.TURN_TIME_LIMIT <= 0 then return nil end
 	local elapsed = os.clock() - match.turn.startedAt
 	return math.max(0, math.floor(GameConfig.TURN_TIME_LIMIT - elapsed))
@@ -270,9 +297,9 @@ end
 
 -- O estado é montado por espectador: quem olha precisa saber o que é dele,
 -- não quem é "o player" e quem é "o bot".
-local function Snapshot(viewerId)
-	local viewerSide = SideOf(viewerId)
-	local opponent = OpponentSide(viewerId)
+local function Snapshot(match, viewerId)
+	local viewerSide = SideOf(match, viewerId)
+	local opponent = OpponentSide(match, viewerId)
 
 	local heroes = {}
 	for _, hero in pairs(match.heroes) do
@@ -322,37 +349,43 @@ local function Snapshot(viewerId)
 		heroes = heroes,
 		turnNumber = match.turn and match.turn.number or 0,
 		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,
-		turnSecondsLeft = TurnSecondsLeft(),
+		turnSecondsLeft = TurnSecondsLeft(match),
 		turnTimeLimit = GameConfig.TURN_TIME_LIMIT,
 		suddenDeath = match.turn and match.turn.number >= GameConfig.SUDDEN_DEATH_START_TURN or false,
 		winner = winner,
 		message = match.message,
 		vsBot = match.vsBot,
 		opponentName = opponent.player and opponent.player.DisplayName or "Bot",
+
+		-- o cliente pinta as casas por aqui: procurar "Board" pelo nome no
+		-- Workspace acharia o tabuleiro da partida errada
+		boardFolder = match.boardFolder,
 	}
 end
 
-local function Broadcast(message)
+local function Broadcast(match, message)
 	match.message = message
 	for _, side in ipairs(match.sides) do
 		if side.player then
-			MatchUpdate:FireClient(side.player, Snapshot(side.id))
+			MatchUpdate:FireClient(side.player, Snapshot(match, side.id))
 		end
 	end
 	match.message = nil
 end
 
 -- ===================== HERÓIS =====================
-local function CreateHero(dataId, ownerId, hexId)
+local function CreateHero(match, dataId, ownerId, hexId)
 	local data = HeroData.GetById(dataId)
 	if not data then return nil end
 
 	local hero = {
-		uid = ownerId .. "_" .. dataId,
+		-- o matchId entra no uid porque o lado bot se chama "BOT" nas duas
+		-- partidas: sem prefixo, dois jogos contra o bot colidiriam
+		uid = match.id .. "_" .. ownerId .. "_" .. dataId,
 		dataId = dataId,
 		name = data.name,
 		ownerId = ownerId,
-		sideIndex = SideOf(ownerId).index, -- 1 = azul, 2 = vermelho (o HeroView pinta)
+		sideIndex = SideOf(match, ownerId).index, -- 1 = azul, 2 = vermelho (o HeroView pinta)
 		baseAttack = data.attack,
 		attack = data.attack,
 		maxHp = data.hp,
@@ -366,39 +399,58 @@ local function CreateHero(dataId, ownerId, hexId)
 		statusEffects = {},
 		firstAttack = false,
 		firstPunchApplied = false,
+		view = match.view,
 	}
 
 	match.heroes[hero.uid] = hero
-	HexGrid.SetOccupant(hexId, hero)
+	match.occupied[hexId] = hero
 	HeroView.Create(hero)
-	HeroView.PlayPlaceSound()
+	HeroView.PlayPlaceSound(match.view)
 	return hero
 end
 
+-- ===================== XP =====================
+-- O UpdateAsync do DataStore cede, e o fim de partida roda no meio da resolução
+-- de um ataque: task.spawn pra não segurar o Broadcast do golpe final.
+local function AwardXp(match, side, result, survivors)
+	if not side or side.isBot or not side.player then return end
+	task.spawn(ProgressionService.AwardMatchXp, side.player, result, survivors, match.vsBot)
+end
+
 -- ===================== FIM DE JOGO =====================
-local function CheckGameOver()
-	local aliveOne = #LivingHeroesOf(match.sides[1].id)
-	local aliveTwo = #LivingHeroesOf(match.sides[2].id)
+function CheckGameOver(match)
+	local aliveOne = #LivingHeroesOf(match, match.sides[1].id)
+	local aliveTwo = #LivingHeroesOf(match, match.sides[2].id)
 
 	if aliveOne > 0 and aliveTwo > 0 then return false end
 
 	match.phase = "finished"
 	if aliveOne == 0 and aliveTwo == 0 then
 		match.winner = "draw"
+		AwardXp(match, match.sides[1], "draw")
+		AwardXp(match, match.sides[2], "draw")
 	else
-		local winningSide = (aliveTwo == 0) and match.sides[1] or match.sides[2]
+		local oneWon = aliveTwo == 0
+		local winningSide = oneWon and match.sides[1] or match.sides[2]
+		local losingSide = oneWon and match.sides[2] or match.sides[1]
+		local survivors = oneWon and aliveOne or aliveTwo
+
 		match.winner = winningSide.id
 
 		-- ranking global conta vitória em qualquer modo, menos do próprio bot
 		if not winningSide.isBot then
 			LeaderboardService.RecordWin(tonumber(winningSide.id))
 		end
+
+		-- a vitória paga pela margem (heróis vivos), a derrota paga fixo
+		AwardXp(match, winningSide, "win", survivors)
+		AwardXp(match, losingSide, "loss")
 	end
 	return true
 end
 
 -- ===================== COMBATE =====================
-local function PerformAttack(attacker, target, isCounterAttack)
+local function PerformAttack(match, attacker, target, isCounterAttack)
 	HeroView.PlayAnimation(attacker, "attack")
 	HeroView.PlayAttackSound(attacker)
 	if attacker.attackRange >= 2 then
@@ -406,15 +458,15 @@ local function PerformAttack(attacker, target, isCounterAttack)
 	end
 
 	local ctx = { damageApplied = false }
-	TriggerSkills(attacker, isCounterAttack and "onCounterAttack" or "onAttack",
+	TriggerSkills(match, attacker, isCounterAttack and "onCounterAttack" or "onAttack",
 		target, isCounterAttack, ctx)
 
 	if not ctx.damageApplied and target.isAlive then
-		ApplyDamage(target, attacker.attack, attacker, isCounterAttack)
+		ApplyDamage(match, target, attacker.attack, attacker, isCounterAttack)
 	end
 
 	attacker.firstAttack = true
-	UpdateHeroVisual(attacker)
+	HeroView.UpdateStats(attacker)
 end
 
 -- ===================== IA DO BOT =====================
@@ -431,10 +483,10 @@ local function HasSkill(hero, key)
 	return table.find(hero.abilities, key) ~= nil
 end
 
-local function AlliesAdjacentTo(hero, position)
+local function AlliesAdjacentTo(match, hero, position)
 	local list = {}
 	for _, neighbor in ipairs(HexGrid.GetNeighbors(position)) do
-		local occupant = neighbor.occupiedBy
+		local occupant = GetHeroAt(match, neighbor.id)
 		if occupant and occupant ~= hero and occupant.isAlive
 			and occupant.ownerId == hero.ownerId then
 			table.insert(list, occupant)
@@ -456,20 +508,20 @@ local function ThreatScore(hero)
 end
 
 -- Alcance a partir de uma casa hipotética, já contando que o herói saiu da atual
-local function ReachFrom(hero, fromPos, range)
+local function ReachFrom(match, hero, fromPos, range)
 	local isFree = function(hexId)
 		if hexId == hero.position or hexId == fromPos then return true end
-		return HexGrid.IsFree(hexId)
+		return IsFree(match, hexId)
 	end
 	return HexGrid.ComputeReach(fromPos, range, isFree)
 end
 
 -- Um Taunt inimigo adjacente trava o ataque em qualquer outro alvo
-local function TauntBlocks(attacker, target, fromPos)
+local function TauntBlocks(match, attacker, target, fromPos)
 	if target.ability == TAUNT then return false end
 
 	for _, neighbor in ipairs(HexGrid.GetNeighbors(fromPos)) do
-		local occupant = neighbor.occupiedBy
+		local occupant = GetHeroAt(match, neighbor.id)
 		if occupant and occupant.isAlive
 			and occupant.ownerId ~= attacker.ownerId
 			and occupant.ability == TAUNT then
@@ -479,13 +531,13 @@ local function TauntBlocks(attacker, target, fromPos)
 	return false
 end
 
-local function EstimateDamage(attacker, target, fromPos)
+local function EstimateDamage(match, attacker, target, fromPos)
 	local damage = attacker.attack
 
 	-- trustInTeam recalcula no onMove: prevê o ataque já pós-movimento
 	if HasSkill(attacker, "trustInTeam") then
 		local buffed = attacker.attack > attacker.baseAttack
-		local willHaveAlly = #AlliesAdjacentTo(attacker, fromPos) > 0
+		local willHaveAlly = #AlliesAdjacentTo(match, attacker, fromPos) > 0
 		if willHaveAlly and not buffed then
 			damage += 1
 		elseif not willHaveAlly and buffed then
@@ -493,7 +545,7 @@ local function EstimateDamage(attacker, target, fromPos)
 		end
 	end
 
-	if HasSkill(attacker, "aloneIsBetter") and #AlliesAdjacentTo(target, target.position) == 0 then
+	if HasSkill(attacker, "aloneIsBetter") and #AlliesAdjacentTo(match, target, target.position) == 0 then
 		damage *= 2
 	end
 	if HasSkill(attacker, "brokenDefense") and target.ability == TAUNT then
@@ -504,19 +556,19 @@ local function EstimateDamage(attacker, target, fromPos)
 	end
 	if HasSkill(attacker, "rage") then
 		local behind = HexGrid.GetLineBeyond(fromPos, target.position, 1)[1]
-		if not (behind and HexGrid.IsFree(behind)) then damage += 1 end
+		if not (behind and IsFree(match, behind)) then damage += 1 end
 	end
 
 	return damage
 end
 
 -- Inimigos extras que o Blade acerta na mesma linha
-local function LineHits(attacker, target, fromPos)
+local function LineHits(match, attacker, target, fromPos)
 	if not HasSkill(attacker, "beyondFront") then return 0 end
 
 	local hits = 0
 	for _, hexId in ipairs(HexGrid.GetLineBeyond(fromPos, target.position, 2)) do
-		local other = GetHeroAt(hexId)
+		local other = GetHeroAt(match, hexId)
 		if other and other.isAlive and other.ownerId ~= attacker.ownerId then
 			hits += 1
 		else
@@ -536,10 +588,10 @@ local function CounterDamage(attacker, target, fromPos, damage)
 	return incoming
 end
 
-local function ScoreAttack(attacker, target, fromPos)
-	if TauntBlocks(attacker, target, fromPos) then return nil end
+local function ScoreAttack(match, attacker, target, fromPos)
+	if TauntBlocks(match, attacker, target, fromPos) then return nil end
 
-	local damage = EstimateDamage(attacker, target, fromPos)
+	local damage = EstimateDamage(match, attacker, target, fromPos)
 	local score = damage * 10
 
 	if damage >= target.currentHp then
@@ -549,7 +601,7 @@ local function ScoreAttack(attacker, target, fromPos)
 		score += ThreatScore(target) * 2
 	end
 
-	score += LineHits(attacker, target, fromPos) * 30
+	score += LineHits(match, attacker, target, fromPos) * 30
 
 	-- veneno novo rende dano ao longo dos turnos seguintes
 	if HasSkill(attacker, "poisonAttack") and not FindStatusEffect(target, "poison") then
@@ -563,7 +615,7 @@ local function ScoreAttack(attacker, target, fromPos)
 
 	-- Elaria limpa veneno dos vizinhos ao atacar
 	if HasSkill(attacker, "clean") then
-		for _, ally in ipairs(AlliesAdjacentTo(attacker, fromPos)) do
+		for _, ally in ipairs(AlliesAdjacentTo(match, attacker, fromPos)) do
 			if #ally.statusEffects > 0 then score += 25 end
 		end
 	end
@@ -574,7 +626,7 @@ local function ScoreAttack(attacker, target, fromPos)
 end
 
 -- Valor de ocupar uma casa, mesmo sem atacar neste turno
-local function ScorePosition(hero, fromPos, enemies)
+local function ScorePosition(match, hero, fromPos, enemies)
 	local score = 0
 	local isTank = hero.ability == TAUNT
 	local isRanged = hero.attackRange >= 2
@@ -598,12 +650,12 @@ local function ScorePosition(hero, fromPos, enemies)
 	end
 
 	if HasSkill(hero, "trustInTeam") then
-		score += #AlliesAdjacentTo(hero, fromPos) * 10
+		score += #AlliesAdjacentTo(match, hero, fromPos) * 10
 	end
 
 	-- Elaria cura e limpa vizinhos: cola em quem precisa
 	if HasSkill(hero, "health") or HasSkill(hero, "clean") then
-		for _, ally in ipairs(AlliesAdjacentTo(hero, fromPos)) do
+		for _, ally in ipairs(AlliesAdjacentTo(match, hero, fromPos)) do
 			if ally.currentHp < ally.maxHp then score += 18 end
 			if FindStatusEffect(ally, "poison") then score += 14 end
 		end
@@ -618,7 +670,7 @@ local function ScorePosition(hero, fromPos, enemies)
 	-- Noctin caça quem está sozinho (dano dobrado)
 	if HasSkill(hero, "aloneIsBetter") then
 		for _, enemy in ipairs(enemies) do
-			if #AlliesAdjacentTo(enemy, enemy.position) == 0
+			if #AlliesAdjacentTo(match, enemy, enemy.position) == 0
 				and HexGrid.Distance(fromPos, enemy.position) <= hero.attackRange then
 				score += 20
 			end
@@ -629,29 +681,29 @@ local function ScorePosition(hero, fromPos, enemies)
 end
 
 -- Melhor jogada de um herói: para onde ir e quem bater
-local function PlanFor(hero, enemies)
+local function PlanFor(match, hero, enemies)
 	local canMove = not match.turn.moved[hero.uid] and not match.turn.attacked[hero.uid]
 	local canAttack = not match.turn.attacked[hero.uid]
 	if not canMove and not canAttack then return nil end
 
 	local positions = { [hero.position] = true }
 	if canMove then
-		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.moveRange)) do
-			if HexGrid.IsFree(hexId) then positions[hexId] = true end
+		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.moveRange, FreeChecker(match))) do
+			if IsFree(match, hexId) then positions[hexId] = true end
 		end
 	end
 
 	local best = nil
 	for fromPos in pairs(positions) do
 		local stayBonus = (fromPos == hero.position) and 2 or 0 -- desempata a favor de ficar
-		local positional = ScorePosition(hero, fromPos, enemies) + stayBonus
+		local positional = ScorePosition(match, hero, fromPos, enemies) + stayBonus
 
 		local bestTarget, bestAttackScore = nil, nil
 		if canAttack then
-			local reach = ReachFrom(hero, fromPos, hero.attackRange)
+			local reach = ReachFrom(match, hero, fromPos, hero.attackRange)
 			for _, enemy in ipairs(enemies) do
 				if reach[enemy.position] then
-					local attackScore = ScoreAttack(hero, enemy, fromPos)
+					local attackScore = ScoreAttack(match, hero, enemy, fromPos)
 					if attackScore and (not bestAttackScore or attackScore > bestAttackScore) then
 						bestTarget, bestAttackScore = enemy, attackScore
 					end
@@ -674,7 +726,11 @@ local function PlanFor(hero, enemies)
 end
 
 -- ===================== TURNOS =====================
-function BotPlayTurn(botId)
+local function MatchIsLive(match)
+	return matches[match.id] ~= nil
+end
+
+function BotPlayTurn(match, botId)
 	task.spawn(function()
 		task.wait(BOT_ACTION_DELAY)
 
@@ -683,15 +739,15 @@ function BotPlayTurn(botId)
 		local resolved = {}
 
 		for _ = 1, GameConfig.HEROES_PER_PLAYER * 2 do
-			if not match or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
+			if not MatchIsLive(match) or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
 
-			local enemies = LivingHeroesOf(OpponentSide(botId).id)
+			local enemies = LivingHeroesOf(match, OpponentSide(match, botId).id)
 			if #enemies == 0 then break end
 
 			local best = nil
-			for _, hero in ipairs(LivingHeroesOf(botId)) do
+			for _, hero in ipairs(LivingHeroesOf(match, botId)) do
 				if not resolved[hero.uid] then
-					local plan = PlanFor(hero, enemies)
+					local plan = PlanFor(match, hero, enemies)
 					if plan and (not best or plan.score > best.score) then
 						best = plan
 					end
@@ -701,14 +757,14 @@ function BotPlayTurn(botId)
 			if not best then break end
 
 			if best.position ~= best.hero.position then
-				MatchManager.MoveHero(nil, best.hero.uid, best.position)
+				MatchManager.MoveHero(nil, best.hero.uid, best.position, match)
 				task.wait(BOT_ACTION_DELAY)
 			end
 
-			if not match or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
+			if not MatchIsLive(match) or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
 
 			if best.target and best.target.isAlive and best.hero.isAlive then
-				MatchManager.AttackHero(nil, best.hero.uid, best.target.uid)
+				MatchManager.AttackHero(nil, best.hero.uid, best.target.uid, match)
 				task.wait(BOT_ACTION_DELAY)
 			else
 				-- só reposicionou: encerra o herói pra não reavaliá-lo em loop
@@ -716,15 +772,15 @@ function BotPlayTurn(botId)
 			end
 		end
 
-		if match and match.phase == "battle" and match.turn.ownerId == botId then
-			MatchManager.EndTurn(nil)
+		if MatchIsLive(match) and match.phase == "battle" and match.turn.ownerId == botId then
+			MatchManager.EndTurn(nil, match)
 		end
 	end)
 end
 
-function BeginTurn(ownerId, number)
-	turnToken += 1
-	local token = turnToken
+function BeginTurn(match, ownerId, number)
+	match.turnToken += 1
+	local token = match.turnToken
 
 	match.turn = {
 		ownerId = ownerId,
@@ -739,7 +795,7 @@ function BeginTurn(ownerId, number)
 	-- onTurnStart dispara pros heróis dos DOIS lados (igual ao Phaser)
 	for _, hero in pairs(match.heroes) do
 		if hero.isAlive then
-			TriggerSkills(hero, "onTurnStart")
+			TriggerSkills(match, hero, "onTurnStart")
 		end
 	end
 
@@ -751,148 +807,152 @@ function BeginTurn(ownerId, number)
 	if number >= GameConfig.SUDDEN_DEATH_START_TURN then
 		for _, hero in pairs(match.heroes) do
 			if hero.isAlive then
-				ApplyDamage(hero, GameConfig.SUDDEN_DEATH_DAMAGE, nil, false)
+				ApplyDamage(match, hero, GameConfig.SUDDEN_DEATH_DAMAGE, nil, false)
 			end
 		end
 		message = "☠ Morte Súbita: todos perdem 1 de vida!"
 	end
 
-	if CheckGameOver() then
-		Broadcast()
+	if CheckGameOver(match) then
+		Broadcast(match)
 		return
 	end
 
-	Broadcast(message)
+	Broadcast(match, message)
 
 	-- cronômetro: encerra o turno sozinho quando o tempo acaba
 	if GameConfig.TURN_TIME_LIMIT > 0 then
 		task.delay(GameConfig.TURN_TIME_LIMIT, function()
-			if not (match and match.turn and match.turn.token == token and match.phase == "battle") then return end
+			if not (MatchIsLive(match) and match.turn and match.turn.token == token and match.phase == "battle") then return end
 
 			-- espera uma animação em curso terminar, senão o EndTurn seria recusado
 			local waited = 0
-			while match and match.busy and waited < 3 do
+			while MatchIsLive(match) and match.busy and waited < 3 do
 				task.wait(0.1)
 				waited += 0.1
 			end
 
-			if match and match.turn and match.turn.token == token and match.phase == "battle" then
-				Broadcast("⏱ Tempo esgotado!")
-				MatchManager.EndTurn(nil)
+			if MatchIsLive(match) and match.turn and match.turn.token == token and match.phase == "battle" then
+				Broadcast(match, "⏱ Tempo esgotado!")
+				MatchManager.EndTurn(nil, match)
 			end
 		end)
 	end
 
-	if SideOf(ownerId).isBot then
-		BotPlayTurn(ownerId)
+	if SideOf(match, ownerId).isBot then
+		BotPlayTurn(match, ownerId)
 	end
 end
 
-function MatchManager.EndTurn(player)
+-- `match` explícito nas chamadas internas (bot/cronômetro); vindo do cliente,
+-- é resolvido pelo Player.
+function MatchManager.EndTurn(player, match)
+	match = match or MatchOfPlayer(player)
 	if not match or match.phase ~= "battle" then return end
 	if match.busy then return end
 
-	local currentSide = SideOf(match.turn.ownerId)
+	local currentSide = SideOf(match, match.turn.ownerId)
 	if player and currentSide.player ~= player then return end
 
 	-- fim de turno de quem está encerrando: veneno primeiro, depois skills
 	local endingOwner = match.turn.ownerId
 	for _, hero in pairs(match.heroes) do
 		if hero.ownerId == endingOwner and hero.isAlive then
-			ProcessStatusEffects(hero)
+			ProcessStatusEffects(match, hero)
 			if hero.isAlive then
-				TriggerSkills(hero, "onTurnEnd")
+				TriggerSkills(match, hero, "onTurnEnd")
 			end
 		end
 	end
 
-	if CheckGameOver() then
-		Broadcast()
+	if CheckGameOver(match) then
+		Broadcast(match)
 		return
 	end
 
 	local wasStarter = (endingOwner == match.starterId)
-	local nextOwner = OpponentSide(endingOwner).id
+	local nextOwner = OpponentSide(match, endingOwner).id
 	local nextNumber = match.turn.number + (wasStarter and 0 or 1)
 
-	BeginTurn(nextOwner, nextNumber)
+	BeginTurn(match, nextOwner, nextNumber)
 end
 
 -- ===================== AÇÕES =====================
 -- player == nil significa ação do bot (já validada internamente)
-local function AuthorizeAction(player, hero)
+local function AuthorizeAction(match, player, hero)
 	if not match or match.phase ~= "battle" then return false end
 	if match.busy then return false end
 	if not hero or not hero.isAlive then return false end
 	if hero.ownerId ~= match.turn.ownerId then return false end
 
-	if player and SideOf(match.turn.ownerId).player ~= player then return false end
+	if player and SideOf(match, match.turn.ownerId).player ~= player then return false end
 	return true
 end
 
-function MatchManager.MoveHero(player, heroUid, hexId)
+function MatchManager.MoveHero(player, heroUid, hexId, match)
+	match = match or MatchOfPlayer(player)
 	local hero = match and match.heroes[heroUid]
-	if not AuthorizeAction(player, hero) then return end
+	if not AuthorizeAction(match, player, hero) then return end
 
 	-- canMoveHero: não pode ter movido NEM atacado neste turno
 	if match.turn.moved[heroUid] or match.turn.attacked[heroUid] then return end
-	if type(hexId) ~= "string" or not HexGrid.GetHex(hexId) then return end
-	if not HexGrid.IsFree(hexId) then return end
+	if type(hexId) ~= "string" or not HexGrid.Exists(hexId) then return end
+	if not IsFree(match, hexId) then return end
 
 	-- FindPath já garante alcance e caminho livre: substitui o ComputeReach
-	local path = HexGrid.FindPath(hero.position, hexId, hero.moveRange)
+	local path = HexGrid.FindPath(hero.position, hexId, hero.moveRange, FreeChecker(match))
 	if not path then return end
 
 	-- o estado lógico muda na hora; a caminhada é só visual
-	HexGrid.ClearOccupant(hero.position)
+	match.occupied[hero.position] = nil
 	hero.position = hexId
-	HexGrid.SetOccupant(hexId, hero)
+	match.occupied[hexId] = hero
 	match.turn.moved[heroUid] = true
 
 	-- onMove dispara pros heróis dos dois lados (igual ao Phaser)
 	for _, other in pairs(match.heroes) do
 		if other.isAlive then
-			TriggerSkills(other, "onMove")
+			TriggerSkills(match, other, "onMove")
 		end
 	end
 
-	Broadcast()
+	Broadcast(match)
 
 	-- caminha casa por casa; busy trava ações concorrentes durante o passeio
-	local thisMatch = match
-	thisMatch.busy = true
+	match.busy = true
 	HeroView.WalkPath(hero, path)
-	thisMatch.busy = false
+	match.busy = false
 
-	Broadcast()
+	Broadcast(match)
 end
 
-function MatchManager.AttackHero(player, attackerUid, targetUid)
+function MatchManager.AttackHero(player, attackerUid, targetUid, match)
+	match = match or MatchOfPlayer(player)
 	local attacker = match and match.heroes[attackerUid]
 	local target = match and match.heroes[targetUid]
-	if not AuthorizeAction(player, attacker) then return end
+	if not AuthorizeAction(match, player, attacker) then return end
 	if not target or not target.isAlive then return end
 	if target.ownerId == attacker.ownerId then return end
 	if match.turn.attacked[attackerUid] then return end
 
 	-- alcance + caminho livre até o alvo
-	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange)
+	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[target.position] then return end
 
 	-- Taunt: inimigo com Taunt adjacente ao atacante trava o ataque em outro alvo
 	if target.ability ~= GameConfig.ABILITIES.TAUNT then
 		for _, neighbor in ipairs(HexGrid.GetNeighbors(attacker.position)) do
-			local occupant = neighbor.occupiedBy
+			local occupant = GetHeroAt(match, neighbor.id)
 			if occupant and occupant.isAlive
 				and occupant.ownerId ~= attacker.ownerId
 				and occupant.ability == GameConfig.ABILITIES.TAUNT then
-				Broadcast(("%s está bloqueado por Taunt de %s"):format(attacker.name, occupant.name))
+				Broadcast(match, ("%s está bloqueado por Taunt de %s"):format(attacker.name, occupant.name))
 				return
 			end
 		end
 	end
 
-	PerformAttack(attacker, target, false)
+	PerformAttack(match, attacker, target, false)
 	match.turn.attacked[attackerUid] = true
 
 	-- contra-ataque: uma vez por turno, se o alvo sobreviveu e alcança o atacante
@@ -900,25 +960,24 @@ function MatchManager.AttackHero(player, attackerUid, targetUid)
 		if HexGrid.Distance(target.position, attacker.position) <= target.attackRange then
 			match.turn.counterAttack = true
 
-			local thisMatch = match
-			thisMatch.busy = true
+			match.busy = true
 			task.wait(COUNTER_ATTACK_DELAY)
-			thisMatch.busy = false
+			match.busy = false
 
-			PerformAttack(target, attacker, true)
+			PerformAttack(match, target, attacker, true)
 		end
 	end
 
-	if CheckGameOver() then
-		Broadcast()
+	if CheckGameOver(match) then
+		Broadcast(match)
 		return
 	end
 
-	Broadcast()
+	Broadcast(match)
 end
 
 -- ===================== DRAFT ALTERNADO (1,2,1,2) =====================
-local function AvailableHeroIds()
+local function AvailableHeroIds(match)
 	local available = {}
 	for _, data in ipairs(HeroData.CATALOG) do
 		if not match.usedHeroIds[data.id] then
@@ -928,10 +987,10 @@ local function AvailableHeroIds()
 	return available
 end
 
-local function FreeHexesIn(zone)
+local function FreeHexesIn(match, zone)
 	local free = {}
 	for _, hexId in ipairs(zone) do
-		if HexGrid.IsFree(hexId) then
+		if IsFree(match, hexId) then
 			table.insert(free, hexId)
 		end
 	end
@@ -970,18 +1029,17 @@ local function BotPickHex(data, zone, free)
 	return free[1]
 end
 
-local function AllPlaced()
+local function AllPlaced(match)
 	for _, side in ipairs(match.sides) do
 		if side.placedCount < GameConfig.HEROES_PER_PLAYER then return false end
 	end
 	return true
 end
 
-function AdvancePlacement()
-	if AllPlaced() then
+function AdvancePlacement(match)
+	if AllPlaced(match) then
 		match.phase = "battle"
-		print("MatchManager: draft concluído, combate começou.")
-		BeginTurn(match.starterId, 1)
+		BeginTurn(match, match.starterId, 1)
 		return
 	end
 
@@ -992,34 +1050,37 @@ function AdvancePlacement()
 	end
 	match.placementSide = nextIndex
 
-	Broadcast()
+	Broadcast(match)
 
 	if match.sides[nextIndex].isBot then
-		task.delay(GameConfig.BOT_PLACE_DELAY, BotPlaceOne)
+		task.delay(GameConfig.BOT_PLACE_DELAY, function()
+			BotPlaceOne(match)
+		end)
 	end
 end
 
-function BotPlaceOne()
-	if not match or match.phase ~= "placement" then return end
+function BotPlaceOne(match)
+	if not MatchIsLive(match) or match.phase ~= "placement" then return end
 
 	local side = match.sides[match.placementSide]
 	if not side.isBot then return end
 
-	local available = AvailableHeroIds()
-	local free = FreeHexesIn(side.zone)
+	local available = AvailableHeroIds(match)
+	local free = FreeHexesIn(match, side.zone)
 
 	if #available > 0 and #free > 0 then
 		local dataId = BotPickHeroId(available)
 		local hexId = BotPickHex(HeroData.GetById(dataId), side.zone, free)
-		CreateHero(dataId, side.id, hexId)
+		CreateHero(match, dataId, side.id, hexId)
 		match.usedHeroIds[dataId] = true
 		side.placedCount += 1
 	end
 
-	AdvancePlacement()
+	AdvancePlacement(match)
 end
 
 function MatchManager.PlaceHero(player, dataId, hexId)
+	local match = MatchOfPlayer(player)
 	if not match or match.phase ~= "placement" then return end
 
 	local side = match.sides[match.placementSide]
@@ -1029,22 +1090,49 @@ function MatchManager.PlaceHero(player, dataId, hexId)
 	if not HeroData.GetById(dataId) then return end
 	if match.usedHeroIds[dataId] then return end
 	if not table.find(side.zone, hexId) then return end
-	if not HexGrid.IsFree(hexId) then return end
+	if not IsFree(match, hexId) then return end
 
-	CreateHero(dataId, side.id, hexId)
+	CreateHero(match, dataId, side.id, hexId)
 	match.usedHeroIds[dataId] = true
 	side.placedCount += 1
 
-	AdvancePlacement()
+	AdvancePlacement(match)
+end
+
+-- ===================== SLOTS DE ARENA =====================
+local function AllocateSlot()
+	for slot = 1, GameConfig.MAX_SIMULTANEOUS_MATCHES do
+		if not matchBySlot[slot] then return slot end
+	end
+	return nil
+end
+
+function MatchManager.HasFreeSlot()
+	return AllocateSlot() ~= nil
+end
+
+function MatchManager.IsInMatch(player)
+	return MatchOfPlayer(player) ~= nil
 end
 
 -- ===================== CICLO DA PARTIDA =====================
--- playerTwo == nil monta uma partida contra o bot
-function MatchManager.StartMatch(playerOne, playerTwo)
-	if not playerOne then return end
+-- playerTwo == nil monta uma partida contra o bot.
+-- `slot` só vem preenchido na revanche, pra reaproveitar a mesma arena e não
+-- teletransportar a câmera de quem já está sentado ali.
+function MatchManager.StartMatch(playerOne, playerTwo, slot)
+	if not playerOne then return false end
 
-	-- regenera o grid pra zerar ocupação (essencial na revanche)
-	HexGrid.Generate()
+	slot = slot or AllocateSlot()
+	if not slot then return false end
+
+	nextMatchId += 1
+	local matchId = nextMatchId
+	local origin = GameConfig.ArenaOrigin(slot)
+
+	local players = { playerOne }
+	if playerTwo then table.insert(players, playerTwo) end
+
+	local boardFolder = BoardSpawner.SpawnBoard(slot, playerTwo == nil)
 
 	local sides = {
 		{
@@ -1070,48 +1158,53 @@ function MatchManager.StartMatch(playerOne, playerTwo)
 		sideIndexById[side.id] = index
 	end
 
-	match = {
+	local match = {
+		id = matchId,
+		slot = slot,
+		origin = origin,
+		boardFolder = boardFolder,
+		view = HeroView.CreateView(matchId, origin, players),
 		sides = sides,
 		sideIndexById = sideIndexById,
 		vsBot = playerTwo == nil,
 		phase = "placement",
 		heroes = {},
+		occupied = {},
 		usedHeroIds = {},
 		placementSide = 1, -- lado 1 escolhe primeiro: 1,2,1,2...
 		starterId = sides[1].id,
 		turn = nil,
+		turnToken = 0,
 		winner = nil,
 		busy = false,
 	}
 
-	HeroView.ClearAll()
-	HeroView.PlayGlobalSound("MatchStart")
+	match.skillApi = BuildSkillApi(match)
 
-	Broadcast()
-	print(("MatchManager: draft iniciado (%s)."):format(playerTwo and "PvP" or "vs bot"))
-end
+	matches[matchId] = match
+	matchBySlot[slot] = match
 
-function MatchManager.Replay(player)
-	if not match or match.phase ~= "finished" then return end
-	if not SideOfPlayer(player) then return end
-
-	local playerOne = match.sides[1].player
-	local playerTwo = match.sides[2].player
-
-	-- se o dono do lado 1 saiu, quem sobrou reassume como lado 1
-	if not playerOne then
-		playerOne, playerTwo = playerTwo, nil
+	-- a câmera do cliente se ancora na arena DESTA partida
+	local hexSize = HexGrid.GetHexSize()
+	BoardReady:FireClient(playerOne, hexSize, origin, 1)
+	if playerTwo then
+		BoardReady:FireClient(playerTwo, hexSize, origin, 2)
 	end
-	if not playerOne then return end
 
-	MatchManager.StartMatch(playerOne, playerTwo)
+	HeroView.PlayMatchSound(match.view, "MatchStart")
+
+	Broadcast(match)
+	print(("MatchManager: partida %d no slot %d (%s)."):format(matchId, slot, playerTwo and "PvP" or "vs bot"))
+	return true
 end
 
-local function EndMatch()
-	HeroView.ClearAll()
+local function EndMatch(match)
+	HeroView.ClearMatch(match.view)
+	HeroView.DestroyView(match.view)
 
-	local board = Workspace:FindFirstChild("Board")
-	if board then board:Destroy() end
+	if match.boardFolder and match.boardFolder.Parent then
+		match.boardFolder:Destroy()
+	end
 
 	for _, side in ipairs(match.sides) do
 		if side.player then
@@ -1119,32 +1212,75 @@ local function EndMatch()
 		end
 	end
 
-	match = nil
+	matches[match.id] = nil
+	matchBySlot[match.slot] = nil
+end
+
+function MatchManager.Replay(player)
+	local match = MatchOfPlayer(player)
+	if not match or match.phase ~= "finished" then return end
+
+	local playerOne = match.sides[1].player
+	local playerTwo = match.sides[2].player
+	local slot = match.slot
+
+	-- se o dono do lado 1 saiu, quem sobrou reassume como lado 1
+	if not playerOne then
+		playerOne, playerTwo = playerTwo, nil
+	end
+	if not playerOne then return end
+
+	-- derruba a partida antiga sem mandar ninguém pro lobby: a revanche entra
+	-- no lugar dela, na mesma arena
+	HeroView.ClearMatch(match.view)
+	HeroView.DestroyView(match.view)
+	matches[match.id] = nil
+	matchBySlot[slot] = nil
+
+	MatchManager.StartMatch(playerOne, playerTwo, slot)
+end
+
+-- Abandono: quem sai não leva XP; quem ficou recebe como vitória. Só vale pra
+-- partida em andamento — depois do fim, "voltar pro lobby" é só sair da tela de
+-- resultado, e o XP já foi pago pelo CheckGameOver.
+local function AwardAbandon(match, leavingSide)
+	if match.phase == "finished" then return end
+
+	local stayingSide = match.sides[leavingSide.index == 1 and 2 or 1]
+	if not stayingSide.player or stayingSide.isBot then return end
+
+	local survivors = math.max(#LivingHeroesOf(match, stayingSide.id), 1)
+	AwardXp(match, stayingSide, "win", survivors)
 end
 
 function MatchManager.LeaveMatch(player)
-	if not match or not SideOfPlayer(player) then return end
-	EndMatch()
+	local match = MatchOfPlayer(player)
+	if not match then return end
+
+	local side = SideOfPlayer(match, player)
+	if side then AwardAbandon(match, side) end
+
+	EndMatch(match)
 end
 
 -- Um jogador caiu no meio da partida: encerra pra todo mundo em vez de deixar
 -- o outro preso esperando um turno que nunca vem.
 function MatchManager.HandlePlayerLeft(player)
+	local match = MatchOfPlayer(player)
 	if not match then return end
 
-	local side = SideOfPlayer(player)
+	local side = SideOfPlayer(match, player)
 	if not side then return end
 
+	AwardAbandon(match, side)
 	side.player = nil
-	EndMatch()
+	EndMatch(match)
 end
 
-function MatchManager.IsActive()
-	return match ~= nil
-end
-
-function MatchManager.GetMatch()
-	return match
+function MatchManager.ActiveCount()
+	local count = 0
+	for _ in pairs(matches) do count += 1 end
+	return count
 end
 
 return MatchManager
