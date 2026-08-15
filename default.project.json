@@ -1,0 +1,35 @@
+{
+  "name": "hero_tactics",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Modules": {
+        "$path": "src/shared/Modules"
+      }
+    },
+
+    "ServerScriptService": {
+      "GameStartTrigger": {
+        "$path": "src/server/GameStartTrigger.server.luau"
+      },
+      "Modules": {
+        "$path": "src/server/Modules"
+      }
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "CameraController": {
+          "$path": "src/client/CameraController.client.luau"
+        },
+        "PlacementClient": {
+          "$path": "src/client/PlacementClient.client.luau"
+        },
+        "BattleClient": {
+          "$path": "src/client/BattleClient.client.luau"
+        }
+      }
+    }
+  }
+}
