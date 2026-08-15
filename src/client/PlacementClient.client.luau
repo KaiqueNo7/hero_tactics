@@ -55,8 +55,6 @@ local function restoreTile(part)
 	part.Color = part:GetAttribute("BaseColor") or fallbackColor(part)
 end
 
-local SPRITE_ID = HeroData.GetSpriteId()
-
 local currentState = nil
 local paintedTiles = {}
 local heroCards = {}
@@ -153,8 +151,11 @@ local function buildHeroImage(parent, data, zIndex)
 	image.ScaleType = Enum.ScaleType.Fit
 	image.ZIndex = zIndex or 1
 
-	if SPRITE_ID then
-		image.Image = SPRITE_ID
+	-- a folha vem do próprio herói: os criados depois moram numa folha separada
+	local spriteId = HeroData.GetSpriteId(data)
+
+	if spriteId then
+		image.Image = spriteId
 		image.ImageRectSize = HeroData.GetFrameSize()
 		image.ImageRectOffset = HeroData.GetFrameOffset(data)
 		image.ResampleMode = Enum.ResamplerMode.Pixelated

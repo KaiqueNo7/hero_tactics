@@ -9,6 +9,12 @@
       }
     },
 
+    "StarterGui": {
+      "$properties": {
+        "ScreenOrientation": "LandscapeSensor"
+      }
+    },
+
     "ServerScriptService": {
       "GameStartTrigger": {
         "$path": "src/server/GameStartTrigger.server.luau"

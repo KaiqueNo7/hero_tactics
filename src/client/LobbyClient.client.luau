@@ -19,9 +19,14 @@ local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- Trava o jogo em paisagem já na abertura, sem depender do jeito que o celular
--- estava segurado. LandscapeSensor deixa girar entre as duas paisagens, mas
--- nunca cai em retrato — o tabuleiro é largo demais pra caber em pé.
+-- Trava o jogo em paisagem, sem depender do jeito que o celular estava segurado
+-- nem do bloqueio de rotação do sistema. LandscapeSensor deixa girar entre as
+-- duas paisagens, mas nunca cai em retrato — o tabuleiro é largo demais pra
+-- caber em pé.
+--
+-- Quem garante a abertura já deitada é StarterGui.ScreenOrientation (definido no
+-- default.project.json), que vale desde o primeiro frame; aqui é só o reforço
+-- em runtime, porque este script só roda depois do carregamento.
 playerGui.ScreenOrientation = Enum.ScreenOrientation.LandscapeSensor
 
 local FADE_TIME = 0.25

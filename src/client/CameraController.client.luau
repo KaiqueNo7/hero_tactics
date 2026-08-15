@@ -13,6 +13,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local StarterPlayer = game:GetService("StarterPlayer")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
@@ -32,6 +33,14 @@ local FRAMING = 1.12
 -- ===== ZOOM =====
 local ZOOM_STEP = 5
 local ZOOM_MIN_FACTOR, ZOOM_MAX_FACTOR = 0.45, 1.8
+
+-- ===== MOVIMENTO NO LOBBY =====
+-- Lidos do StarterPlayer pra devolver exatamente o que o place configurou, em
+-- vez de chutar números. Este place usa JumpHeight (CharacterUseJumpPower =
+-- false), então zerar/restaurar só o JumpPower não tem efeito nenhum.
+local LOBBY_WALK_SPEED = StarterPlayer.CharacterWalkSpeed
+local LOBBY_JUMP_POWER = StarterPlayer.CharacterJumpPower
+local LOBBY_JUMP_HEIGHT = StarterPlayer.CharacterJumpHeight
 
 -- ===== CALIBRAÇÃO =====
 local SHOW_CAMERA_DEBUG = false -- true = mostra o HUD e libera o F pro voo livre
@@ -278,10 +287,13 @@ local function returnToLobby()
 
 		if humanoid then
 			camera.CameraSubject = humanoid
-			humanoid.WalkSpeed = 16
-			humanoid.JumpPower = 50
+			humanoid.WalkSpeed = LOBBY_WALK_SPEED
+			humanoid.JumpPower = LOBBY_JUMP_POWER
+			humanoid.JumpHeight = LOBBY_JUMP_HEIGHT
 			humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
 			humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
 		end
 
 		if rootPart then
