@@ -323,6 +323,7 @@ local function CreateHero(dataId, ownerId, hexId)
 	match.heroes[hero.uid] = hero
 	HexGrid.SetOccupant(hexId, hero)
 	HeroView.Create(hero)
+	HeroView.PlayPlaceSound()
 	return hero
 end
 
@@ -368,6 +369,262 @@ local function PerformAttack(attacker, target, isCounterAttack)
 	UpdateHeroVisual(attacker)
 end
 
+-- ===================== IA DO BOT =====================
+-- Pontua cada combinação (herói, casa de destino, alvo) e executa a melhor,
+-- recalculando após cada ação. As habilidades entram na conta: Noctin caça
+-- alvo isolado, Blade busca alinhamento, Elaria cola em aliado ferido, os
+-- ranged mantêm distância pra não levar contra-ataque, e ninguém tenta bater
+-- através de um Taunt.
+
+local TAUNT = GameConfig.ABILITIES.TAUNT
+local RANGED = GameConfig.ABILITIES.RANGED
+
+local function HasSkill(hero, key)
+	return table.find(hero.abilities, key) ~= nil
+end
+
+local function AlliesAdjacentTo(hero, position)
+	local list = {}
+	for _, neighbor in ipairs(HexGrid.GetNeighbors(position)) do
+		local occupant = neighbor.occupiedBy
+		if occupant and occupant ~= hero and occupant.isAlive
+			and occupant.ownerId == hero.ownerId then
+			table.insert(list, occupant)
+		end
+	end
+	return list
+end
+
+-- O quanto vale a pena derrubar este inimigo
+local function ThreatScore(hero)
+	local threat = hero.attack * 3
+	if hero.attackRange >= 2 then threat += 2 end
+	if HasSkill(hero, "health") then threat += 8 end -- curandeira morre primeiro
+	if HasSkill(hero, "clean") then threat += 3 end
+	if HasSkill(hero, "poisonAttack") then threat += 4 end
+	if HasSkill(hero, "beyondFront") then threat += 3 end
+	if HasSkill(hero, "aloneIsBetter") then threat += 3 end
+	return threat
+end
+
+-- Alcance a partir de uma casa hipotética, já contando que o herói saiu da atual
+local function ReachFrom(hero, fromPos, range)
+	local isFree = function(hexId)
+		if hexId == hero.position or hexId == fromPos then return true end
+		return HexGrid.IsFree(hexId)
+	end
+	return HexGrid.ComputeReach(fromPos, range, isFree)
+end
+
+-- Um Taunt inimigo adjacente trava o ataque em qualquer outro alvo
+local function TauntBlocks(attacker, target, fromPos)
+	if target.ability == TAUNT then return false end
+
+	for _, neighbor in ipairs(HexGrid.GetNeighbors(fromPos)) do
+		local occupant = neighbor.occupiedBy
+		if occupant and occupant.isAlive
+			and occupant.ownerId ~= attacker.ownerId
+			and occupant.ability == TAUNT then
+			return true
+		end
+	end
+	return false
+end
+
+local function EstimateDamage(attacker, target, fromPos)
+	local damage = attacker.attack
+
+	-- trustInTeam recalcula no onMove: prevê o ataque já pós-movimento
+	if HasSkill(attacker, "trustInTeam") then
+		local buffed = attacker.attack > attacker.baseAttack
+		local willHaveAlly = #AlliesAdjacentTo(attacker, fromPos) > 0
+		if willHaveAlly and not buffed then
+			damage += 1
+		elseif not willHaveAlly and buffed then
+			damage -= 1
+		end
+	end
+
+	if HasSkill(attacker, "aloneIsBetter") and #AlliesAdjacentTo(target, target.position) == 0 then
+		damage *= 2
+	end
+	if HasSkill(attacker, "brokenDefense") and target.ability == TAUNT then
+		damage += 1
+	end
+	if HasSkill(attacker, "poisonAttack") and FindStatusEffect(target, "poison") then
+		damage += 2
+	end
+	if HasSkill(attacker, "rage") then
+		local behind = HexGrid.GetLineBeyond(fromPos, target.position, 1)[1]
+		if not (behind and HexGrid.IsFree(behind)) then damage += 1 end
+	end
+
+	return damage
+end
+
+-- Inimigos extras que o Blade acerta na mesma linha
+local function LineHits(attacker, target, fromPos)
+	if not HasSkill(attacker, "beyondFront") then return 0 end
+
+	local hits = 0
+	for _, hexId in ipairs(HexGrid.GetLineBeyond(fromPos, target.position, 2)) do
+		local other = GetHeroAt(hexId)
+		if other and other.isAlive and other.ownerId ~= attacker.ownerId then
+			hits += 1
+		else
+			break
+		end
+	end
+	return hits
+end
+
+-- Dano que voltaria em contra-ataque (0 se o alvo morre ou não alcança)
+local function CounterDamage(attacker, target, fromPos, damage)
+	if damage >= target.currentHp then return 0 end
+	if HexGrid.Distance(target.position, fromPos) > target.attackRange then return 0 end
+
+	local incoming = target.attack
+	if HasSkill(attacker, "autoDefense") then incoming = math.max(0, incoming - 1) end
+	return incoming
+end
+
+local function ScoreAttack(attacker, target, fromPos)
+	if TauntBlocks(attacker, target, fromPos) then return nil end
+
+	local damage = EstimateDamage(attacker, target, fromPos)
+	local score = damage * 10
+
+	if damage >= target.currentHp then
+		score += 120 + ThreatScore(target) * 4 -- abater é sempre a prioridade
+	else
+		score += (target.maxHp - target.currentHp) * 2 -- concentra fogo no ferido
+		score += ThreatScore(target) * 2
+	end
+
+	score += LineHits(attacker, target, fromPos) * 30
+
+	-- veneno novo rende dano ao longo dos turnos seguintes
+	if HasSkill(attacker, "poisonAttack") and not FindStatusEffect(target, "poison") then
+		score += 15
+	end
+
+	-- Ceos se cura batendo
+	if HasSkill(attacker, "absorbRoots") and attacker.currentHp < attacker.maxHp then
+		score += math.min(attacker.attack, attacker.maxHp - attacker.currentHp) * 5
+	end
+
+	-- Elaria limpa veneno dos vizinhos ao atacar
+	if HasSkill(attacker, "clean") then
+		for _, ally in ipairs(AlliesAdjacentTo(attacker, fromPos)) do
+			if #ally.statusEffects > 0 then score += 25 end
+		end
+	end
+
+	score -= CounterDamage(attacker, target, fromPos, damage) * 7
+
+	return score
+end
+
+-- Valor de ocupar uma casa, mesmo sem atacar neste turno
+local function ScorePosition(hero, fromPos, enemies)
+	local score = 0
+	local isTank = hero.ability == TAUNT
+	local isRanged = hero.attackRange >= 2
+
+	local nearest = math.huge
+	for _, enemy in ipairs(enemies) do
+		nearest = math.min(nearest, HexGrid.Distance(fromPos, enemy.position))
+	end
+
+	if nearest < math.huge then
+		if isRanged then
+			-- fica exatamente no alcance: bate sem ser contra-atacado
+			score -= math.abs(nearest - hero.attackRange) * 8
+		else
+			score -= nearest * 5
+		end
+
+		if isTank then
+			score -= math.abs(nearest - 1) * 8 -- tanque segura a linha de frente
+		end
+	end
+
+	if HasSkill(hero, "trustInTeam") then
+		score += #AlliesAdjacentTo(hero, fromPos) * 10
+	end
+
+	-- Elaria cura e limpa vizinhos: cola em quem precisa
+	if HasSkill(hero, "health") or HasSkill(hero, "clean") then
+		for _, ally in ipairs(AlliesAdjacentTo(hero, fromPos)) do
+			if ally.currentHp < ally.maxHp then score += 18 end
+			if FindStatusEffect(ally, "poison") then score += 14 end
+		end
+	end
+
+	if isRanged then
+		for _, enemy in ipairs(enemies) do
+			if HexGrid.Distance(fromPos, enemy.position) <= 1 then score -= 22 end
+		end
+	end
+
+	-- Noctin caça quem está sozinho (dano dobrado)
+	if HasSkill(hero, "aloneIsBetter") then
+		for _, enemy in ipairs(enemies) do
+			if #AlliesAdjacentTo(enemy, enemy.position) == 0
+				and HexGrid.Distance(fromPos, enemy.position) <= hero.attackRange then
+				score += 20
+			end
+		end
+	end
+
+	return score
+end
+
+-- Melhor jogada de um herói: para onde ir e quem bater
+local function PlanFor(hero, enemies)
+	local canMove = not match.turn.moved[hero.uid] and not match.turn.attacked[hero.uid]
+	local canAttack = not match.turn.attacked[hero.uid]
+	if not canMove and not canAttack then return nil end
+
+	local positions = { [hero.position] = true }
+	if canMove then
+		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.moveRange)) do
+			if HexGrid.IsFree(hexId) then positions[hexId] = true end
+		end
+	end
+
+	local best = nil
+	for fromPos in pairs(positions) do
+		local stayBonus = (fromPos == hero.position) and 2 or 0 -- desempata a favor de ficar
+		local positional = ScorePosition(hero, fromPos, enemies) + stayBonus
+
+		local bestTarget, bestAttackScore = nil, nil
+		if canAttack then
+			local reach = ReachFrom(hero, fromPos, hero.attackRange)
+			for _, enemy in ipairs(enemies) do
+				if reach[enemy.position] then
+					local attackScore = ScoreAttack(hero, enemy, fromPos)
+					if attackScore and (not bestAttackScore or attackScore > bestAttackScore) then
+						bestTarget, bestAttackScore = enemy, attackScore
+					end
+				end
+			end
+		end
+
+		local total = positional + (bestAttackScore or 0)
+		if not best or total > best.score then
+			best = {
+				hero = hero,
+				position = fromPos,
+				target = bestTarget,
+				score = total,
+			}
+		end
+	end
+
+	return best
+end
+
 -- ===================== TURNOS =====================
 local BeginTurn
 
@@ -375,49 +632,41 @@ local function BotPlayTurn()
 	task.spawn(function()
 		task.wait(BOT_ACTION_DELAY)
 
-		for _, hero in ipairs(LivingHeroesOf(BOT_ID)) do
+		-- age sempre com quem tem a melhor jogada disponível; o tabuleiro muda
+		-- a cada movimento/abate, então o plano é refeito a cada iteração
+		local resolved = {}
+
+		for _ = 1, GameConfig.HEROES_PER_PLAYER * 2 do
 			if not match or match.phase ~= "battle" or match.turn.ownerId ~= BOT_ID then return end
 
-			if hero.isAlive then
-				-- move em direção ao inimigo mais fraco
-				if not match.turn.moved[hero.uid] and not match.turn.attacked[hero.uid] then
-					local enemies = LivingHeroesOf(match.playerId)
-					if #enemies > 0 then
-						local weakest = enemies[1]
-						for _, enemy in ipairs(enemies) do
-							if enemy.currentHp < weakest.currentHp then weakest = enemy end
-						end
+			local enemies = LivingHeroesOf(match.playerId)
+			if #enemies == 0 then break end
 
-						local reach = HexGrid.ComputeReach(hero.position, hero.moveRange)
-						local bestHex, bestDist = nil, math.huge
-						for hexId in pairs(reach) do
-							if HexGrid.IsFree(hexId) then
-								local d = HexGrid.Distance(hexId, weakest.position)
-								if d < bestDist then bestDist, bestHex = d, hexId end
-							end
-						end
-
-						if bestHex then
-							MatchManager.MoveHero(nil, hero.uid, bestHex)
-							task.wait(BOT_ACTION_DELAY)
-						end
+			local best = nil
+			for _, hero in ipairs(LivingHeroesOf(BOT_ID)) do
+				if not resolved[hero.uid] then
+					local plan = PlanFor(hero, enemies)
+					if plan and (not best or plan.score > best.score) then
+						best = plan
 					end
 				end
+			end
 
-				if not match or match.phase ~= "battle" then return end
+			if not best then break end
 
-				-- ataca quem estiver ao alcance
-				if hero.isAlive and not match.turn.attacked[hero.uid] then
-					local reach = HexGrid.ComputeReach(hero.position, hero.attackRange)
-					for hexId in pairs(reach) do
-						local occupant = GetHeroAt(hexId)
-						if occupant and occupant.isAlive and occupant.ownerId ~= BOT_ID then
-							MatchManager.AttackHero(nil, hero.uid, occupant.uid)
-							task.wait(BOT_ACTION_DELAY)
-							break
-						end
-					end
-				end
+			if best.position ~= best.hero.position then
+				MatchManager.MoveHero(nil, best.hero.uid, best.position)
+				task.wait(BOT_ACTION_DELAY)
+			end
+
+			if not match or match.phase ~= "battle" or match.turn.ownerId ~= BOT_ID then return end
+
+			if best.target and best.target.isAlive and best.hero.isAlive then
+				MatchManager.AttackHero(nil, best.hero.uid, best.target.uid)
+				task.wait(BOT_ACTION_DELAY)
+			else
+				-- só reposicionou: encerra o herói pra não reavaliá-lo em loop
+				resolved[best.hero.uid] = true
 			end
 		end
 
@@ -655,6 +904,38 @@ local function StartBattleIfReady()
 	return false
 end
 
+-- Ordem de escolha do bot no draft: tanque que se cura, curandeira, e depois
+-- os que fazem mais estrago. Melhor que sortear — o time sai com uma função
+-- definida em vez de três heróis aleatórios.
+local BOT_DRAFT_PRIORITY = { 6, 8, 4, 7, 1, 9, 5, 2, 3 }
+
+local function BotPickHeroId(available)
+	for _, dataId in ipairs(BOT_DRAFT_PRIORITY) do
+		if table.find(available, dataId) then return dataId end
+	end
+	return available[1]
+end
+
+-- Tanque no meio da fileira (trava a passagem), ranged nas pontas (fica longe
+-- do aperto), o resto preenche do centro pra fora.
+local function BotPickHex(data, free)
+	local center = (#match.botZone + 1) / 2
+
+	local function offsetFromCenter(hexId)
+		local index = table.find(match.botZone, hexId)
+		return index and math.abs(index - center) or 0
+	end
+
+	table.sort(free, function(a, b)
+		if data.ability == RANGED then
+			return offsetFromCenter(a) > offsetFromCenter(b)
+		end
+		return offsetFromCenter(a) < offsetFromCenter(b)
+	end)
+
+	return free[1]
+end
+
 local function BotPlaceOne()
 	if not match or match.phase ~= "placement" then return end
 
@@ -662,8 +943,8 @@ local function BotPlaceOne()
 	local free = FreeHexesIn(match.botZone)
 
 	if #available > 0 and #free > 0 then
-		local dataId = available[math.random(#available)]
-		local hexId = free[math.random(#free)]
+		local dataId = BotPickHeroId(available)
+		local hexId = BotPickHex(HeroData.GetById(dataId), free)
 		CreateHero(dataId, BOT_ID, hexId)
 		match.usedHeroIds[dataId] = true
 		match.botPlacedCount += 1

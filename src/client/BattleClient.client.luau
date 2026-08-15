@@ -36,6 +36,7 @@ local selectedUid = nil
 local moveTargets, attackTargets, savedColors = {}, {}, {}
 local secondsLeft = nil
 local wasMyTurn = false
+local resultPlayed = false
 
 local function PlayUiSound(name)
 	local template = ReplicatedStorage.Sounds:FindFirstChild(name)
@@ -435,6 +436,13 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 				and Color3.fromRGB(130, 230, 150) or Color3.fromRGB(230, 120, 120)
 		end
 
+		-- o servidor manda o estado final uma vez, mas guardamos mesmo assim
+		-- pra revanche não empilhar dois toques
+		if not resultPlayed then
+			resultPlayed = true
+			PlayUiSound(state.winner == "player" and "Victory" or "Defeat")
+		end
+
 		clearHighlights()
 		selectedUid = nil
 		return
@@ -451,6 +459,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	gui.Enabled = true
 	turnPanel.Visible = true
 	resultPanel.Visible = false
+	resultPlayed = false
 	endTurnButton.Visible = true
 	endTurnButton.Active = state.isMyTurn
 	endTurnButton.ImageColor3 = state.isMyTurn

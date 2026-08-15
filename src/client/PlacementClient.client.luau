@@ -262,12 +262,23 @@ local closeButton = Instance.new("TextButton")
 closeButton.Size = UDim2.new(0, 28, 0, 28)
 closeButton.Position = UDim2.new(1, -36, 0, 8)
 closeButton.BackgroundColor3 = Color3.fromRGB(48, 54, 70)
-closeButton.Text = "✕"
-closeButton.TextColor3 = Color3.new(1, 1, 1)
-closeButton.Font = Enum.Font.GothamBold
-closeButton.TextSize = 16
+closeButton.Text = ""
 closeButton.BorderSizePixel = 0
 closeButton.Parent = detail
+
+-- X desenhado com duas barras cruzadas em vez do glifo "✕": nem toda fonte do
+-- Roblox tem esse caractere e ele saía como quadradinho de "não reconhecido"
+for _, angle in ipairs({ 45, -45 }) do
+	local bar = Instance.new("Frame")
+	bar.Name = "Bar"
+	bar.AnchorPoint = Vector2.new(0.5, 0.5)
+	bar.Position = UDim2.fromScale(0.5, 0.5)
+	bar.Size = UDim2.new(0, 14, 0, 2)
+	bar.BackgroundColor3 = Color3.fromRGB(235, 240, 250)
+	bar.BorderSizePixel = 0
+	bar.Rotation = angle
+	bar.Parent = closeButton
+end
 
 local closeCorner = Instance.new("UICorner")
 closeCorner.CornerRadius = UDim.new(0, 6)

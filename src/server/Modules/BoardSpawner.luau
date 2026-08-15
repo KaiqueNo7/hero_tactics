@@ -88,6 +88,224 @@ local function CreateHexTile(template, worldPos, color, hexId)
 	return clone
 end
 
+-- ===== CENÁRIO (TAVERNA) =====
+-- A câmera fica em +Z olhando pra -Z, acima do tabuleiro. Por isso a taverna
+-- não tem teto nem parede da frente: seria tudo entre a câmera e o jogo.
+-- É um diorama — três paredes, piso de tábuas e tralha nas bordas.
+local TAVERN_WALL_HEIGHT = 30
+local TAVERN_WALL_THICKNESS = 2
+local TAVERN_MARGIN_LEFT = 34 -- lado onde player e bonequin ficam de pé
+local TAVERN_MARGIN_RIGHT = 18
+local TAVERN_MARGIN_BACK = 18
+local TAVERN_MARGIN_FRONT = 24
+
+local WOOD_FLOOR = Color3.fromRGB(94, 62, 38)
+local WOOD_DARK = Color3.fromRGB(62, 41, 26)
+local WOOD_TRIM = Color3.fromRGB(126, 86, 50)
+local STONE_GREY = Color3.fromRGB(92, 88, 82)
+
+local function MakePart(props, parent)
+	local part = Instance.new("Part")
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+
+	for key, value in pairs(props) do
+		part[key] = value
+	end
+
+	part.Parent = parent
+	return part
+end
+
+-- Cilindro do Roblox nasce deitado no eixo X; girar 90° em Z põe ele de pé
+local function StandingCylinder(props, parent)
+	props.Shape = Enum.PartType.Cylinder
+	props.CFrame = props.CFrame * CFrame.Angles(0, 0, math.rad(90))
+	return MakePart(props, parent)
+end
+
+local function BuildBarrel(parent, position)
+	local height = 5.5
+	local base = CFrame.new(position + Vector3.new(0, height / 2, 0))
+
+	StandingCylinder({
+		Name = "Barrel",
+		Size = Vector3.new(height, 5, 5),
+		CFrame = base,
+		Color = WOOD_DARK,
+		Material = Enum.Material.WoodPlanks,
+	}, parent)
+
+	for _, offset in ipairs({ -1.4, 1.4 }) do
+		StandingCylinder({
+			Name = "BarrelRing",
+			Size = Vector3.new(0.7, 5.3, 5.3),
+			CFrame = base * CFrame.new(0, offset, 0),
+			Color = Color3.fromRGB(68, 60, 50),
+			Material = Enum.Material.Metal,
+		}, parent)
+	end
+end
+
+local function BuildTable(parent, position)
+	StandingCylinder({
+		Name = "TableTop",
+		Size = Vector3.new(0.9, 10, 10),
+		CFrame = CFrame.new(position + Vector3.new(0, 6.5, 0)),
+		Color = WOOD_TRIM,
+		Material = Enum.Material.Wood,
+	}, parent)
+
+	MakePart({
+		Name = "TableLeg",
+		Size = Vector3.new(1.6, 6.5, 1.6),
+		CFrame = CFrame.new(position + Vector3.new(0, 3.25, 0)),
+		Color = WOOD_DARK,
+		Material = Enum.Material.Wood,
+	}, parent)
+
+	MakePart({
+		Name = "TableFoot",
+		Size = Vector3.new(5, 0.6, 5),
+		CFrame = CFrame.new(position + Vector3.new(0, 0.3, 0)),
+		Color = WOOD_DARK,
+		Material = Enum.Material.Wood,
+	}, parent)
+end
+
+local function BuildTorch(parent, position, faceDirection)
+	MakePart({
+		Name = "TorchBracket",
+		Size = Vector3.new(0.8, 4, 0.8),
+		CFrame = CFrame.new(position),
+		Color = Color3.fromRGB(48, 44, 40),
+		Material = Enum.Material.Metal,
+	}, parent)
+
+	local flame = MakePart({
+		Name = "TorchFlame",
+		Shape = Enum.PartType.Ball,
+		Size = Vector3.new(1.8, 1.8, 1.8),
+		CFrame = CFrame.new(position + Vector3.new(0, 2.4, 0) + faceDirection * 0.4),
+		Color = Color3.fromRGB(255, 170, 70),
+		Material = Enum.Material.Neon,
+	}, parent)
+
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 176, 96)
+	light.Brightness = 2.4
+	light.Range = 34
+	light.Parent = flame
+
+	local fire = Instance.new("Fire")
+	fire.Heat = 4
+	fire.Size = 4
+	fire.Color = Color3.fromRGB(255, 180, 90)
+	fire.SecondaryColor = Color3.fromRGB(190, 90, 30)
+	fire.Parent = flame
+end
+
+local function BuildTavern(parent)
+	local folder = Instance.new("Folder")
+	folder.Name = "Tavern"
+	folder.Parent = parent
+
+	local minV, maxV = HexGrid.GetBoardBounds()
+	local floorY = ARENA_OFFSET.Y - 0.5 -- topo do piso encosta na base dos hexágonos
+
+	local minX = minV.X - TAVERN_MARGIN_LEFT
+	local maxX = maxV.X + TAVERN_MARGIN_RIGHT
+	local minZ = minV.Z - TAVERN_MARGIN_BACK
+	local maxZ = maxV.Z + TAVERN_MARGIN_FRONT
+
+	local width = maxX - minX
+	local depth = maxZ - minZ
+	local centerX = (minX + maxX) / 2
+	local centerZ = (minZ + maxZ) / 2
+
+	MakePart({
+		Name = "Floor",
+		Size = Vector3.new(width, 2, depth),
+		CFrame = CFrame.new(centerX, floorY - 1, centerZ),
+		Color = WOOD_FLOOR,
+		Material = Enum.Material.WoodPlanks,
+		CanCollide = true,
+	}, folder)
+
+	-- três paredes: fundo (-Z) e as duas laterais. A frente fica aberta.
+	local wallY = floorY + TAVERN_WALL_HEIGHT / 2
+	local walls = {
+		{ size = Vector3.new(width, TAVERN_WALL_HEIGHT, TAVERN_WALL_THICKNESS), position = Vector3.new(centerX, wallY, minZ) },
+		{ size = Vector3.new(TAVERN_WALL_THICKNESS, TAVERN_WALL_HEIGHT, depth), position = Vector3.new(minX, wallY, centerZ) },
+		{ size = Vector3.new(TAVERN_WALL_THICKNESS, TAVERN_WALL_HEIGHT, depth), position = Vector3.new(maxX, wallY, centerZ) },
+	}
+
+	for index, wall in ipairs(walls) do
+		MakePart({
+			Name = "Wall" .. index,
+			Size = wall.size,
+			CFrame = CFrame.new(wall.position),
+			Color = WOOD_DARK,
+			Material = Enum.Material.WoodPlanks,
+		}, folder)
+
+		-- rodapé de pedra, quebra a parede lisa
+		MakePart({
+			Name = "Baseboard" .. index,
+			Size = wall.size * Vector3.new(1, 0, 1) + Vector3.new(1, 7, 1),
+			CFrame = CFrame.new(wall.position * Vector3.new(1, 0, 1) + Vector3.new(0, floorY + 3.5, 0)),
+			Color = STONE_GREY,
+			Material = Enum.Material.Slate,
+		}, folder)
+	end
+
+	-- onde player e bonequin ficam de pé: nada de tralha em cima deles
+	local standZ = maxV.Z + GameConfig.PLAYER_STAND_BACK
+	local standX = minV.X - GameConfig.PLAYER_SIDE_MARGIN
+	local reserved = {
+		Vector2.new(standX, standZ),
+		Vector2.new(standX - GameConfig.BOT_DUMMY_GAP, standZ),
+	}
+
+	local function isBlocked(x, z)
+		for _, point in ipairs(reserved) do
+			if (Vector2.new(x, z) - point).Magnitude < 12 then return true end
+		end
+		-- nem sobre o tabuleiro
+		return x > minV.X - 4 and x < maxV.X + 4
+			and z > minV.Z - 4 and z < maxV.Z + 4
+	end
+
+	local spots = {}
+	for x = minX + 8, maxX - 8, 13 do
+		table.insert(spots, Vector2.new(x, minZ + 8))
+	end
+	for z = minZ + 20, maxZ - 10, 15 do
+		table.insert(spots, Vector2.new(maxX - 8, z))
+		table.insert(spots, Vector2.new(minX + 8, z))
+	end
+
+	for index, spot in ipairs(spots) do
+		if not isBlocked(spot.X, spot.Y) then
+			local position = Vector3.new(spot.X, floorY, spot.Y)
+			if index % 3 == 0 then
+				BuildTable(folder, position)
+			else
+				BuildBarrel(folder, position)
+			end
+		end
+	end
+
+	-- tochas na parede do fundo, que é a que aparece atrás do tabuleiro
+	for i = 1, 4 do
+		local x = minX + width * (i / 5)
+		BuildTorch(folder, Vector3.new(x, floorY + 14, minZ + 1.5), Vector3.new(0, 0, 1))
+	end
+
+	return folder
+end
+
 -- Bonequin parado ao lado do player, olhando pro tabuleiro (mesma fórmula
 -- de posicionamento que o CameraController usa pro player, deslocada).
 local function SpawnBotDummy(boardFolder, groundY)
@@ -150,6 +368,7 @@ function BoardSpawner.SpawnBoard()
 	print(("BoardSpawner: %d hexágonos, raio %.1f, tabuleiro %.0f x %.0f studs.")
 		:format(#allHexes, HEX_RADIUS, maxV.X - minV.X, maxV.Z - minV.Z))
 
+	BuildTavern(boardFolder)
 	SpawnBotDummy(boardFolder, ARENA_OFFSET.Y)
 
 	return boardFolder

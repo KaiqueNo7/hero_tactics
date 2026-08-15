@@ -14,6 +14,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
+local SoundService = game:GetService("SoundService")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
@@ -78,33 +79,40 @@ local TEXT_STYLES = {
 local sayQueue, sayRunning = {}, {}
 
 -- ===== SOM =====
-local function PlaySoundAt(anchor, template)
-	if not template or not anchor or not anchor.Parent then return end
+-- Sons de gameplay tocam em 2D (SoundService), não presos ao Part do herói.
+-- Motivo: a câmera fica travada a ~90 studs do tabuleiro, e som 3D com
+-- EmitterSize padrão (10) cairia pra ~10% do volume nessa distância.
+local function PlaySound(name, volumeScale)
+	local template = Sounds:FindFirstChild(name)
+	if not template then return end
+
 	local sound = template:Clone()
-	sound.Parent = anchor
+	sound.Volume = template.Volume * (volumeScale or 1)
+	sound.Parent = SoundService
 	sound:Play()
 	Debris:AddItem(sound, (sound.TimeLength > 0 and sound.TimeLength or 5) + 0.5)
 end
 
+HeroView.PlaySound = PlaySound
+
 function HeroView.PlayGlobalSound(name)
-	local template = Sounds:FindFirstChild(name)
-	if not template then return end
-	local sound = template:Clone()
-	sound.Parent = Workspace
-	sound:Play()
-	Debris:AddItem(sound, (sound.TimeLength > 0 and sound.TimeLength or 6) + 0.5)
+	PlaySound(name)
 end
 
 function HeroView.PlayAttackSound(hero)
 	if hero.name == "Blade" then
-		PlaySoundAt(hero.part, Sounds:FindFirstChild("SwordSwing"))
+		PlaySound("SwordSwing")
 	elseif table.find(hero.abilities, "poisonAttack") then
-		PlaySoundAt(hero.part, Sounds:FindFirstChild("PoisonHiss"))
+		PlaySound("PoisonHiss")
 	end
 end
 
 function HeroView.PlayHealSound(hero)
-	PlaySoundAt(hero.part, Sounds:FindFirstChild("Heal"))
+	PlaySound("Heal")
+end
+
+function HeroView.PlayPlaceSound()
+	PlaySound("HeroPlace")
 end
 
 -- Bolinha de energia viajando do atacante até o alvo + reticícula no impacto,
@@ -489,7 +497,7 @@ function HeroView.WalkPath(hero, path)
 			{ CFrame = AnchorCFrame(hexId) }
 		)
 		tween:Play()
-		PlaySoundAt(hero.part, Sounds:FindFirstChild("FootstepWood"))
+		PlaySound("FootstepWood")
 		task.wait(MOVE_STEP_TIME)
 	end
 end
@@ -508,7 +516,10 @@ function HeroView.PlayAnimation(hero, animationName)
 			image.ImageColor3 = Color3.fromRGB(255, 110, 110)
 			TweenService:Create(image, TweenInfo.new(0.35), { ImageColor3 = Color3.new(1, 1, 1) }):Play()
 		end
-		PlaySoundAt(hero.part, Sounds:FindFirstChild("Hit"))
+		PlaySound("Hit")
+
+	elseif animationName == "die" then
+		PlaySound("HeroDeath")
 
 	elseif animationName == "attack" then
 		local base = hero.part.CFrame
