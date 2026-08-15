@@ -427,12 +427,13 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		secondsLeft = nil
 		wasMyTurn = false
 
+		-- o servidor já manda o resultado do ponto de vista de quem recebe
 		if state.winner == "draw" then
 			resultLabel.Text = "Empate"
 			resultLabel.TextColor3 = Color3.fromRGB(215, 215, 225)
 		else
-			resultLabel.Text = state.winner == "player" and "Vitória!" or "Derrota"
-			resultLabel.TextColor3 = state.winner == "player"
+			resultLabel.Text = state.winner == "win" and "Vitória!" or "Derrota"
+			resultLabel.TextColor3 = state.winner == "win"
 				and Color3.fromRGB(130, 230, 150) or Color3.fromRGB(230, 120, 120)
 		end
 
@@ -440,7 +441,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		-- pra revanche não empilhar dois toques
 		if not resultPlayed then
 			resultPlayed = true
-			PlayUiSound(state.winner == "player" and "Victory" or "Defeat")
+			PlayUiSound(state.winner == "win" and "Victory" or "Defeat")
 		end
 
 		clearHighlights()

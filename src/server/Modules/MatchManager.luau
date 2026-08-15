@@ -5,6 +5,11 @@
 	Estado autoritativo da partida: draft alternado (1,2,1,2), movimento,
 	combate, skills, turnos cronometrados e revanche.
 
+	A partida tem sempre DOIS lados. O lado 2 pode ser um bot (partida solo)
+	ou outro jogador (PvP) — o resto do módulo não faz distinção, só olha
+	`side.isBot` na hora de decidir quem joga sozinho. Cada jogador recebe seu
+	próprio snapshot, com `isMine`/`isMyTurn`/`winner` já do ponto de vista dele.
+
 	Não desenha nada: toda a apresentação está no HeroView. Este módulo só
 	decide o que aconteceu e manda o HeroView mostrar.
 ]]
@@ -28,7 +33,6 @@ local UpdateHeroVisual = HeroView.UpdateStats
 local Say = HeroView.Say
 
 -- ===== AJUSTE FINO =====
-local DEPLOY_ROWS = 2
 local BOT_ACTION_DELAY = 0.7
 local COUNTER_ATTACK_DELAY = 0.4
 
@@ -38,31 +42,44 @@ local match = nil
 local turnToken = 0
 local SkillApi
 
+-- declaradas cedo porque se chamam entre si
+local BeginTurn, BotPlayTurn, BotPlaceOne, AdvancePlacement
+
 -- ===================== ZONAS =====================
 -- Casas de largada fixas, uma por coluna, na primeira fileira de cada lado.
-local PLAYER_1 = { "A6", "B7", "C6", "D7", "E6" }
-local PLAYER_2 = { "A1", "B1", "C1", "D1", "E1" }
+local DEPLOY_ZONES = {
+	{ "A6", "B7", "C6", "D7", "E6" },
+	{ "A1", "B1", "C1", "D1", "E1" },
+}
 
-local function BuildDeployZones()
-	local playerZone, botZone = {}, {}
-
-	for _, hexId in ipairs(PLAYER_1) do
+local function BuildDeployZone(hexIds)
+	local zone = {}
+	for _, hexId in ipairs(hexIds) do
 		if HexGrid.GetHex(hexId) then
-			table.insert(playerZone, hexId)
+			table.insert(zone, hexId)
 		else
 			warn("MatchManager: hex de largada inexistente: " .. hexId)
 		end
 	end
+	return zone
+end
 
-	for _, hexId in ipairs(PLAYER_2) do
-		if HexGrid.GetHex(hexId) then
-			table.insert(botZone, hexId)
-		else
-			warn("MatchManager: hex de largada inexistente: " .. hexId)
-		end
+-- ===================== LADOS =====================
+local function SideOf(ownerId)
+	local index = match.sideIndexById[ownerId]
+	return index and match.sides[index] or nil
+end
+
+local function OpponentSide(ownerId)
+	local index = match.sideIndexById[ownerId]
+	return match.sides[index == 1 and 2 or 1]
+end
+
+local function SideOfPlayer(player)
+	for _, side in ipairs(match.sides) do
+		if side.player == player then return side end
 	end
-
-	return playerZone, botZone
+	return nil
 end
 
 -- ===================== CONSULTAS =====================
@@ -239,6 +256,7 @@ SkillApi = {
 	FindStatusEffect = FindStatusEffect,
 	ApplyStatusEffect = ApplyStatusEffect,
 	ClearStatusEffects = ClearStatusEffects,
+	PlaySkillSound = HeroView.PlaySkillSound,
 	Say = Say,
 }
 
@@ -249,7 +267,12 @@ local function TurnSecondsLeft()
 	return math.max(0, math.floor(GameConfig.TURN_TIME_LIMIT - elapsed))
 end
 
-local function Snapshot()
+-- O estado é montado por espectador: quem olha precisa saber o que é dele,
+-- não quem é "o player" e quem é "o bot".
+local function Snapshot(viewerId)
+	local viewerSide = SideOf(viewerId)
+	local opponent = OpponentSide(viewerId)
+
 	local heroes = {}
 	for _, hero in pairs(match.heroes) do
 		table.insert(heroes, {
@@ -264,34 +287,47 @@ local function Snapshot()
 			attackRange = hero.attackRange,
 			moveRange = hero.moveRange,
 			isAlive = hero.isAlive,
-			isMine = hero.ownerId ~= BOT_ID,
+			isMine = hero.ownerId == viewerId,
 			hasMoved = match.turn and match.turn.moved[hero.uid] or false,
 			hasAttacked = match.turn and match.turn.attacked[hero.uid] or false,
 		})
 	end
 
+	local winner = nil
+	if match.winner == "draw" then
+		winner = "draw"
+	elseif match.winner then
+		winner = (match.winner == viewerId) and "win" or "loss"
+	end
+
 	return {
 		phase = match.phase,
-		deployZone = match.playerZone,
-		placedCount = match.placedCount,
-		botPlacedCount = match.botPlacedCount,
-		placementOwner = match.placementOwner,
+		deployZone = viewerSide.zone,
+		placedCount = viewerSide.placedCount,
+		opponentPlacedCount = opponent.placedCount,
+		isMyPlacement = match.sides[match.placementSide].id == viewerId,
 		heroesPerPlayer = GameConfig.HEROES_PER_PLAYER,
 		usedHeroIds = match.usedHeroIds,
 		heroes = heroes,
 		turnNumber = match.turn and match.turn.number or 0,
-		isMyTurn = match.turn and match.turn.ownerId == match.playerId or false,
+		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,
 		turnSecondsLeft = TurnSecondsLeft(),
 		turnTimeLimit = GameConfig.TURN_TIME_LIMIT,
 		suddenDeath = match.turn and match.turn.number >= GameConfig.SUDDEN_DEATH_START_TURN or false,
-		winner = match.winner,
+		winner = winner,
 		message = match.message,
+		vsBot = match.vsBot,
+		opponentName = opponent.player and opponent.player.DisplayName or "Bot",
 	}
 end
 
 local function Broadcast(message)
 	match.message = message
-	MatchUpdate:FireClient(match.player, Snapshot())
+	for _, side in ipairs(match.sides) do
+		if side.player then
+			MatchUpdate:FireClient(side.player, Snapshot(side.id))
+		end
+	end
 	match.message = nil
 end
 
@@ -305,6 +341,7 @@ local function CreateHero(dataId, ownerId, hexId)
 		dataId = dataId,
 		name = data.name,
 		ownerId = ownerId,
+		sideIndex = SideOf(ownerId).index, -- 1 = azul, 2 = vermelho (o HeroView pinta)
 		baseAttack = data.attack,
 		attack = data.attack,
 		maxHp = data.hp,
@@ -329,24 +366,18 @@ end
 
 -- ===================== FIM DE JOGO =====================
 local function CheckGameOver()
-	local playerAlive = #LivingHeroesOf(match.playerId)
-	local botAlive = #LivingHeroesOf(BOT_ID)
+	local aliveOne = #LivingHeroesOf(match.sides[1].id)
+	local aliveTwo = #LivingHeroesOf(match.sides[2].id)
 
-	if playerAlive == 0 or botAlive == 0 then
-		match.phase = "finished"
-		if playerAlive == 0 and botAlive == 0 then
-			match.winner = "draw"
-		else
-			match.winner = (botAlive == 0) and "player" or "bot"
-		end
-		return true
+	if aliveOne > 0 and aliveTwo > 0 then return false end
+
+	match.phase = "finished"
+	if aliveOne == 0 and aliveTwo == 0 then
+		match.winner = "draw"
+	else
+		match.winner = (aliveTwo == 0) and match.sides[1].id or match.sides[2].id
 	end
-	return false
-end
-
-local function ResultMessage()
-	if match.winner == "draw" then return "Empate!" end
-	return match.winner == "player" and "Você venceu!" or "Você perdeu!"
+	return true
 end
 
 -- ===================== COMBATE =====================
@@ -626,9 +657,7 @@ local function PlanFor(hero, enemies)
 end
 
 -- ===================== TURNOS =====================
-local BeginTurn
-
-local function BotPlayTurn()
+function BotPlayTurn(botId)
 	task.spawn(function()
 		task.wait(BOT_ACTION_DELAY)
 
@@ -637,13 +666,13 @@ local function BotPlayTurn()
 		local resolved = {}
 
 		for _ = 1, GameConfig.HEROES_PER_PLAYER * 2 do
-			if not match or match.phase ~= "battle" or match.turn.ownerId ~= BOT_ID then return end
+			if not match or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
 
-			local enemies = LivingHeroesOf(match.playerId)
+			local enemies = LivingHeroesOf(OpponentSide(botId).id)
 			if #enemies == 0 then break end
 
 			local best = nil
-			for _, hero in ipairs(LivingHeroesOf(BOT_ID)) do
+			for _, hero in ipairs(LivingHeroesOf(botId)) do
 				if not resolved[hero.uid] then
 					local plan = PlanFor(hero, enemies)
 					if plan and (not best or plan.score > best.score) then
@@ -659,7 +688,7 @@ local function BotPlayTurn()
 				task.wait(BOT_ACTION_DELAY)
 			end
 
-			if not match or match.phase ~= "battle" or match.turn.ownerId ~= BOT_ID then return end
+			if not match or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
 
 			if best.target and best.target.isAlive and best.hero.isAlive then
 				MatchManager.AttackHero(nil, best.hero.uid, best.target.uid)
@@ -670,7 +699,7 @@ local function BotPlayTurn()
 			end
 		end
 
-		if match and match.phase == "battle" and match.turn.ownerId == BOT_ID then
+		if match and match.phase == "battle" and match.turn.ownerId == botId then
 			MatchManager.EndTurn(nil)
 		end
 	end)
@@ -712,7 +741,7 @@ function BeginTurn(ownerId, number)
 	end
 
 	if CheckGameOver() then
-		Broadcast(ResultMessage())
+		Broadcast()
 		return
 	end
 
@@ -737,15 +766,17 @@ function BeginTurn(ownerId, number)
 		end)
 	end
 
-	if ownerId == BOT_ID then
-		BotPlayTurn()
+	if SideOf(ownerId).isBot then
+		BotPlayTurn(ownerId)
 	end
 end
 
 function MatchManager.EndTurn(player)
 	if not match or match.phase ~= "battle" then return end
 	if match.busy then return end
-	if player and (match.player ~= player or match.turn.ownerId ~= match.playerId) then return end
+
+	local currentSide = SideOf(match.turn.ownerId)
+	if player and currentSide.player ~= player then return end
 
 	-- fim de turno de quem está encerrando: veneno primeiro, depois skills
 	local endingOwner = match.turn.ownerId
@@ -759,12 +790,12 @@ function MatchManager.EndTurn(player)
 	end
 
 	if CheckGameOver() then
-		Broadcast(ResultMessage())
+		Broadcast()
 		return
 	end
 
 	local wasStarter = (endingOwner == match.starterId)
-	local nextOwner = (endingOwner == match.playerId) and BOT_ID or match.playerId
+	local nextOwner = OpponentSide(endingOwner).id
 	local nextNumber = match.turn.number + (wasStarter and 0 or 1)
 
 	BeginTurn(nextOwner, nextNumber)
@@ -778,10 +809,7 @@ local function AuthorizeAction(player, hero)
 	if not hero or not hero.isAlive then return false end
 	if hero.ownerId ~= match.turn.ownerId then return false end
 
-	if player then
-		if match.player ~= player then return false end
-		if match.turn.ownerId ~= match.playerId then return false end
-	end
+	if player and SideOf(match.turn.ownerId).player ~= player then return false end
 	return true
 end
 
@@ -865,7 +893,7 @@ function MatchManager.AttackHero(player, attackerUid, targetUid)
 	end
 
 	if CheckGameOver() then
-		Broadcast(ResultMessage())
+		Broadcast()
 		return
 	end
 
@@ -893,17 +921,6 @@ local function FreeHexesIn(zone)
 	return free
 end
 
-local function StartBattleIfReady()
-	if match.placedCount >= GameConfig.HEROES_PER_PLAYER
-		and match.botPlacedCount >= GameConfig.HEROES_PER_PLAYER then
-		match.phase = "battle"
-		print("MatchManager: draft concluído, combate começou.")
-		BeginTurn(match.starterId, 1)
-		return true
-	end
-	return false
-end
-
 -- Ordem de escolha do bot no draft: tanque que se cura, curandeira, e depois
 -- os que fazem mais estrago. Melhor que sortear — o time sai com uma função
 -- definida em vez de três heróis aleatórios.
@@ -918,11 +935,11 @@ end
 
 -- Tanque no meio da fileira (trava a passagem), ranged nas pontas (fica longe
 -- do aperto), o resto preenche do centro pra fora.
-local function BotPickHex(data, free)
-	local center = (#match.botZone + 1) / 2
+local function BotPickHex(data, zone, free)
+	local center = (#zone + 1) / 2
 
 	local function offsetFromCenter(hexId)
-		local index = table.find(match.botZone, hexId)
+		local index = table.find(zone, hexId)
 		return index and math.abs(index - center) or 0
 	end
 
@@ -936,68 +953,115 @@ local function BotPickHex(data, free)
 	return free[1]
 end
 
-local function BotPlaceOne()
+local function AllPlaced()
+	for _, side in ipairs(match.sides) do
+		if side.placedCount < GameConfig.HEROES_PER_PLAYER then return false end
+	end
+	return true
+end
+
+function AdvancePlacement()
+	if AllPlaced() then
+		match.phase = "battle"
+		print("MatchManager: draft concluído, combate começou.")
+		BeginTurn(match.starterId, 1)
+		return
+	end
+
+	-- passa a vez, mas pula quem já completou o time
+	local nextIndex = (match.placementSide == 1) and 2 or 1
+	if match.sides[nextIndex].placedCount >= GameConfig.HEROES_PER_PLAYER then
+		nextIndex = match.placementSide
+	end
+	match.placementSide = nextIndex
+
+	Broadcast()
+
+	if match.sides[nextIndex].isBot then
+		task.delay(GameConfig.BOT_PLACE_DELAY, BotPlaceOne)
+	end
+end
+
+function BotPlaceOne()
 	if not match or match.phase ~= "placement" then return end
 
+	local side = match.sides[match.placementSide]
+	if not side.isBot then return end
+
 	local available = AvailableHeroIds()
-	local free = FreeHexesIn(match.botZone)
+	local free = FreeHexesIn(side.zone)
 
 	if #available > 0 and #free > 0 then
 		local dataId = BotPickHeroId(available)
-		local hexId = BotPickHex(HeroData.GetById(dataId), free)
-		CreateHero(dataId, BOT_ID, hexId)
+		local hexId = BotPickHex(HeroData.GetById(dataId), side.zone, free)
+		CreateHero(dataId, side.id, hexId)
 		match.usedHeroIds[dataId] = true
-		match.botPlacedCount += 1
+		side.placedCount += 1
 	end
 
-	if StartBattleIfReady() then return end
-
-	match.placementOwner = "player"
-	Broadcast()
+	AdvancePlacement()
 end
 
 function MatchManager.PlaceHero(player, dataId, hexId)
-	if not match or match.player ~= player then return end
-	if match.phase ~= "placement" then return end
-	if match.placementOwner ~= "player" then return end
-	if match.placedCount >= GameConfig.HEROES_PER_PLAYER then return end
+	if not match or match.phase ~= "placement" then return end
+
+	local side = match.sides[match.placementSide]
+	if side.player ~= player then return end
+	if side.placedCount >= GameConfig.HEROES_PER_PLAYER then return end
 	if type(dataId) ~= "number" or type(hexId) ~= "string" then return end
 	if not HeroData.GetById(dataId) then return end
 	if match.usedHeroIds[dataId] then return end
-	if not table.find(match.playerZone, hexId) then return end
+	if not table.find(side.zone, hexId) then return end
 	if not HexGrid.IsFree(hexId) then return end
 
-	CreateHero(dataId, match.playerId, hexId)
+	CreateHero(dataId, side.id, hexId)
 	match.usedHeroIds[dataId] = true
-	match.placedCount += 1
+	side.placedCount += 1
 
-	if StartBattleIfReady() then return end
-
-	match.placementOwner = "bot"
-	Broadcast()
-
-	task.delay(GameConfig.BOT_PLACE_DELAY, BotPlaceOne)
+	AdvancePlacement()
 end
 
 -- ===================== CICLO DA PARTIDA =====================
-function MatchManager.StartMatch(player)
+-- playerTwo == nil monta uma partida contra o bot
+function MatchManager.StartMatch(playerOne, playerTwo)
+	if not playerOne then return end
+
 	-- regenera o grid pra zerar ocupação (essencial na revanche)
 	HexGrid.Generate()
 
-	local playerZone, botZone = BuildDeployZones()
+	local sides = {
+		{
+			index = 1,
+			id = tostring(playerOne.UserId),
+			player = playerOne,
+			isBot = false,
+			zone = BuildDeployZone(DEPLOY_ZONES[1]),
+			placedCount = 0,
+		},
+		{
+			index = 2,
+			id = playerTwo and tostring(playerTwo.UserId) or BOT_ID,
+			player = playerTwo,
+			isBot = playerTwo == nil,
+			zone = BuildDeployZone(DEPLOY_ZONES[2]),
+			placedCount = 0,
+		},
+	}
+
+	local sideIndexById = {}
+	for index, side in ipairs(sides) do
+		sideIndexById[side.id] = index
+	end
 
 	match = {
-		player = player,
-		playerId = tostring(player.UserId),
-		starterId = tostring(player.UserId), -- o player sempre começa
+		sides = sides,
+		sideIndexById = sideIndexById,
+		vsBot = playerTwo == nil,
 		phase = "placement",
 		heroes = {},
-		playerZone = playerZone,
-		botZone = botZone,
 		usedHeroIds = {},
-		placedCount = 0,
-		botPlacedCount = 0,
-		placementOwner = "player", -- player escolhe primeiro: 1,2,1,2...
+		placementSide = 1, -- lado 1 escolhe primeiro: 1,2,1,2...
+		starterId = sides[1].id,
 		turn = nil,
 		winner = nil,
 		busy = false,
@@ -1007,25 +1071,59 @@ function MatchManager.StartMatch(player)
 	HeroView.PlayGlobalSound("MatchStart")
 
 	Broadcast()
-	print(("MatchManager: draft iniciado. Zona do player: %d hexes."):format(#playerZone))
+	print(("MatchManager: draft iniciado (%s)."):format(playerTwo and "PvP" or "vs bot"))
 end
 
 function MatchManager.Replay(player)
-	if not match or match.player ~= player then return end
-	if match.phase ~= "finished" then return end
-	MatchManager.StartMatch(player)
+	if not match or match.phase ~= "finished" then return end
+	if not SideOfPlayer(player) then return end
+
+	local playerOne = match.sides[1].player
+	local playerTwo = match.sides[2].player
+
+	-- se o dono do lado 1 saiu, quem sobrou reassume como lado 1
+	if not playerOne then
+		playerOne, playerTwo = playerTwo, nil
+	end
+	if not playerOne then return end
+
+	MatchManager.StartMatch(playerOne, playerTwo)
 end
 
-function MatchManager.LeaveMatch(player)
-	if not match or match.player ~= player then return end
-
+local function EndMatch()
 	HeroView.ClearAll()
 
 	local board = Workspace:FindFirstChild("Board")
 	if board then board:Destroy() end
 
-	MatchUpdate:FireClient(player, { phase = "lobby" })
+	for _, side in ipairs(match.sides) do
+		if side.player then
+			MatchUpdate:FireClient(side.player, { phase = "lobby" })
+		end
+	end
+
 	match = nil
+end
+
+function MatchManager.LeaveMatch(player)
+	if not match or not SideOfPlayer(player) then return end
+	EndMatch()
+end
+
+-- Um jogador caiu no meio da partida: encerra pra todo mundo em vez de deixar
+-- o outro preso esperando um turno que nunca vem.
+function MatchManager.HandlePlayerLeft(player)
+	if not match then return end
+
+	local side = SideOfPlayer(player)
+	if not side then return end
+
+	side.player = nil
+	EndMatch()
+end
+
+function MatchManager.IsActive()
+	return match ~= nil
 end
 
 function MatchManager.GetMatch()

@@ -353,7 +353,7 @@ end
 
 local function highlightDeployZone()
 	clearHighlights()
-	if not currentState or currentState.placementOwner ~= "player" then return end
+	if not currentState or not currentState.isMyPlacement then return end
 
 	local occupied = {}
 	for _, hero in ipairs(currentState.heroes) do
@@ -429,7 +429,7 @@ local function finishDrag()
 end
 
 local function startDrag(data, startPosition)
-	if not currentState or currentState.placementOwner ~= "player" then return end
+	if not currentState or not currentState.isMyPlacement then return end
 	if currentState.usedHeroIds[data.id] or currentState.usedHeroIds[tostring(data.id)] then return end
 
 	PlayUiSound("HeroSelect")
@@ -487,12 +487,12 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 
 	gui.Enabled = true
 
-	local myTurn = state.placementOwner == "player"
+	local myTurn = state.isMyPlacement
 	if myTurn then
 		title.Text = ("Sua vez  —  %d/%d posicionados"):format(state.placedCount, state.heroesPerPlayer)
 		title.TextColor3 = Color3.new(1, 1, 1)
 	else
-		title.Text = "Adversário escolhendo..."
+		title.Text = ("%s escolhendo..."):format(state.opponentName or "Adversário")
 		title.TextColor3 = Color3.fromRGB(255, 175, 175)
 	end
 

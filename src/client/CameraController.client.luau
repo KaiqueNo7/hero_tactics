@@ -29,11 +29,6 @@ local AZIMUTH = 13
 local DEFAULT_DISTANCE = 89
 local FRAMING = 1.12
 
--- ===== POSIÇÃO DO PERSONAGEM =====
--- Compartilhado com GameConfig pra ficar em sincronia com o bonequin do bot (BoardSpawner)
-local PLAYER_SIDE_MARGIN = GameConfig.PLAYER_SIDE_MARGIN
-local PLAYER_STAND_BACK = GameConfig.PLAYER_STAND_BACK
-
 -- ===== ZOOM =====
 local ZOOM_STEP = 5
 local ZOOM_MIN_FACTOR, ZOOM_MAX_FACTOR = 0.45, 1.8
@@ -230,7 +225,9 @@ local function returnToLobby()
 	end
 end
 
-local function activateBoardCamera(hexSize, boardOffset)
+-- slot 1 ou 2: define de que lado do tabuleiro o personagem fica de pé.
+-- A câmera é a MESMA pros dois lados — o tabuleiro não espelha.
+local function activateBoardCamera(hexSize, boardOffset, slot)
 	if activated then return end
 	activated = true
 
@@ -256,11 +253,7 @@ local function activateBoardCamera(hexSize, boardOffset)
 	maxRadius = baseRadius * ZOOM_MAX_FACTOR
 
 	local groundY = boardOffset.Y
-	local standPos = Vector3.new(
-		minV.X - PLAYER_SIDE_MARGIN,
-		groundY + 3.5,
-		maxV.Z + PLAYER_STAND_BACK
-	)
+	local standPos = HexGrid.GetStandPosition(slot or 1, groundY + 3.5)
 	local lookAt = Vector3.new(boardCenter.X, standPos.Y, boardCenter.Z)
 
 	buildStandPlatform(standPos, groundY)

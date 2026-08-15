@@ -35,10 +35,11 @@ GameConfig.TURN_TIME_LIMIT = 60 -- segundos por turno; 0 desliga o cronômetro
 GameConfig.BOT_PLACE_DELAY = 0.8 -- pausa antes do bot escolher, pra dar pra acompanhar
 
 -- ===== POSICIONAMENTO AO LADO DO TABULEIRO =====
--- Compartilhado entre CameraController (client, posiciona o player) e
--- BoardSpawner (server, posiciona o bonequin do bot) pra ficarem lado a lado.
-GameConfig.PLAYER_SIDE_MARGIN = 6
-GameConfig.PLAYER_STAND_BACK = 5
-GameConfig.BOT_DUMMY_GAP = 9 -- distância do bonequin em relação ao player
+-- Os dois competidores ficam à esquerda do tabuleiro (-X), lado a lado no eixo
+-- Z, olhando pra arena. Usado pelo CameraController (posiciona o jogador local)
+-- e pelo BoardSpawner (posiciona o bonequin do bot). A conta em si mora no
+-- HexGrid.GetStandPosition pra não divergir entre client e server.
+GameConfig.PLAYER_SIDE_MARGIN = 9 -- distância à esquerda da borda do tabuleiro
+GameConfig.PLAYER_STAND_SPACING = 7 -- distância entre os dois competidores
 
 return GameConfig

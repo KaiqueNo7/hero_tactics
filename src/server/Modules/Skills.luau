@@ -61,6 +61,7 @@ Skills.brokenDefense = {
 		local amount = ctx.hero.attack
 		if ctx.target.ability == GameConfig.ABILITIES.TAUNT then
 			amount += 1
+			ctx.api.PlaySkillSound("brokenDefense")
 			ctx.api.Say(ctx.hero, "Dano extra!")
 		end
 		ctx.api.ApplyDamage(ctx.target, amount, ctx.hero, ctx.isCounterAttack)
@@ -106,6 +107,7 @@ Skills.goodLuck = {
 	triggers = { "onTurnEnd" },
 	apply = function(ctx)
 		if math.random() < GameConfig.GOOD_LUCK_CHANCE then
+			ctx.api.PlaySkillSound("goodLuck")
 			ctx.api.IncreaseAttack(ctx.hero, 1)
 			ctx.api.Say(ctx.hero, "Ouro!")
 		else
@@ -158,6 +160,7 @@ Skills.aloneIsBetter = {
 		local targetAllies = ctx.api.GetAlliesInRange(ctx.target, 1)
 
 		if #targetAllies == 0 then
+			ctx.api.PlaySkillSound("aloneIsBetter")
 			ctx.api.Say(ctx.hero, "Muahauhauhaua!")
 			ctx.api.ApplyDamage(ctx.target, ctx.hero.attack * 2, ctx.hero, ctx.isCounterAttack)
 			ctx.damageApplied = true

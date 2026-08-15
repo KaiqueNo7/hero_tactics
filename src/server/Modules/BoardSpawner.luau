@@ -260,13 +260,12 @@ local function BuildTavern(parent)
 		}, folder)
 	end
 
-	-- onde player e bonequin ficam de pé: nada de tralha em cima deles
-	local standZ = maxV.Z + GameConfig.PLAYER_STAND_BACK
-	local standX = minV.X - GameConfig.PLAYER_SIDE_MARGIN
-	local reserved = {
-		Vector2.new(standX, standZ),
-		Vector2.new(standX - GameConfig.BOT_DUMMY_GAP, standZ),
-	}
+	-- onde os dois competidores ficam de pé: nada de tralha em cima deles
+	local reserved = {}
+	for slot = 1, 2 do
+		local stand = HexGrid.GetStandPosition(slot, floorY)
+		table.insert(reserved, Vector2.new(stand.X, stand.Z))
+	end
 
 	local function isBlocked(x, z)
 		for _, point in ipairs(reserved) do
@@ -306,22 +305,15 @@ local function BuildTavern(parent)
 	return folder
 end
 
--- Bonequin parado ao lado do player, olhando pro tabuleiro (mesma fórmula
--- de posicionamento que o CameraController usa pro player, deslocada).
+-- Bonequin do bot no slot 2, ao lado do jogador. Em PvP o slot 2 é o outro
+-- jogador de verdade, então o bonequin nem é criado.
 local function SpawnBotDummy(boardFolder, groundY)
 	local template = ReplicatedStorage:FindFirstChild("BotDummyTemplate")
 	local source = template and template:FindFirstChildWhichIsA("Model")
 	if not source then return end
 
-	local minV, maxV = HexGrid.GetBoardBounds()
 	local boardCenter = HexGrid.GetBoardCenter()
-
-	local standPos = Vector3.new(
-		minV.X - GameConfig.PLAYER_SIDE_MARGIN,
-		groundY + 3,
-		maxV.Z + GameConfig.PLAYER_STAND_BACK
-	)
-	local dummyPos = standPos - Vector3.new(GameConfig.BOT_DUMMY_GAP, 0, 0)
+	local dummyPos = HexGrid.GetStandPosition(2, groundY + 3)
 	local lookAt = Vector3.new(boardCenter.X, dummyPos.Y, boardCenter.Z)
 
 	local dummy = source:Clone()
@@ -339,7 +331,8 @@ local function SpawnBotDummy(boardFolder, groundY)
 	dummy.Parent = boardFolder
 end
 
-function BoardSpawner.SpawnBoard()
+-- withBotDummy = false nas partidas PvP, onde o slot 2 é um jogador de verdade
+function BoardSpawner.SpawnBoard(withBotDummy)
 	local template = ReplicatedStorage:FindFirstChild("HexTile")
 	if not template then
 		error("BoardSpawner: não encontrei 'HexTile' em ReplicatedStorage. Confira o nome exato.")
@@ -369,7 +362,9 @@ function BoardSpawner.SpawnBoard()
 		:format(#allHexes, HEX_RADIUS, maxV.X - minV.X, maxV.Z - minV.Z))
 
 	BuildTavern(boardFolder)
-	SpawnBotDummy(boardFolder, ARENA_OFFSET.Y)
+	if withBotDummy then
+		SpawnBotDummy(boardFolder, ARENA_OFFSET.Y)
+	end
 
 	return boardFolder
 end

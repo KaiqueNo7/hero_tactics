@@ -11,6 +11,8 @@
 	  Phaser: colunas ímpares -= hexHeight/2 (e 7 casas) -> aqui: offsetToAxial
 ]]
 
+local GameConfig = require(script.Parent.GameConfig)
+
 local HexGrid = {}
 
 -- ===== CONFIGURAÇÃO =====
@@ -184,6 +186,21 @@ end
 function HexGrid.GetBoardCenter()
 	local minV, maxV = HexGrid.GetBoardBounds()
 	return (minV + maxV) / 2
+end
+
+-- Onde cada competidor fica de pé: os dois à esquerda do tabuleiro, lado a
+-- lado. Slot 1 fica mais ao fundo (-Z), slot 2 à frente. Client e server
+-- chamam a mesma função pra não haver divergência de posição.
+function HexGrid.GetStandPosition(slot, groundY)
+	local minV = HexGrid.GetBoardBounds()
+	local center = HexGrid.GetBoardCenter()
+	local half = GameConfig.PLAYER_STAND_SPACING / 2
+
+	return Vector3.new(
+		minV.X - GameConfig.PLAYER_SIDE_MARGIN,
+		groundY,
+		center.Z + ((slot == 2) and half or -half)
+	)
 end
 
 -- BFS de alcance. Atravessa apenas casas livres, mas REGISTRA as ocupadas

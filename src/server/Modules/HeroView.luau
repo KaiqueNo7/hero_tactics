@@ -115,6 +115,19 @@ function HeroView.PlayPlaceSound()
 	PlaySound("HeroPlace")
 end
 
+-- Habilidades que ganharam som próprio. A skill chama isso só quando o efeito
+-- realmente acontece (o goodLuck, por exemplo, não toca quando dá "Nada...").
+local SKILL_SOUNDS = {
+	goodLuck = "SkillGoodLuck",
+	aloneIsBetter = "SkillAlone",
+	brokenDefense = "SkillBrokenDefense",
+}
+
+function HeroView.PlaySkillSound(key)
+	local name = SKILL_SOUNDS[key]
+	if name then PlaySound(name) end
+end
+
 -- Bolinha de energia viajando do atacante até o alvo + reticícula no impacto,
 -- pra deixar ataques à distância (Ranged) mais perceptíveis.
 function HeroView.ShowRangedAttack(attacker, target)
@@ -186,8 +199,10 @@ local function AnchorCFrame(hexId)
 	return GroundCFrame(hexId) * CFrame.new(0, ANCHOR_LIFT, 0)
 end
 
+-- A cor vem do lado (1 = azul, 2 = vermelho), não de "é o bot?": em PvP os
+-- dois lados são jogadores e a câmera é a mesma pros dois.
 local function TeamColor(hero)
-	return hero.ownerId == BOT_ID and TEAM_COLOR_PLAYER_2 or TEAM_COLOR_PLAYER_1
+	return hero.sideIndex == 2 and TEAM_COLOR_PLAYER_2 or TEAM_COLOR_PLAYER_1
 end
 
 -- Pendura uma parte na âncora: sem Anchored e presa por WeldConstraint,
