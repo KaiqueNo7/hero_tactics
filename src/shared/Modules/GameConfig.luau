@@ -46,7 +46,15 @@ GameConfig.PLAYER_STAND_SPACING = 7 -- distância entre os dois competidores
 -- Cada partida ocupa uma arena própria, lado a lado no eixo X. A taverna mede
 -- ~100 studs de largura, então 200 de espaçamento deixa um corredor vazio entre
 -- elas — nem a luz das tochas (Range 34) alcança a vizinha.
-GameConfig.ARENA_ORIGIN = Vector3.new(300, 0, 300)
+-- O Y não é zero porque a taverna foi levantada para ~660 studs no place, longe
+-- do lobby. A conta que amarra os dois: o BoardSpawner encosta o topo do piso da
+-- taverna em ARENA_ORIGIN.Y - 0.5, então o piso atual (topo em 663.5) pede
+-- Y = 664. X e Z centralizam o tabuleiro no piso.
+--
+-- Se um dia a taverna for movida à mão de novo, é este vetor que tem que
+-- acompanhar — senão o tabuleiro nasce no vazio, longe do cenário, e a partida
+-- roda normalmente só que sem chão nenhum embaixo.
+GameConfig.ARENA_ORIGIN = Vector3.new(304, 664, 313)
 GameConfig.ARENA_SPACING = 200
 GameConfig.MAX_SIMULTANEOUS_MATCHES = 6
 

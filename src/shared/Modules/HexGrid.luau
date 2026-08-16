@@ -188,7 +188,13 @@ function HexGrid.GetBoardBounds(offset)
 	local padX = HEX_SIZE
 	local padZ = HEX_SIZE * math.sqrt(3) / 2
 
-	return Vector3.new(minX - padX, 0, minZ - padZ), Vector3.new(maxX + padX, 0, maxZ + padZ)
+	-- O Y sai da própria arena, não é zero fixo. Enquanto ARENA_ORIGIN morou em
+	-- y=0 dava no mesmo, mas com a taverna lá em cima o zero fazia o
+	-- GetBoardCenter devolver um ponto no chão do mundo — e a câmera, que orbita
+	-- esse ponto, ia olhar o vazio centenas de studs abaixo do tabuleiro.
+	local y = (offset or BOARD_OFFSET).Y
+
+	return Vector3.new(minX - padX, y, minZ - padZ), Vector3.new(maxX + padX, y, maxZ + padZ)
 end
 
 function HexGrid.GetBoardCenter(offset)

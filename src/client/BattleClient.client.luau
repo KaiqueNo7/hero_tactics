@@ -13,6 +13,7 @@ local Debris = game:GetService("Debris")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 
@@ -91,6 +92,481 @@ timerLabel.Font = Enum.Font.GothamBlack
 timerLabel.Text = ""
 timerLabel.Visible = false
 timerLabel.Parent = gui
+
+-- ===== SELO DE CONTRA-ATAQUE (logo abaixo do timer) =====
+-- O contra-ataque é UM por turno e vale pros dois lados: quem apanha primeiro no
+-- turno revida sozinho, e daí em diante ninguém mais revida até o turno virar.
+-- Isso decidia trocas inteiras sem aparecer em lugar nenhum da tela — quem
+-- atacava segundo levava um golpe de graça sem entender por quê.
+local COUNTER_READY_COLOR = Color3.fromRGB(120, 230, 150)
+local COUNTER_USED_COLOR = Color3.fromRGB(96, 102, 116)
+
+local counterBadge = Instance.new("Frame")
+counterBadge.Name = "CounterBadge"
+counterBadge.AnchorPoint = Vector2.new(1, 0)
+counterBadge.Position = UDim2.new(1, -8, 0, 50)
+counterBadge.Size = UDim2.new(0, 172, 0, 24)
+counterBadge.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
+counterBadge.BackgroundTransparency = 0.25
+counterBadge.BorderSizePixel = 0
+counterBadge.Visible = false
+counterBadge.Parent = gui
+
+local counterCorner = Instance.new("UICorner")
+counterCorner.CornerRadius = UDim.new(0, 6)
+counterCorner.Parent = counterBadge
+
+local counterStroke = Instance.new("UIStroke")
+counterStroke.Color = COUNTER_READY_COLOR
+counterStroke.Transparency = 0.55
+counterStroke.Thickness = 1
+counterStroke.Parent = counterBadge
+
+-- bolinha em vez de glifo: os símbolos de espada não existem nas fontes do
+-- Roblox e sairiam como quadradinho, igual ao "✕" que já foi trocado por barras
+local counterDot = Instance.new("Frame")
+counterDot.Name = "Dot"
+counterDot.AnchorPoint = Vector2.new(0, 0.5)
+counterDot.Position = UDim2.new(0, 8, 0.5, 0)
+counterDot.Size = UDim2.new(0, 10, 0, 10)
+counterDot.BackgroundColor3 = COUNTER_READY_COLOR
+counterDot.BorderSizePixel = 0
+counterDot.Parent = counterBadge
+
+local counterDotCorner = Instance.new("UICorner")
+counterDotCorner.CornerRadius = UDim.new(1, 0)
+counterDotCorner.Parent = counterDot
+
+local counterLabel = Instance.new("TextLabel")
+counterLabel.Name = "Label"
+counterLabel.AnchorPoint = Vector2.new(0, 0.5)
+counterLabel.Position = UDim2.new(0, 24, 0.5, 0)
+counterLabel.Size = UDim2.new(1, -32, 1, 0)
+counterLabel.BackgroundTransparency = 1
+counterLabel.TextColor3 = Color3.fromRGB(214, 232, 220)
+counterLabel.TextXAlignment = Enum.TextXAlignment.Left
+counterLabel.TextSize = 13
+counterLabel.Font = Enum.Font.GothamBold
+counterLabel.Text = "Contra-ataque pronto"
+counterLabel.Parent = counterBadge
+
+local counterShown = nil
+
+local function renderCounterBadge(used)
+	-- mesma razão da guarda das fichas: sem isso é um tween por transmissão
+	if counterShown == used then return end
+	counterShown = used
+
+	local color = used and COUNTER_USED_COLOR or COUNTER_READY_COLOR
+	counterLabel.Text = used and "Contra-ataque usado" or "Contra-ataque pronto"
+	counterLabel.TextColor3 = used
+		and Color3.fromRGB(146, 152, 166) or Color3.fromRGB(214, 232, 220)
+	counterStroke.Color = color
+	TweenService:Create(counterDot, TweenInfo.new(0.2), { BackgroundColor3 = color }):Play()
+end
+
+-- ===== RETRATOS DOS DOIS TIMES (colunas nas laterais) =====
+-- Uma coluna por jogador, com o nome dele em cima. O retrato apaga quando o
+-- herói morre — dá pra saber quem ainda está de pé sem varrer o tabuleiro.
+local CARD_SIZE = 48
+local CARD_GAP = 5
+local COLUMN_HEADER = 18
+-- Começa abaixo do selo de contra-ataque e termina acima do painel de detalhe
+-- (que fica a 112px do rodapé), pra caber até em celular deitado.
+local COLUMN_TOP = 78
+
+local SIDE_ONE_COLOR = Color3.fromRGB(70, 150, 255)
+local SIDE_TWO_COLOR = Color3.fromRGB(230, 70, 70)
+
+-- Cinza claro, e não chumbo: ImageColor3 MULTIPLICA o sprite, então um tom
+-- escuro demais apagava o retrato inteiro e não dava mais pra saber QUEM tinha
+-- morrido — que é justamente a informação que a coluna existe pra dar.
+local DEAD_TINT = Color3.fromRGB(138, 141, 150)
+local DEAD_CARD = Color3.fromRGB(18, 19, 23)
+
+local function buildPortrait(parent)
+	local image = Instance.new("ImageLabel")
+	image.Name = "Portrait"
+	image.Size = UDim2.new(1, -6, 1, -6)
+	image.Position = UDim2.new(0, 3, 0, 3)
+	image.BackgroundTransparency = 1
+	image.ScaleType = Enum.ScaleType.Fit
+	image.ResampleMode = Enum.ResamplerMode.Pixelated
+	image.Parent = parent
+	return image
+end
+
+local function buildTeamColumn(alignLeft)
+	local column = Instance.new("Frame")
+	column.Name = alignLeft and "MyTeam" or "TheirTeam"
+	column.AnchorPoint = Vector2.new(alignLeft and 0 or 1, 0)
+	column.Position = UDim2.new(alignLeft and 0 or 1, alignLeft and 10 or -10, 0, COLUMN_TOP)
+	column.Size = UDim2.new(0, CARD_SIZE, 0,
+		COLUMN_HEADER + GameConfig.HEROES_PER_PLAYER * (CARD_SIZE + CARD_GAP))
+	column.BackgroundTransparency = 1
+	column.Visible = false
+	column.Parent = gui
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "PlayerName"
+	-- solta pra fora da coluna: o nome é mais largo que o retrato e ficaria
+	-- espremido a três letras se respeitasse os 48px do card
+	nameLabel.AnchorPoint = Vector2.new(alignLeft and 0 or 1, 0)
+	nameLabel.Position = UDim2.new(alignLeft and 0 or 1, 0, 0, 0)
+	nameLabel.Size = UDim2.new(0, 150, 0, COLUMN_HEADER - 2)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.TextColor3 = Color3.fromRGB(228, 236, 250)
+	nameLabel.TextStrokeTransparency = 0.4
+	nameLabel.TextXAlignment = alignLeft and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.TextSize = 13
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Text = ""
+	nameLabel.Parent = column
+
+	local rows = {}
+	for index = 1, GameConfig.HEROES_PER_PLAYER do
+		local card = Instance.new("Frame")
+		card.Name = "Slot" .. index
+		card.Position = UDim2.new(0, 0, 0, COLUMN_HEADER + (index - 1) * (CARD_SIZE + CARD_GAP))
+		card.Size = UDim2.new(0, CARD_SIZE, 0, CARD_SIZE)
+		card.BackgroundColor3 = Color3.fromRGB(24, 27, 37)
+		card.BackgroundTransparency = 0.15
+		card.BorderSizePixel = 0
+		card.ClipsDescendants = true
+		card.Visible = false
+		card.Parent = column
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 7)
+		corner.Parent = card
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 1.6
+		stroke.Parent = card
+
+		local portrait = buildPortrait(card)
+
+		-- barrinha de vida colada no pé do card
+		local hpTrack = Instance.new("Frame")
+		hpTrack.Name = "HpTrack"
+		hpTrack.Position = UDim2.new(0, 0, 1, -4)
+		hpTrack.Size = UDim2.new(1, 0, 0, 4)
+		hpTrack.BackgroundColor3 = Color3.fromRGB(40, 44, 56)
+		hpTrack.BorderSizePixel = 0
+		hpTrack.ZIndex = 3
+		hpTrack.Parent = card
+
+		local hpFill = Instance.new("Frame")
+		hpFill.Name = "HpFill"
+		hpFill.Size = UDim2.fromScale(1, 1)
+		hpFill.BackgroundColor3 = Color3.fromRGB(80, 200, 110)
+		hpFill.BorderSizePixel = 0
+		hpFill.ZIndex = 4
+		hpFill.Parent = hpTrack
+
+		local hpLabel = Instance.new("TextLabel")
+		hpLabel.Name = "Hp"
+		hpLabel.AnchorPoint = Vector2.new(1, 1)
+		hpLabel.Position = UDim2.new(1, -3, 1, -5)
+		hpLabel.Size = UDim2.new(0, 24, 0, 13)
+		hpLabel.BackgroundTransparency = 1
+		hpLabel.TextColor3 = Color3.new(1, 1, 1)
+		hpLabel.TextStrokeTransparency = 0.2
+		hpLabel.TextXAlignment = Enum.TextXAlignment.Right
+		hpLabel.TextSize = 12
+		hpLabel.Font = Enum.Font.GothamBlack
+		hpLabel.ZIndex = 5
+		hpLabel.Parent = card
+
+		-- ✕ desenhado com duas barras cruzadas, mesmo motivo do botão fechar do
+		-- draft: o glifo não existe nas fontes do Roblox
+		local cross = {}
+		for _, angle in ipairs({ 45, -45 }) do
+			local dash = Instance.new("Frame")
+			dash.Name = "CrossBar"
+			dash.AnchorPoint = Vector2.new(0.5, 0.5)
+			dash.Position = UDim2.fromScale(0.5, 0.5)
+			dash.Size = UDim2.new(0, CARD_SIZE - 14, 0, 3)
+			dash.BackgroundColor3 = Color3.fromRGB(228, 96, 96)
+			dash.BackgroundTransparency = 0.15
+			dash.BorderSizePixel = 0
+			dash.Rotation = angle
+			dash.ZIndex = 6
+			dash.Visible = false
+			dash.Parent = card
+			table.insert(cross, dash)
+		end
+
+		rows[index] = {
+			card = card,
+			stroke = stroke,
+			portrait = portrait,
+			hpTrack = hpTrack,
+			hpFill = hpFill,
+			hpLabel = hpLabel,
+			cross = cross,
+		}
+	end
+
+	return { frame = column, nameLabel = nameLabel, rows = rows }
+end
+
+local myTeam = buildTeamColumn(true)
+local theirTeam = buildTeamColumn(false)
+
+local SPRITE_SHEET_ID = HeroData.GetSpriteId()
+
+-- O servidor transmite o estado várias vezes por ação (mover manda dois, atacar
+-- manda mais um, o fim de partida outro). Sem esta guarda, cada transmissão
+-- reescrevia as seis fichas e criava seis tweens que animavam de um valor pro
+-- MESMO valor — dezenas de tweens por turno do bot, todos para nada.
+local function rowSignature(hero)
+	if not hero then return "vazio" end
+	return ("%d|%d|%s|%s"):format(hero.dataId, hero.currentHp,
+		tostring(hero.isAlive), tostring(hero.sideIndex))
+end
+
+local function renderRow(row, hero)
+	local signature = rowSignature(hero)
+	if row.signature == signature then return end
+	row.signature = signature
+
+	if not hero then
+		row.card.Visible = false
+		return
+	end
+
+	local data = HeroData.GetById(hero.dataId)
+	local accent = hero.sideIndex == 2 and SIDE_TWO_COLOR or SIDE_ONE_COLOR
+	local alive = hero.isAlive
+
+	row.card.Visible = true
+
+	if SPRITE_SHEET_ID and data then
+		row.portrait.Image = SPRITE_SHEET_ID
+		row.portrait.ImageRectSize = HeroData.GetFrameSize()
+		row.portrait.ImageRectOffset = HeroData.GetFrameOffset(data)
+		row.portrait.BackgroundTransparency = 1
+	else
+		-- sem folha de sprite, a cor do herói faz as vezes do retrato
+		row.portrait.Image = ""
+		row.portrait.BackgroundTransparency = 0
+		row.portrait.BackgroundColor3 = alive and (data and data.color or accent) or DEAD_TINT
+	end
+
+	-- Morto: retrato apagado e riscado. O Roblox não tem controle de saturação
+	-- por elemento de GUI, então "sem cor" aqui é o ImageColor3 puxado pro
+	-- cinza-chumbo — some com o vermelho/verde do sprite e some com o destaque.
+	row.portrait.ImageColor3 = alive and Color3.new(1, 1, 1) or DEAD_TINT
+	row.portrait.ImageTransparency = alive and 0 or 0.15
+	row.card.BackgroundColor3 = alive and Color3.fromRGB(24, 27, 37) or DEAD_CARD
+	row.stroke.Color = alive and accent or Color3.fromRGB(58, 60, 68)
+	row.stroke.Transparency = alive and 0.15 or 0.5
+
+	for _, dash in ipairs(row.cross) do
+		dash.Visible = not alive
+	end
+
+	row.hpTrack.Visible = alive
+	row.hpLabel.Visible = alive
+
+	if alive then
+		local ratio = hero.maxHp > 0 and math.clamp(hero.currentHp / hero.maxHp, 0, 1) or 0
+		row.hpLabel.Text = tostring(math.max(hero.currentHp, 0))
+		row.hpFill.BackgroundColor3 = ratio > 0.5 and Color3.fromRGB(80, 200, 110)
+			or (ratio > 0.25 and Color3.fromRGB(220, 180, 70) or Color3.fromRGB(220, 80, 80))
+		TweenService:Create(row.hpFill, TweenInfo.new(0.22), {
+			Size = UDim2.fromScale(ratio, 1),
+		}):Play()
+	end
+end
+
+local function renderTeams(state)
+	local mine, theirs = {}, {}
+	for _, hero in ipairs(state.heroes or {}) do
+		table.insert(hero.isMine and mine or theirs, hero)
+	end
+
+	myTeam.nameLabel.Text = player.DisplayName
+	theirTeam.nameLabel.Text = state.opponentName or "Adversário"
+
+	for index, row in ipairs(myTeam.rows) do
+		renderRow(row, mine[index])
+	end
+	for index, row in ipairs(theirTeam.rows) do
+		renderRow(row, theirs[index])
+	end
+
+	myTeam.frame.Visible = true
+	theirTeam.frame.Visible = true
+end
+
+local function hideTeams()
+	myTeam.frame.Visible = false
+	theirTeam.frame.Visible = false
+
+	-- Zera as assinaturas: na revanche os heróis voltam com a vida cheia, e uma
+	-- assinatura sobrevivente da partida anterior faria a ficha ser pulada e
+	-- ficar mostrando o estado do jogo antigo.
+	for _, team in ipairs({ myTeam, theirTeam }) do
+		for _, row in ipairs(team.rows) do
+			row.signature = nil
+		end
+	end
+	counterShown = nil
+end
+
+-- ===== DESTAQUE DE FINALIZAÇÃO =====
+-- Faixa diagonal com o retrato ampliado de quem abateu. Só dispara em abate por
+-- herói: o servidor não manda destaque pra morte por veneno ou Morte Súbita,
+-- que não têm autor.
+--
+-- Vale pros DOIS lados, e é por isso que a faixa muda de cor: um abate seu entra
+-- azul e comemorativo, um abate do adversário entra vermelho. Mostrar só as suas
+-- vitórias esconderia justamente o golpe que você precisa entender.
+local FINISHER_HOLD = 0.85
+local FINISHER_IN = 0.26
+local FINISHER_OUT = 0.3
+local FINISHER_TILT = -6
+
+local finisherLayer = Instance.new("Frame")
+finisherLayer.Name = "Finisher"
+finisherLayer.Size = UDim2.fromScale(1, 1)
+finisherLayer.BackgroundTransparency = 1
+finisherLayer.ClipsDescendants = true
+finisherLayer.Visible = false
+finisherLayer.ZIndex = 30
+finisherLayer.Parent = gui
+
+local finisherBand = Instance.new("Frame")
+finisherBand.Name = "Band"
+finisherBand.AnchorPoint = Vector2.new(0.5, 0.5)
+finisherBand.Size = UDim2.new(1.6, 0, 0, 150)
+finisherBand.Rotation = FINISHER_TILT
+finisherBand.BorderSizePixel = 0
+finisherBand.ZIndex = 30
+finisherBand.Parent = finisherLayer
+
+-- some nas duas pontas pra faixa não virar um retângulo colado na tela
+local bandGradient = Instance.new("UIGradient")
+bandGradient.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 1),
+	NumberSequenceKeypoint.new(0.18, 0.1),
+	NumberSequenceKeypoint.new(0.82, 0.1),
+	NumberSequenceKeypoint.new(1, 1),
+})
+bandGradient.Parent = finisherBand
+
+-- riscos finos acompanhando a inclinação, pra faixa ter movimento
+local finisherStreaks = {}
+for index, spec in ipairs({ { -34, 5, 0.45 }, { 30, 3, 0.6 }, { 52, 2, 0.75 } }) do
+	local streak = Instance.new("Frame")
+	streak.Name = "Streak" .. index
+	streak.AnchorPoint = Vector2.new(0.5, 0.5)
+	streak.Position = UDim2.new(0.5, 0, 0.5, spec[1])
+	streak.Size = UDim2.new(1, 0, 0, spec[2])
+	streak.BorderSizePixel = 0
+	streak.BackgroundTransparency = spec[3]
+	streak.ZIndex = 31
+	streak.Parent = finisherBand
+	finisherStreaks[index] = streak
+end
+
+-- Retrato fora da faixa (e não dentro): a faixa corta o que passa dela, e a
+-- graça é justamente o boneco estourar pra fora em cima e embaixo.
+local finisherPortrait = Instance.new("ImageLabel")
+finisherPortrait.Name = "Portrait"
+finisherPortrait.AnchorPoint = Vector2.new(0.5, 0.5)
+finisherPortrait.Size = UDim2.new(0, 230, 0, 290)
+finisherPortrait.BackgroundTransparency = 1
+finisherPortrait.ScaleType = Enum.ScaleType.Fit
+finisherPortrait.ResampleMode = Enum.ResamplerMode.Pixelated
+finisherPortrait.Rotation = FINISHER_TILT
+finisherPortrait.ZIndex = 33
+finisherPortrait.Parent = finisherLayer
+
+local finisherCaption = Instance.new("TextLabel")
+finisherCaption.Name = "Caption"
+finisherCaption.AnchorPoint = Vector2.new(0, 0.5)
+finisherCaption.Size = UDim2.new(0, 420, 0, 46)
+finisherCaption.BackgroundTransparency = 1
+finisherCaption.TextColor3 = Color3.new(1, 1, 1)
+finisherCaption.TextStrokeColor3 = Color3.fromRGB(10, 6, 8)
+finisherCaption.TextStrokeTransparency = 0.2
+finisherCaption.TextXAlignment = Enum.TextXAlignment.Left
+finisherCaption.TextScaled = true
+finisherCaption.Font = Enum.Font.GothamBlack
+finisherCaption.Rotation = FINISHER_TILT
+finisherCaption.ZIndex = 34
+finisherCaption.Parent = finisherLayer
+
+local finisherToken = 0
+
+local function playFinisher(info)
+	local data = HeroData.GetById(info.dataId)
+	if not (SPRITE_SHEET_ID and data) then return end
+
+	finisherToken += 1
+	local token = finisherToken
+
+	local accent = info.sideIndex == 2 and SIDE_TWO_COLOR or SIDE_ONE_COLOR
+	local deep = info.sideIndex == 2
+		and Color3.fromRGB(52, 10, 12) or Color3.fromRGB(12, 26, 58)
+
+	finisherBand.BackgroundColor3 = deep
+	bandGradient.Color = ColorSequence.new(deep, accent)
+	for _, streak in ipairs(finisherStreaks) do
+		streak.BackgroundColor3 = accent
+	end
+
+	finisherPortrait.Image = SPRITE_SHEET_ID
+	finisherPortrait.ImageRectSize = HeroData.GetFrameSize()
+	finisherPortrait.ImageRectOffset = HeroData.GetFrameOffset(data)
+	finisherPortrait.ImageTransparency = 0
+
+	finisherCaption.Text = ("%s FINALIZOU %s"):format(
+		info.name:upper(), (info.victim or "?"):upper())
+	finisherCaption.TextTransparency = 0
+	finisherCaption.TextStrokeTransparency = 0.2
+
+	-- entram da esquerda; o retrato chega um pouco depois da faixa, e essa
+	-- defasagem é o que dá sensação de profundidade em vez de bloco só
+	finisherBand.Position = UDim2.new(-0.9, 0, 0.42, 0)
+	finisherPortrait.Position = UDim2.new(-0.4, 0, 0.42, 0)
+	finisherCaption.Position = UDim2.new(-0.4, 0, 0.42, 0)
+	finisherLayer.Visible = true
+
+	local enter = TweenInfo.new(FINISHER_IN, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+	TweenService:Create(finisherBand, enter, { Position = UDim2.new(0.5, 0, 0.42, 0) }):Play()
+	TweenService:Create(finisherPortrait,
+		TweenInfo.new(FINISHER_IN, Enum.EasingStyle.Back, Enum.EasingDirection.Out, 0, false, 0.05),
+		{ Position = UDim2.new(0.26, 0, 0.42, 0) }):Play()
+	TweenService:Create(finisherCaption,
+		TweenInfo.new(FINISHER_IN, Enum.EasingStyle.Quint, Enum.EasingDirection.Out, 0, false, 0.09),
+		{ Position = UDim2.new(0.42, 0, 0.42, 0) }):Play()
+
+	task.delay(FINISHER_IN + FINISHER_HOLD, function()
+		if finisherToken ~= token then return end
+
+		local leave = TweenInfo.new(FINISHER_OUT, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		TweenService:Create(finisherBand, leave, {
+			Position = UDim2.new(1.7, 0, 0.42, 0), BackgroundTransparency = 1,
+		}):Play()
+		TweenService:Create(finisherPortrait, leave, {
+			Position = UDim2.new(1.5, 0, 0.42, 0), ImageTransparency = 1,
+		}):Play()
+		TweenService:Create(finisherCaption, leave, {
+			Position = UDim2.new(1.6, 0, 0.42, 0), TextTransparency = 1, TextStrokeTransparency = 1,
+		}):Play()
+
+		task.delay(FINISHER_OUT, function()
+			if finisherToken ~= token then return end
+			finisherLayer.Visible = false
+			finisherBand.BackgroundTransparency = 0
+		end)
+	end)
+end
 
 -- ===== "SUA VEZ" / "ESPERE SUA VEZ" (flash centralizado na tela) =====
 local MY_TURN_COLOR = Color3.fromRGB(255, 235, 150)
@@ -303,6 +779,211 @@ lobbyButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("leaveMatch")
 end)
 
+-- Definido aqui em cima porque a linha de mira também precisa dele, e em Lua
+-- uma função só enxerga os locais declarados ANTES dela.
+local function heroByUid(uid)
+	if not state then return nil end
+	for _, hero in ipairs(state.heroes) do
+		if hero.uid == uid then return hero end
+	end
+	return nil
+end
+
+-- ===== SETA DE MIRA =====
+-- Seta pontilhada que sai do herói selecionado e termina na casa sob o cursor.
+-- Serve pra responder "esse boneco vai parar ONDE?" antes do clique — de cima e
+-- com o tabuleiro em perspectiva, contar casas no olho erra fácil.
+--
+-- É tudo local: as peças nascem no cliente e não replicam, então cada jogador
+-- vê só a própria mira. Um adversário enxergando pra onde você está apontando
+-- entregaria a jogada antes dela acontecer.
+local AIM_LIFT = 2.4 -- altura acima do tabuleiro
+local AIM_DASH_LENGTH = 1.5
+local AIM_DASH_GAP = 1.2
+local AIM_DASH_THICKNESS = 0.34
+-- Folgas curtas de propósito: entre duas casas vizinhas o centro fica a ~10,4
+-- studs, e um par de folgas maior comia o traço inteiro justamente no caso mais
+-- comum — mover uma casa.
+local AIM_START_PAD = 2.4 -- não cola no herói
+local AIM_END_PAD = 3.4 -- onde os traços param pra não invadir a ponta
+local AIM_MAX_DASHES = 48
+local AIM_FLOW_SPEED = 2.4 -- studs por segundo que os traços "andam" pro alvo
+local AIM_NEUTRAL_COLOR = Color3.fromRGB(150, 165, 190)
+
+-- Ponta da seta: duas farpas abertas a partir do bico. Não é um bico fechado
+-- porque a câmera olha o tabuleiro de cima e enviesada — um triângulo cheio
+-- vira um borrão nessa perspectiva, enquanto duas barras continuam lendo como
+-- "aponta pra cá" de qualquer ângulo.
+local ARROW_HEAD_LENGTH = 3.6
+local ARROW_HEAD_THICKNESS = 0.44
+local ARROW_HEAD_SPREAD = 38 -- graus de abertura de cada farpa
+
+local aimFolder = Instance.new("Folder")
+aimFolder.Name = "AimLine"
+aimFolder.Parent = Workspace
+
+local function newAimPart(name)
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CastShadow = false
+	part.Material = Enum.Material.Neon
+	part.Transparency = 1
+	part.Parent = aimFolder
+	return part
+end
+
+local aimDashes = {}
+for index = 1, AIM_MAX_DASHES do
+	aimDashes[index] = newAimPart("Dash" .. index)
+end
+
+local aimBarbs = {
+	newAimPart("ArrowBarbLeft"),
+	newAimPart("ArrowBarbRight"),
+}
+
+local function hideAim()
+	for _, dash in ipairs(aimDashes) do
+		dash.Transparency = 1
+	end
+	for _, barb in ipairs(aimBarbs) do
+		barb.Transparency = 1
+	end
+end
+
+hideAim()
+
+-- A posição vem da PEÇA do tabuleiro, não do HexGrid: o offset do módulo é
+-- definido pelo CameraController num script separado, e depender dessa ordem de
+-- carregamento daria uma linha apontando pro lugar errado nos primeiros quadros.
+local function tilePosition(hexId)
+	local board = state and state.boardFolder
+	local tile = board and hexId and board:FindFirstChild(hexId)
+	if not tile then return nil end
+	if tile:IsA("BasePart") then return tile.Position end
+	if tile:IsA("Model") then return tile:GetPivot().Position end
+	return nil
+end
+
+local function drawAim(fromPosition, toPosition, color)
+	local lift = Vector3.new(0, AIM_LIFT, 0)
+	local origin = fromPosition + lift
+	local target = toPosition + lift
+
+	local delta = target - origin
+	local distance = delta.Magnitude
+	if distance < 0.1 then
+		hideAim()
+		return
+	end
+
+	local direction = delta.Unit
+	local step = AIM_DASH_LENGTH + AIM_DASH_GAP
+
+	-- o resto móvel faz os traços marcharem em direção ao alvo
+	local travelled = AIM_START_PAD + (os.clock() * AIM_FLOW_SPEED) % step
+	local limit = distance - AIM_END_PAD
+	local used = 0
+
+	while travelled < limit and used < AIM_MAX_DASHES do
+		used += 1
+		local position = origin + direction * travelled
+		local dash = aimDashes[used]
+		dash.Size = Vector3.new(AIM_DASH_THICKNESS, AIM_DASH_THICKNESS, AIM_DASH_LENGTH)
+		dash.CFrame = CFrame.new(position, position + direction)
+		dash.Color = color
+		dash.Transparency = 0.15
+		travelled += step
+	end
+
+	for index = used + 1, AIM_MAX_DASHES do
+		aimDashes[index].Transparency = 1
+	end
+
+	-- Bico no centro da casa mirada; as farpas abrem pra trás a partir dele.
+	-- `base` olha na direção do traçado, então o -Z local dela É a direção da
+	-- seta — girar em Y por 180° ∓ abertura devolve exatamente as duas farpas.
+	local base = CFrame.new(target, target + direction)
+	for index, barb in ipairs(aimBarbs) do
+		local sign = (index == 1) and 1 or -1
+		barb.Size = Vector3.new(ARROW_HEAD_THICKNESS, ARROW_HEAD_THICKNESS, ARROW_HEAD_LENGTH)
+		barb.CFrame = base
+			* CFrame.Angles(0, math.rad(sign * (180 - ARROW_HEAD_SPREAD)), 0)
+			* CFrame.new(0, 0, -ARROW_HEAD_LENGTH / 2)
+		barb.Color = color
+		barb.Transparency = 0.1
+	end
+end
+
+-- Qual casa está sob o cursor. Passar o mouse em cima de um HERÓI conta como
+-- apontar pra casa dele, senão a linha piscava toda vez que o cursor cruzasse
+-- um boneco no caminho até o alvo.
+local function hoveredHexId()
+	local target = mouse.Target
+	if not target then return nil end
+
+	local hexId = target:GetAttribute("HexId")
+	if hexId then return hexId end
+
+	local heroUid = target:GetAttribute("HeroUid")
+	local hero = heroUid and state and heroByUid(heroUid)
+	return hero and hero.position or nil
+end
+
+local function updateAim()
+	if not (state and state.phase == "battle" and state.isMyTurn and selectedUid) then
+		hideAim()
+		return
+	end
+
+	local hero = heroByUid(selectedUid)
+	if not (hero and hero.isAlive) then
+		hideAim()
+		return
+	end
+
+	-- A seta nasce junto com as casas destacadas, não junto com a seleção. Um
+	-- herói que já moveu e já atacou continua selecionável (o painel de detalhe
+	-- vive disso), mas não tem pra onde ir — apontar uma seta ali prometeria uma
+	-- jogada que o clique ia recusar.
+	if next(moveTargets) == nil and next(attackTargets) == nil then
+		hideAim()
+		return
+	end
+
+	local hexId = hoveredHexId()
+	if not hexId or hexId == hero.position then
+		hideAim()
+		return
+	end
+
+	local fromPosition = tilePosition(hero.position)
+	local toPosition = tilePosition(hexId)
+	if not (fromPosition and toPosition) then
+		hideAim()
+		return
+	end
+
+	-- a cor já diz o que vai acontecer no clique, sem precisar ler a casa
+	local color = AIM_NEUTRAL_COLOR
+	if attackTargets[hexId] then
+		color = ATTACK_COLOR
+	elseif moveTargets[hexId] then
+		color = MOVE_COLOR
+	end
+
+	drawAim(fromPosition, toPosition, color)
+end
+
+-- RenderStepped, e não Heartbeat: a linha acompanha o cursor, então precisa ser
+-- redesenhada no mesmo quadro em que a câmera e o mouse já se moveram — em
+-- Heartbeat ela ficaria um quadro atrás e daria a impressão de arrastar.
+RunService.RenderStepped:Connect(updateAim)
+
 -- ===== DESTAQUES =====
 local function clearHighlights()
 	for part in pairs(savedColors) do
@@ -322,13 +1003,6 @@ local function paint(hexId, color)
 		if savedColors[tile] == nil then savedColors[tile] = true end
 		tile.Color = color
 	end
-end
-
-local function heroByUid(uid)
-	for _, hero in ipairs(state.heroes) do
-		if hero.uid == uid then return hero end
-	end
-	return nil
 end
 
 local function selectHero(uid)
@@ -471,15 +1145,26 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		queueMessage(state.message)
 	end
 
+	-- antes de decidir a fase: o golpe que encerra a partida também merece o
+	-- destaque, e ele chega no mesmo snapshot que marca "finished"
+	if state.finisher then
+		playFinisher(state.finisher)
+	end
+
 	if state.phase == "finished" then
 		gui.Enabled = true
 		turnPanel.Visible = false
 		timerLabel.Visible = false
+		counterBadge.Visible = false
 		endTurnButton.Visible = false
 		detailPanel.Visible = false
 		resultPanel.Visible = true
 		secondsLeft = nil
 		wasMyTurn = false
+
+		-- as colunas continuam: no fim da partida elas viram o placar do que
+		-- sobrou de cada lado, e o painel de resultado fica no meio, sem tapar
+		renderTeams(state)
 
 		-- o servidor já manda o resultado do ponto de vista de quem recebe
 		if state.winner == "draw" then
@@ -505,6 +1190,8 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 
 	if state.phase ~= "battle" then
 		gui.Enabled = false
+		counterBadge.Visible = false
+		hideTeams()
 		clearHighlights()
 		selectedUid = nil
 		showDetail(nil)
@@ -514,6 +1201,10 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	gui.Enabled = true
 	turnPanel.Visible = true
 	resultPanel.Visible = false
+
+	counterBadge.Visible = true
+	renderCounterBadge(state.counterAttackUsed)
+	renderTeams(state)
 	resultPlayed = false
 	endTurnButton.Visible = true
 	endTurnButton.Active = state.isMyTurn

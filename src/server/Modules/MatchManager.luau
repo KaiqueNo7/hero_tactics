@@ -162,8 +162,22 @@ end
 -- ===================== DANO / CURA =====================
 local ApplyDamage, KillHero
 
-function KillHero(match, hero)
+function KillHero(match, hero, attacker)
 	hero.isAlive = false
+
+	-- Destaque do finalizador: fica guardado até o próximo Broadcast e vai UMA
+	-- vez só. Morte sem autor (veneno, Morte Súbita) chega aqui com attacker nil
+	-- e não gera destaque — não teria de quem mostrar o retrato.
+	if attacker and attacker ~= hero then
+		match.finisher = {
+			dataId = attacker.dataId,
+			name = attacker.name,
+			ownerId = attacker.ownerId,
+			sideIndex = attacker.sideIndex,
+			victim = hero.name,
+		}
+	end
+
 	-- a casa NÃO é liberada: o túmulo continua ocupando o hex
 	TriggerSkills(match, hero, "onDie")
 
@@ -196,7 +210,7 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 	HeroView.Say(hero, "-" .. tostring(amount), "damage")
 
 	if hero.currentHp <= 0 then
-		KillHero(match, hero)
+		KillHero(match, hero, attacker)
 	else
 		TriggerSkills(match, hero, "onDamage", attacker, isCounterAttack)
 	end
@@ -316,10 +330,21 @@ local function Snapshot(match, viewerId)
 			moveRange = hero.moveRange,
 			isAlive = hero.isAlive,
 			isMine = hero.ownerId == viewerId,
+			-- 1 = azul, 2 = vermelho. Vai junto pra UI pintar o retrato com a
+			-- MESMA cor do anel embaixo do herói no tabuleiro: em PvP quem joga
+			-- de lado 2 é dono dos vermelhos, e colorir por "é meu?" mentiria.
+			sideIndex = hero.sideIndex,
 			hasMoved = match.turn and match.turn.moved[hero.uid] or false,
 			hasAttacked = match.turn and match.turn.attacked[hero.uid] or false,
 		})
 	end
+
+	-- `match.heroes` é dicionário: a ordem de pairs() muda entre snapshots. Isso
+	-- nunca importou pra pintar o tabuleiro (tudo é lido por hexId), mas a coluna
+	-- de retratos da UI segue esta lista — sem ordenar, os retratos trocavam de
+	-- lugar sozinhos a cada atualização. O uid é matchId_dono_heroi, então
+	-- ordenar por ele agrupa por jogador e mantém a ordem fixa a partida inteira.
+	table.sort(heroes, function(a, b) return a.uid < b.uid end)
 
 	local winner = nil
 	if match.winner == "draw" then
@@ -338,6 +363,20 @@ local function Snapshot(match, viewerId)
 	end
 	table.sort(usedHeroIds)
 
+	-- `isMine` é resolvido por espectador, igual ao resto do snapshot: o cliente
+	-- pinta o destaque com a cor do lado e precisa saber se foi o time dele que
+	-- abateu ou que apanhou.
+	local finisher = nil
+	if match.finisher then
+		finisher = {
+			dataId = match.finisher.dataId,
+			name = match.finisher.name,
+			victim = match.finisher.victim,
+			sideIndex = match.finisher.sideIndex,
+			isMine = match.finisher.ownerId == viewerId,
+		}
+	end
+
 	return {
 		phase = match.phase,
 		deployZone = viewerSide.zone,
@@ -352,8 +391,15 @@ local function Snapshot(match, viewerId)
 		turnSecondsLeft = TurnSecondsLeft(match),
 		turnTimeLimit = GameConfig.TURN_TIME_LIMIT,
 		suddenDeath = match.turn and match.turn.number >= GameConfig.SUDDEN_DEATH_START_TURN or false,
+
+		-- O contra-ataque é UM por turno, valendo pros dois lados: quem defende
+		-- revida no primeiro golpe do turno e ninguém mais revida até o turno
+		-- virar. O cliente mostra isso como um selo aceso/apagado.
+		counterAttackUsed = match.turn and match.turn.counterAttack or false,
+
 		winner = winner,
 		message = match.message,
+		finisher = finisher,
 		vsBot = match.vsBot,
 		opponentName = opponent.player and opponent.player.DisplayName or "Bot",
 
@@ -371,6 +417,10 @@ local function Broadcast(match, message)
 		end
 	end
 	match.message = nil
+
+	-- o destaque é evento, não estado: sai num snapshot só, senão a animação
+	-- dispararia de novo a cada atualização até o fim do turno
+	match.finisher = nil
 end
 
 -- ===================== HERÓIS =====================
@@ -1176,6 +1226,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 		turn = nil,
 		turnToken = 0,
 		winner = nil,
+		finisher = nil,
 		busy = false,
 	}
 

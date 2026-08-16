@@ -200,10 +200,12 @@ local xpFillCorner = Instance.new("UICorner")
 xpFillCorner.CornerRadius = UDim.new(1, 0)
 xpFillCorner.Parent = xpFill
 
--- "+60 XP" logo abaixo do crachá quando a partida termina
+-- "+60 XP" ao LADO do crachá quando a partida termina. Ficava logo abaixo, mas
+-- ali agora mora o saldo de moedas (LobbyMenu) — e um flash por cima do saldo
+-- fazia parecer que o XP tinha virado moeda.
 local gainLabel = Instance.new("TextLabel")
 gainLabel.AnchorPoint = Vector2.new(1, 0)
-gainLabel.Position = UDim2.new(1, -12, 0, 58)
+gainLabel.Position = UDim2.new(1, -156, 0, 14)
 gainLabel.Size = UDim2.new(0, 136, 0, 22)
 gainLabel.BackgroundTransparency = 1
 gainLabel.Text = ""

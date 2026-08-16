@@ -15,12 +15,24 @@
       }
     },
 
+    "ReplicatedFirst": {
+      "LoadingScreen": {
+        "$path": "src/client/LoadingScreen.client.luau"
+      }
+    },
+
     "ServerScriptService": {
       "GameStartTrigger": {
         "$path": "src/server/GameStartTrigger.server.luau"
       },
       "LeaderboardBoard": {
         "$path": "src/server/LeaderboardBoard.server.luau"
+      },
+      "Environment": {
+        "$path": "src/server/Environment.server.luau"
+      },
+      "Store": {
+        "$path": "src/server/Store.server.luau"
       },
       "Modules": {
         "$path": "src/server/Modules"
@@ -40,6 +52,9 @@
         },
         "LobbyClient": {
           "$path": "src/client/LobbyClient.client.luau"
+        },
+        "LobbyMenu": {
+          "$path": "src/client/LobbyMenu.client.luau"
         },
         "SoundClient": {
           "$path": "src/client/SoundClient.client.luau"

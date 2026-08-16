@@ -25,6 +25,7 @@ local SoundService = game:GetService("SoundService")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
+local PixelIcons = require(ReplicatedStorage.Modules.PixelIcons)
 
 local Sounds = ReplicatedStorage:WaitForChild("Sounds")
 
@@ -40,7 +41,12 @@ else
 end
 
 -- ===== AJUSTE FINO =====
-local SPRITE_WIDTH = 4.2
+-- A casa hexagonal mede ~9,8 studs de ponta a ponta (HEX_RADIUS 6 no
+-- BoardSpawner), e o sprite ocupava 4,2 — o herói ficava pequeno no meio do
+-- tabuleiro visto de cima. 5,2 dá presença sem transbordar pra casa vizinha nem
+-- tapar o vizinho de trás. Tudo que é derivado (altura, elevação da âncora,
+-- posição dos selos de ATK/HP e do texto flutuante) acompanha sozinho.
+local SPRITE_WIDTH = 5.2
 local TILE_TOP_Y = 0.5
 local MOVE_STEP_TIME = 0.22
 local BOT_ID = "BOT"
@@ -51,6 +57,43 @@ local RING_HEIGHT = 0.08
 
 local TEAM_COLOR_PLAYER_1 = Color3.fromRGB(70, 150, 255)
 local TEAM_COLOR_PLAYER_2 = Color3.fromRGB(230, 70, 70)
+
+-- ===== CRACHÁ DE STATUS (abaixo do herói) =====
+-- Antes eram dois retângulos coloridos com um número dentro: azul era ataque,
+-- verde era vida, e não tinha como saber disso sem alguém contar. Agora cada
+-- valor tem ícone próprio, e a moldura dourada dá a leitura de "isto é um
+-- painel" em vez de dois quadradinhos soltos.
+-- O ícone tem grade 7x7, então o slot mede 14: dois pixels de tela por pixel de
+-- desenho, em número inteiro. Com o slot em 11 (o primeiro palpite) cada célula
+-- caía em 1,57 px e as diagonais saíam com espessura irregular.
+local ICON_SLOT = 14
+local BADGE_HEIGHT = 20
+local STAT_BADGE_WIDTH = 36
+local SQUARE_BADGE_WIDTH = 20
+local BADGE_PADDING = 2
+
+local BADGE_BG = Color3.fromRGB(26, 23, 32)
+local BADGE_GOLD = Color3.fromRGB(255, 205, 90)
+local ICON_RED = Color3.fromRGB(238, 82, 82)
+
+-- Ataque acima do base acende em verde. Verde e não dourado de propósito: o
+-- dourado é a moldura de todos os crachás, então um buff dourado seria a mesma
+-- cor de sempre e passaria batido justamente no turno em que importa.
+local BUFF_BG = Color3.fromRGB(20, 52, 30)
+local BUFF_STROKE = Color3.fromRGB(126, 245, 158)
+local BUFF_TEXT = Color3.fromRGB(180, 255, 200)
+
+-- Vida some do branco pro vermelho conforme cai
+local HP_TEXT_FULL = Color3.new(1, 1, 1)
+local HP_TEXT_HURT = Color3.fromRGB(255, 214, 120)
+local HP_TEXT_CRITICAL = Color3.fromRGB(255, 120, 120)
+
+-- Passiva do herói (data.ability) -> ícone e cor do selo ao lado da vida
+local ABILITY_BADGES = {
+	Taunt  = { icon = "taunt",  color = Color3.fromRGB(198, 202, 212) },
+	Sprint = { icon = "sprint", color = Color3.fromRGB(132, 206, 255) },
+	Ranged = { icon = "ranged", color = Color3.fromRGB(255, 200, 110) },
+}
 
 local SPRITE_HEIGHT = SPRITE_WIDTH * (HeroData.FRAME_HEIGHT / HeroData.FRAME_WIDTH)
 local ANCHOR_LIFT = SPRITE_HEIGHT * 0.4
@@ -148,36 +191,12 @@ function HeroView.PlaySkillSound(key, view)
 	if name then PlaySound(name, view) end
 end
 
--- Bolinha de energia viajando do atacante até o alvo + reticícula no impacto,
--- pra deixar ataques à distância (Ranged) mais perceptíveis.
-function HeroView.ShowRangedAttack(attacker, target)
-	if not attacker.part or not target.part then return end
-
-	local fromPos = attacker.part.Position
-	local toPos = target.part.Position
-
-	local reticle = Instance.new("Part")
-	reticle.Name = "RangedTarget"
-	reticle.Shape = Enum.PartType.Cylinder
-	reticle.Size = Vector3.new(0.15, RING_THICKNESS * 3, RING_THICKNESS * 3)
-	reticle.CFrame = CFrame.new(toPos - Vector3.new(0, ANCHOR_LIFT * 0.6, 0)) * CFrame.Angles(0, 0, math.rad(90))
-	reticle.Color = Color3.fromRGB(255, 90, 80)
-	reticle.Material = Enum.Material.Neon
-	reticle.Anchored = true
-	reticle.CanCollide = false
-	reticle.CanQuery = false
-	reticle.Transparency = 1
-	reticle.Parent = Workspace
-
-	TweenService:Create(reticle, TweenInfo.new(0.12), { Transparency = 0.2 }):Play()
-	task.delay(0.28, function()
-		if reticle.Parent then
-			TweenService:Create(reticle, TweenInfo.new(0.15), { Transparency = 1 }):Play()
-			task.delay(0.15, function()
-				if reticle.Parent then reticle:Destroy() end
-			end)
-		end
-	end)
+-- As duas peças do tiro (a bolinha e a retícula) são criadas UMA vez por
+-- partida e reaproveitadas. Antes nasciam e morriam a cada ataque à distância —
+-- e como o servidor só resolve uma ação por vez, nunca houve mais de um tiro no
+-- ar: criar e destruir era trabalho de replicação puro, no meio do golpe.
+local function EnsureBolt(view)
+	if view.bolt and view.bolt.Parent then return view.bolt, view.reticle end
 
 	local bolt = Instance.new("Part")
 	bolt.Name = "RangedBolt"
@@ -188,15 +207,56 @@ function HeroView.ShowRangedAttack(attacker, target)
 	bolt.Anchored = true
 	bolt.CanCollide = false
 	bolt.CanQuery = false
+	bolt.CastShadow = false
+	bolt.Transparency = 1
+	bolt.Parent = view.heroesFolder
+
+	local reticle = Instance.new("Part")
+	reticle.Name = "RangedTarget"
+	reticle.Shape = Enum.PartType.Cylinder
+	reticle.Size = Vector3.new(0.15, RING_THICKNESS * 3, RING_THICKNESS * 3)
+	reticle.Color = Color3.fromRGB(255, 90, 80)
+	reticle.Material = Enum.Material.Neon
+	reticle.Anchored = true
+	reticle.CanCollide = false
+	reticle.CanQuery = false
+	reticle.CastShadow = false
+	reticle.Transparency = 1
+	reticle.Parent = view.heroesFolder
+
+	view.bolt, view.reticle = bolt, reticle
+	return bolt, reticle
+end
+
+-- Bolinha de energia viajando do atacante até o alvo + retícula no impacto,
+-- pra deixar ataques à distância (Ranged) mais perceptíveis.
+function HeroView.ShowRangedAttack(attacker, target)
+	if not attacker.part or not target.part then return end
+
+	local view = attacker.view
+	if not view then return end
+
+	local bolt, reticle = EnsureBolt(view)
+	local fromPos = attacker.part.Position
+	local toPos = target.part.Position
+
+	reticle.CFrame = CFrame.new(toPos - Vector3.new(0, ANCHOR_LIFT * 0.6, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	TweenService:Create(reticle, TweenInfo.new(0.12), { Transparency = 0.2 }):Play()
+	task.delay(0.28, function()
+		if reticle.Parent then
+			TweenService:Create(reticle, TweenInfo.new(0.15), { Transparency = 1 }):Play()
+		end
+	end)
+
 	bolt.CFrame = CFrame.new(fromPos)
-	bolt.Parent = Workspace
+	bolt.Transparency = 0
 
 	local tween = TweenService:Create(bolt, TweenInfo.new(0.18, Enum.EasingStyle.Linear), {
 		CFrame = CFrame.new(toPos),
 	})
 	tween:Play()
 	tween.Completed:Once(function()
-		bolt:Destroy()
+		if bolt.Parent then bolt.Transparency = 1 end
 	end)
 end
 
@@ -281,30 +341,41 @@ local function BuildTeamRing(anchor, hexId, color, origin)
 end
 
 -- ===== TEXTO FLUTUANTE =====
+-- O balão é REAPROVEITADO, não recriado.
+--
+-- Antes cada mensagem criava um BillboardGui + TextLabel e os destruía ~1s
+-- depois. Uma troca de golpes com contra-ataque solta de 4 a 8 mensagens (dano,
+-- cura, buff, nome de skill), e cada BillboardGui novo obriga o cliente a montar
+-- e começar a desenhar um objeto de GUI no meio da ação — era engasgo na hora
+-- exata do ataque, justamente quando o jogador está olhando.
+--
+-- Como a fila do Say já mostra uma mensagem por vez por herói, um balão por
+-- herói basta: o Create monta ele junto com o boneco e aqui só trocamos texto,
+-- cor e fonte.
+local function GetBubble(hero)
+	if not hero.part or not hero.part.Parent then return nil end
+	return hero.part:FindFirstChild("FloatingText")
+end
+
 local function ShowBubble(hero, text, kind)
-	if not hero.part or not hero.part.Parent then return end
+	local bubble = GetBubble(hero)
+	if not bubble then return end
+
+	local label = bubble:FindFirstChildWhichIsA("TextLabel")
+	if not label then return end
 
 	local style = TEXT_STYLES[kind] or DEFAULT_STYLE
 	local startOffset = Vector3.new(0, SPRITE_HEIGHT * 0.8, 0)
 
-	local bubble = Instance.new("BillboardGui")
-	bubble.Name = "FloatingText"
-	bubble.Size = UDim2.new(0, 180, 0, 38)
+	-- cancela o que sobrou da mensagem anterior antes de reusar
 	bubble.StudsOffset = startOffset
-	bubble.AlwaysOnTop = true
-	bubble.Parent = hero.part
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.fromScale(1, 1)
-	label.BackgroundTransparency = 1
 	label.Text = text
 	label.TextColor3 = style.color
 	label.Font = style.font
 	label.TextSize = style.size
-	label.TextStrokeColor3 = Color3.fromRGB(8, 10, 16)
-	label.TextStrokeTransparency = 1
 	label.TextTransparency = 1
-	label.Parent = bubble
+	label.TextStrokeTransparency = 1
+	bubble.Enabled = true
 
 	-- entra suave, sobe, some
 	TweenService:Create(label, TweenInfo.new(0.13), {
@@ -323,8 +394,10 @@ local function ShowBubble(hero, text, kind)
 		end
 	end)
 
+	-- desligar em vez de destruir: o BillboardGui desligado sai do desenho e
+	-- volta na próxima mensagem sem custo de criação
 	task.delay(BUBBLE_LIFETIME + 0.15, function()
-		if bubble then bubble:Destroy() end
+		if bubble.Parent then bubble.Enabled = false end
 	end)
 end
 
@@ -397,9 +470,32 @@ function HeroView.Create(hero)
 		AttachTo(anchor, body)
 	end
 
+	-- Balão de texto flutuante, montado UMA vez e reaproveitado a cada mensagem
+	-- (ver ShowBubble). Nasce desligado.
+	local bubble = Instance.new("BillboardGui")
+	bubble.Name = "FloatingText"
+	bubble.Size = UDim2.new(0, 180, 0, 38)
+	bubble.StudsOffset = Vector3.new(0, SPRITE_HEIGHT * 0.8, 0)
+	bubble.AlwaysOnTop = true
+	bubble.Enabled = false
+	bubble.Parent = anchor
+
+	local bubbleLabel = Instance.new("TextLabel")
+	bubbleLabel.Name = "Text"
+	bubbleLabel.Size = UDim2.fromScale(1, 1)
+	bubbleLabel.BackgroundTransparency = 1
+	bubbleLabel.Text = ""
+	bubbleLabel.TextStrokeColor3 = Color3.fromRGB(8, 10, 16)
+	bubbleLabel.TextStrokeTransparency = 1
+	bubbleLabel.TextTransparency = 1
+	bubbleLabel.Parent = bubble
+
+	-- A caixa é larga o bastante pro pior caso (ataque + vida + passiva + veneno);
+	-- o UIListLayout centraliza o que existir, então herói sem passiva continua
+	-- com o crachá curtinho e centrado.
 	local statsGui = Instance.new("BillboardGui")
 	statsGui.Name = "HeroInfo"
-	statsGui.Size = UDim2.new(0, 48, 0, 16)
+	statsGui.Size = UDim2.new(0, 124, 0, BADGE_HEIGHT + 2)
 	statsGui.StudsOffset = Vector3.new(0, -SPRITE_HEIGHT * 0.34, 0)
 	statsGui.AlwaysOnTop = true
 	statsGui.Parent = anchor
@@ -413,47 +509,99 @@ function HeroView.Create(hero)
 	layout.FillDirection = Enum.FillDirection.Horizontal
 	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	layout.VerticalAlignment = Enum.VerticalAlignment.Center
-	layout.Padding = UDim.new(0, 2)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, BADGE_PADDING)
 	layout.Parent = row
 
-	local function badge(name, color, order)
+	-- Casca comum: fundo escuro, canto arredondado e a moldura dourada.
+	local function shell(name, width, order)
 		local frame = Instance.new("Frame")
 		frame.Name = name
-		frame.Size = UDim2.new(0, 19, 0, 15)
-		frame.BackgroundColor3 = color
+		frame.Size = UDim2.new(0, width, 0, BADGE_HEIGHT)
+		frame.BackgroundColor3 = BADGE_BG
 		frame.BorderSizePixel = 0
 		frame.LayoutOrder = order
 		frame.Parent = row
 
 		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(0, 4)
+		corner.CornerRadius = UDim.new(0, 5)
 		corner.Parent = frame
 
 		local stroke = Instance.new("UIStroke")
-		stroke.Color = Color3.fromRGB(10, 12, 18)
-		stroke.Thickness = 1.2
+		stroke.Name = "Edge"
+		stroke.Color = BADGE_GOLD
+		stroke.Thickness = 1.1
+		stroke.Transparency = 0.15
 		stroke.Parent = frame
+
+		return frame
+	end
+
+	-- Ícone à esquerda, número à direita — a mesma leitura dos dois crachás.
+	local function statBadge(name, iconName, iconColor, order)
+		local frame = shell(name, STAT_BADGE_WIDTH, order)
+
+		local iconSlot = Instance.new("Frame")
+		iconSlot.Name = "IconSlot"
+		iconSlot.AnchorPoint = Vector2.new(0, 0.5)
+		iconSlot.Position = UDim2.new(0, 3, 0.5, 0)
+		iconSlot.Size = UDim2.new(0, ICON_SLOT, 0, ICON_SLOT)
+		iconSlot.BackgroundTransparency = 1
+		iconSlot.ZIndex = 2
+		iconSlot.Parent = frame
+
+		PixelIcons.Build(iconName, iconSlot, iconColor, 2)
 
 		local value = Instance.new("TextLabel")
 		value.Name = "Value"
-		value.Size = UDim2.fromScale(1, 1)
+		value.AnchorPoint = Vector2.new(1, 0.5)
+		value.Position = UDim2.new(1, -3, 0.5, 0)
+		value.Size = UDim2.new(0, STAT_BADGE_WIDTH - ICON_SLOT - 8, 0, 14)
 		value.BackgroundTransparency = 1
 		value.TextColor3 = Color3.new(1, 1, 1)
 		value.TextScaled = true
-		value.Font = Enum.Font.GothamBold
+		value.Font = Enum.Font.GothamBlack
+		value.ZIndex = 2
 		value.Parent = frame
+
+		return frame
 	end
 
-	badge("Atk", Color3.fromRGB(52, 100, 175), 1)
-	badge("Hp", Color3.fromRGB(65, 155, 85), 2)
+	statBadge("Atk", "sword", ICON_RED, 1)
+	statBadge("Hp", "heart", ICON_RED, 2)
 
-	local status = Instance.new("Frame")
-	status.Name = "Status"
-	status.Size = UDim2.new(0, 15, 0, 15)
-	status.LayoutOrder = 3
-	status.BackgroundTransparency = 1
-	status.ClipsDescendants = true
-	status.Parent = row
+	-- Passiva: só existe pra quem tem uma. Nada aqui muda durante a partida, por
+	-- isso é montado uma vez e o UpdateStats nem olha pra ele.
+	local abilityBadge = ABILITY_BADGES[hero.ability]
+	if abilityBadge then
+		local frame = shell("Ability", SQUARE_BADGE_WIDTH, 3)
+
+		local iconSlot = Instance.new("Frame")
+		iconSlot.Name = "IconSlot"
+		iconSlot.AnchorPoint = Vector2.new(0.5, 0.5)
+		iconSlot.Position = UDim2.fromScale(0.5, 0.5)
+		iconSlot.Size = UDim2.new(0, ICON_SLOT, 0, ICON_SLOT)
+		iconSlot.BackgroundTransparency = 1
+		iconSlot.ZIndex = 2
+		iconSlot.Parent = frame
+
+		PixelIcons.Build(abilityBadge.icon, iconSlot, abilityBadge.color, 2)
+	end
+
+	-- Veneno ganha a mesma casca dos outros, pra não ser o único selo solto no
+	-- meio de uma fileira emoldurada. O recorte da tira mora no slot interno.
+	local status = shell("Status", SQUARE_BADGE_WIDTH, 5)
+	status.Visible = false
+
+	local statusSlot = Instance.new("Frame")
+	statusSlot.Name = "Slot"
+	statusSlot.AnchorPoint = Vector2.new(0.5, 0.5)
+	statusSlot.Position = UDim2.fromScale(0.5, 0.5)
+	statusSlot.Size = UDim2.new(0, ICON_SLOT, 0, ICON_SLOT)
+	statusSlot.BackgroundTransparency = 1
+	statusSlot.ClipsDescendants = true
+	statusSlot.ZIndex = 2
+	statusSlot.Parent = status
 
 	-- tira de 3 células: a ImageLabel fica 3x mais larga que a janela (status)
 	-- e desliza por escala (Position em múltiplos de -1) pra mostrar só 1 célula
@@ -465,7 +613,8 @@ function HeroView.Create(hero)
 	statusIcon.ScaleType = Enum.ScaleType.Stretch
 	statusIcon.Visible = false
 	statusIcon.ResampleMode = Enum.ResamplerMode.Pixelated
-	statusIcon.Parent = status
+	statusIcon.ZIndex = 3
+	statusIcon.Parent = statusSlot
 
 	local statusFallback = Instance.new("TextLabel")
 	statusFallback.Name = "Fallback"
@@ -475,7 +624,8 @@ function HeroView.Create(hero)
 	statusFallback.TextColor3 = Color3.fromRGB(160, 240, 140)
 	statusFallback.TextScaled = true
 	statusFallback.Font = Enum.Font.GothamBold
-	statusFallback.Parent = status
+	statusFallback.ZIndex = 3
+	statusFallback.Parent = statusSlot
 
 	hero.part = anchor
 	HeroView.UpdateStats(hero)
@@ -496,26 +646,54 @@ function HeroView.UpdateStats(hero)
 
 	if atk then
 		atk.Value.Text = tostring(hero.attack)
-		local target = hero.attack > hero.baseAttack
-			and Color3.fromRGB(85, 155, 240) or Color3.fromRGB(52, 100, 175)
-		TweenService:Create(atk, TweenInfo.new(0.25), { BackgroundColor3 = target }):Play()
+
+		-- Buffado = fundo e número em verde, com a moldura mais grossa. O ícone
+		-- de espada continua vermelho: ele é a identidade do crachá, e trocar a
+		-- cor dele junto faria os dois selos ficarem verdes e indistinguíveis.
+		local buffed = hero.attack > hero.baseAttack
+		local edge = atk:FindFirstChild("Edge")
+
+		TweenService:Create(atk, TweenInfo.new(0.25), {
+			BackgroundColor3 = buffed and BUFF_BG or BADGE_BG,
+		}):Play()
+
+		TweenService:Create(atk.Value, TweenInfo.new(0.25), {
+			TextColor3 = buffed and BUFF_TEXT or Color3.new(1, 1, 1),
+		}):Play()
+
+		if edge then
+			TweenService:Create(edge, TweenInfo.new(0.25), {
+				Color = buffed and BUFF_STROKE or BADGE_GOLD,
+				Thickness = buffed and 2 or 1.1,
+				Transparency = buffed and 0 or 0.15,
+			}):Play()
+		end
 	end
 
 	if hp then
 		local ratio = hero.maxHp > 0 and math.max(hero.currentHp, 0) / hero.maxHp or 0
 		hp.Value.Text = tostring(math.max(hero.currentHp, 0))
-		local target = ratio > 0.5 and Color3.fromRGB(65, 155, 85)
-			or (ratio > 0.25 and Color3.fromRGB(190, 150, 50) or Color3.fromRGB(190, 60, 60))
-		TweenService:Create(hp, TweenInfo.new(0.25), { BackgroundColor3 = target }):Play()
+
+		-- Aqui quem muda de cor é o NÚMERO, não o fundo: com o coração vermelho
+		-- fixo do lado, pintar o crachá inteiro de vermelho aos 20% de vida
+		-- apagava o próprio ícone contra o fundo.
+		local target = ratio > 0.5 and HP_TEXT_FULL
+			or (ratio > 0.25 and HP_TEXT_HURT or HP_TEXT_CRITICAL)
+		TweenService:Create(hp.Value, TweenInfo.new(0.25), { TextColor3 = target }):Play()
 	end
 
-	if status then
-		local icon = status:FindFirstChild("Icon")
-		local fallback = status:FindFirstChild("Fallback")
+	local statusSlot = status and status:FindFirstChild("Slot")
+	if statusSlot then
+		local icon = statusSlot:FindFirstChild("Icon")
+		local fallback = statusSlot:FindFirstChild("Fallback")
 		local poison = nil
 		for _, effect in ipairs(hero.statusEffects) do
 			if effect.type == "poison" then poison = effect end
 		end
+
+		-- o selo inteiro some sem veneno: crachá vazio com moldura dourada
+		-- parecia um ícone que não carregou
+		status.Visible = poison ~= nil
 
 		local spriteId = HeroData.GetPoisonSpriteId()
 		if poison and spriteId then

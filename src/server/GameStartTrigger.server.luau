@@ -24,8 +24,31 @@ local LobbyStatus = ReplicatedStorage.Remotes.LobbyStatus
 
 local TOUCH_DEBOUNCE = 1.5
 
-local botPad = Workspace:WaitForChild("StartBotMatch")
-local pvpPad = Workspace:WaitForChild("StartPvpMatch")
+-- Os pads são construídos à mão no place, e onde eles moram é decisão de quem
+-- edita o cenário: agrupar o lobby inteiro numa pasta (Workspace.Base) tirava os
+-- dois da raiz do Workspace, o WaitForChild direto ficava pendurado pra sempre e
+-- ninguém conseguia entrar em partida nenhuma — sem erro na saída, só silêncio.
+-- Agora procura em qualquer profundidade, e continua esperando o que ainda não
+-- replicou.
+local PAD_WAIT_TIMEOUT = 20
+
+local function WaitForPad(name)
+	local deadline = os.clock() + PAD_WAIT_TIMEOUT
+
+	repeat
+		local pad = Workspace:FindFirstChild(name, true)
+		if pad and pad:IsA("BasePart") then return pad end
+		task.wait(0.25)
+	until os.clock() > deadline
+
+	warn(("GameStartTrigger: pad '%s' não encontrado no Workspace em %ds. " ..
+		"Ele precisa ser uma Part com esse nome exato, em qualquer lugar do cenário.")
+		:format(name, PAD_WAIT_TIMEOUT))
+	return nil
+end
+
+local botPad = WaitForPad("StartBotMatch")
+local pvpPad = WaitForPad("StartPvpMatch")
 
 local queue = {}
 local lastTouch = {}
@@ -34,6 +57,8 @@ local lastTouch = {}
 -- Os pads vieram do build à mão soltos e tortos; deixa em pé, ancorado e
 -- com placa legível pra virar um botão de verdade.
 local function DecoratePad(pad, color, title, subtitle)
+	if not pad then return end
+
 	pad.Anchored = true
 	pad.CanCollide = true
 	pad.Material = Enum.Material.SmoothPlastic
@@ -93,18 +118,17 @@ BoardSpawner.EnsureArena(1)
 -- está a ~33 — dava pra renascer praticamente em cima do pad e entrar na fila
 -- sem querer. Desliga os pontos mais afastados; os de dentro do raio bastam.
 local function TrimSpawnRadius()
-	local lobby = Workspace:FindFirstChild("Folder")
-	lobby = lobby and lobby:FindFirstChild("Lobby")
-	local spawns = lobby and lobby:FindFirstChild("Spawns")
-	if not spawns then return end
-
+	-- Antes isso descia por um caminho fixo (Workspace.Folder.Lobby.Spawns) e
+	-- quebrava calado assim que o lobby era reorganizado ou renomeado no Studio.
+	-- Varrer o Workspace atrás de SpawnLocation dá no mesmo e não depende de
+	-- onde as coisas estão guardadas.
 	local parts = {}
 	local sum = Vector3.new()
 
-	for _, child in ipairs(spawns:GetChildren()) do
-		if child:IsA("SpawnLocation") then
-			table.insert(parts, child)
-			sum += child.Position
+	for _, descendant in ipairs(Workspace:GetDescendants()) do
+		if descendant:IsA("SpawnLocation") then
+			table.insert(parts, descendant)
+			sum += descendant.Position
 		end
 	end
 
@@ -139,6 +163,8 @@ end
 TrimSpawnRadius()
 
 local function SetPvpSubtitle(text)
+	if not pvpPad then return end
+
 	local label = pvpPad:FindFirstChild("PadLabel")
 	local subtitle = label and label:FindFirstChild("Subtitle")
 	if subtitle then subtitle.Text = text end
@@ -222,6 +248,10 @@ end
 
 -- ===================== ENTRADA =====================
 local function ConnectPad(pad, handler)
+	-- pad faltando não pode derrubar o script: os RemoteEvents lá embaixo são o
+	-- que faz uma partida em andamento continuar respondendo
+	if not pad then return end
+
 	pad.Touched:Connect(function(hit)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
 		if not player then return end

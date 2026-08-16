@@ -34,8 +34,10 @@ local ROW_COLORS = {
 -- CFrame.new(pos, lookAt) precisa de um alvo em altura diferente de zero no
 -- plano horizontal, senão o vetor fica vertical e a peça deita.
 local function BoardCFrame()
-	local botPad = Workspace:FindFirstChild("StartBotMatch")
-	local pvpPad = Workspace:FindFirstChild("StartPvpMatch")
+	-- busca recursiva: os pads podem estar dentro de qualquer pasta do cenário
+	-- (o lobby foi agrupado em Workspace.Base), e o caminho raso achava nada
+	local botPad = Workspace:FindFirstChild("StartBotMatch", true)
+	local pvpPad = Workspace:FindFirstChild("StartPvpMatch", true)
 	if not (botPad and pvpPad) then return nil end
 
 	local midpoint = (botPad.Position + pvpPad.Position) / 2
@@ -49,7 +51,7 @@ local function BoardCFrame()
 end
 
 function LeaderboardBoardView.EnsureBoard()
-	local existing = Workspace:FindFirstChild(BOARD_NAME)
+	local existing = Workspace:FindFirstChild(BOARD_NAME, true)
 	if existing and existing:FindFirstChild("Sign") then
 		return existing
 	end
@@ -148,7 +150,7 @@ end
 
 -- entries: { { name = string, wins = number }, ... }
 function LeaderboardBoardView.Render(entries)
-	local board = Workspace:FindFirstChild(BOARD_NAME)
+	local board = Workspace:FindFirstChild(BOARD_NAME, true)
 	local sign = board and board:FindFirstChild("Sign")
 	local background = sign and sign:FindFirstChild("Background")
 	local list = background and background:FindFirstChild("List")

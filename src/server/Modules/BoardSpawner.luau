@@ -86,22 +86,17 @@ local function CreateHexTile(template, worldPos, color, hexId)
 	clone:SetAttribute("BaseColor", color)
 	ApplyColor(clone, color)
 
-	local anchor = clone:IsA("Model") and clone.PrimaryPart or clone
-	if anchor then
-		local billboard = Instance.new("BillboardGui")
-		billboard.Name = "HexLabel"
-		billboard.Size = UDim2.new(0, 50, 0, 20)
-		billboard.StudsOffset = Vector3.new(0, 2, 0)
-		billboard.AlwaysOnTop = true
-		billboard.Parent = anchor
-
-		local clickDetector = Instance.new("ClickDetector")
-		clickDetector.MaxActivationDistance = 1000
-		clickDetector.Parent = anchor
-		clickDetector.MouseClick:Connect(function(player)
-			print(player.Name .. " clicou no hex " .. hexId)
-		end)
-	end
+	-- Aqui existiam duas sobras de depuração, uma por casa: um BillboardGui
+	-- "HexLabel" SEM NENHUM FILHO e um ClickDetector cujo único handler era um
+	-- print. Nenhum código lia os dois.
+	--
+	-- Não era inofensivo: BillboardGui é reprojetado todo quadro mesmo vazio, e
+	-- ClickDetector entra no teste de mouse do engine. Com 61 casas por arena e
+	-- até 6 arenas simultâneas, dava ~366 BillboardGui vazios e ~366
+	-- ClickDetectors sendo processados por quadro, sem desenhar nada.
+	--
+	-- Quem lê o clique é o cliente, pelo atributo HexId em mouse.Target — nunca
+	-- foi por ClickDetector.
 
 	return clone
 end
