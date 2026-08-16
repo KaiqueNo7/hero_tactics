@@ -14,6 +14,7 @@ local Debris = game:GetService("Debris")
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local PixelIcons = require(ReplicatedStorage.Modules.PixelIcons)
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 
@@ -168,8 +169,11 @@ end
 -- ===== RETRATOS DOS DOIS TIMES (colunas nas laterais) =====
 -- Uma coluna por jogador, com o nome dele em cima. O retrato apaga quando o
 -- herói morre — dá pra saber quem ainda está de pé sem varrer o tabuleiro.
-local CARD_SIZE = 48
+-- 54 e não 48: o nome do herói entra numa faixa no pé do card, e com 48 sobrava
+-- retrato de menos pra dar pra reconhecer quem é.
+local CARD_SIZE = 54
 local CARD_GAP = 5
+local NAME_STRIP = 12
 local COLUMN_HEADER = 18
 -- Começa abaixo do selo de contra-ataque e termina acima do painel de detalhe
 -- (que fica a 112px do rodapé), pra caber até em celular deitado.
@@ -187,7 +191,8 @@ local DEAD_CARD = Color3.fromRGB(18, 19, 23)
 local function buildPortrait(parent)
 	local image = Instance.new("ImageLabel")
 	image.Name = "Portrait"
-	image.Size = UDim2.new(1, -6, 1, -6)
+	-- deixa livre a faixa do nome no pé do card
+	image.Size = UDim2.new(1, -6, 1, -(6 + NAME_STRIP))
 	image.Position = UDim2.new(0, 3, 0, 3)
 	image.BackgroundTransparency = 1
 	image.ScaleType = Enum.ScaleType.Fit
@@ -265,14 +270,32 @@ local function buildTeamColumn(alignLeft)
 		hpFill.ZIndex = 4
 		hpFill.Parent = hpTrack
 
+		-- Faixa do nome no pé do card, logo acima da barra de vida.
+		local heroName = Instance.new("TextLabel")
+		heroName.Name = "HeroName"
+		heroName.AnchorPoint = Vector2.new(0, 1)
+		heroName.Position = UDim2.new(0, 0, 1, -4)
+		heroName.Size = UDim2.new(1, 0, 0, NAME_STRIP)
+		heroName.BackgroundColor3 = Color3.fromRGB(10, 11, 16)
+		heroName.BackgroundTransparency = 0.25
+		heroName.BorderSizePixel = 0
+		heroName.TextColor3 = Color3.fromRGB(232, 238, 250)
+		heroName.TextScaled = true
+		heroName.Font = Enum.Font.GothamBold
+		heroName.Text = ""
+		heroName.ZIndex = 4
+		heroName.Parent = card
+
+		-- O número da vida subiu pro canto de cima: embaixo agora é o nome, e os
+		-- dois disputando a mesma faixa de 54px deixava os dois ilegíveis.
 		local hpLabel = Instance.new("TextLabel")
 		hpLabel.Name = "Hp"
-		hpLabel.AnchorPoint = Vector2.new(1, 1)
-		hpLabel.Position = UDim2.new(1, -3, 1, -5)
-		hpLabel.Size = UDim2.new(0, 24, 0, 13)
+		hpLabel.AnchorPoint = Vector2.new(1, 0)
+		hpLabel.Position = UDim2.new(1, -3, 0, 2)
+		hpLabel.Size = UDim2.new(0, 26, 0, 13)
 		hpLabel.BackgroundTransparency = 1
 		hpLabel.TextColor3 = Color3.new(1, 1, 1)
-		hpLabel.TextStrokeTransparency = 0.2
+		hpLabel.TextStrokeTransparency = 0.15
 		hpLabel.TextXAlignment = Enum.TextXAlignment.Right
 		hpLabel.TextSize = 12
 		hpLabel.Font = Enum.Font.GothamBlack
@@ -302,6 +325,7 @@ local function buildTeamColumn(alignLeft)
 			card = card,
 			stroke = stroke,
 			portrait = portrait,
+			heroName = heroName,
 			hpTrack = hpTrack,
 			hpFill = hpFill,
 			hpLabel = hpLabel,
@@ -358,6 +382,10 @@ local function renderRow(row, hero)
 	-- Morto: retrato apagado e riscado. O Roblox não tem controle de saturação
 	-- por elemento de GUI, então "sem cor" aqui é o ImageColor3 puxado pro
 	-- cinza-chumbo — some com o vermelho/verde do sprite e some com o destaque.
+	row.heroName.Text = hero.name
+	row.heroName.TextColor3 = alive
+		and Color3.fromRGB(232, 238, 250) or Color3.fromRGB(132, 136, 146)
+
 	row.portrait.ImageColor3 = alive and Color3.new(1, 1, 1) or DEAD_TINT
 	row.portrait.ImageTransparency = alive and 0 or 0.15
 	row.card.BackgroundColor3 = alive and Color3.fromRGB(24, 27, 37) or DEAD_CARD
@@ -653,10 +681,161 @@ endTurnButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("endTurn")
 end)
 
+-- ===== DESISTIR (canto inferior esquerdo) =====
+-- Mora no canto mais morto da tela e é pequeno de propósito: desistir entrega a
+-- partida, então um toque acidental aqui custa o jogo inteiro. Pelo mesmo
+-- motivo ele não age direto — abre uma confirmação.
+local surrenderButton = Instance.new("TextButton")
+surrenderButton.Name = "Surrender"
+surrenderButton.AnchorPoint = Vector2.new(0, 1)
+surrenderButton.Position = UDim2.new(0, 12, 1, -12)
+surrenderButton.Size = UDim2.new(0, 42, 0, 42)
+surrenderButton.BackgroundColor3 = Color3.fromRGB(26, 23, 30)
+surrenderButton.BackgroundTransparency = 0.25
+surrenderButton.Text = ""
+surrenderButton.BorderSizePixel = 0
+surrenderButton.AutoButtonColor = true
+surrenderButton.Visible = false
+surrenderButton.Parent = gui
+
+local surrenderCorner = Instance.new("UICorner")
+surrenderCorner.CornerRadius = UDim.new(0, 8)
+surrenderCorner.Parent = surrenderButton
+
+local surrenderStroke = Instance.new("UIStroke")
+surrenderStroke.Color = Color3.fromRGB(150, 90, 90)
+surrenderStroke.Thickness = 1.2
+surrenderStroke.Transparency = 0.35
+surrenderStroke.Parent = surrenderButton
+
+local flagSlot = Instance.new("Frame")
+flagSlot.Name = "FlagSlot"
+flagSlot.AnchorPoint = Vector2.new(0.5, 0.5)
+flagSlot.Position = UDim2.fromScale(0.5, 0.5)
+flagSlot.Size = UDim2.new(0, 21, 0, 21) -- 7x7 em células de 3px, sem sobra
+flagSlot.BackgroundTransparency = 1
+flagSlot.Parent = surrenderButton
+
+PixelIcons.Build("flag", flagSlot, Color3.fromRGB(222, 226, 238), 2)
+
+-- ===== CONFIRMAÇÃO DE DESISTÊNCIA =====
+local confirmLayer = Instance.new("Frame")
+confirmLayer.Name = "SurrenderConfirm"
+confirmLayer.Size = UDim2.fromScale(1, 1)
+confirmLayer.BackgroundTransparency = 1
+confirmLayer.Visible = false
+confirmLayer.ZIndex = 45
+confirmLayer.Parent = gui
+
+local confirmBackdrop = Instance.new("TextButton")
+confirmBackdrop.Size = UDim2.fromScale(1, 1)
+confirmBackdrop.BackgroundColor3 = Color3.fromRGB(6, 7, 11)
+confirmBackdrop.BackgroundTransparency = 0.45
+confirmBackdrop.BorderSizePixel = 0
+confirmBackdrop.Text = ""
+confirmBackdrop.AutoButtonColor = false
+confirmBackdrop.ZIndex = 45
+confirmBackdrop.Parent = confirmLayer
+
+local confirmPanel = Instance.new("Frame")
+confirmPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+confirmPanel.Position = UDim2.fromScale(0.5, 0.5)
+confirmPanel.Size = UDim2.new(0, 320, 0, 164)
+confirmPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
+confirmPanel.BorderSizePixel = 0
+confirmPanel.ZIndex = 46
+confirmPanel.Parent = confirmLayer
+
+local confirmCorner = Instance.new("UICorner")
+confirmCorner.CornerRadius = UDim.new(0, 12)
+confirmCorner.Parent = confirmPanel
+
+local confirmStroke = Instance.new("UIStroke")
+confirmStroke.Color = Color3.fromRGB(190, 90, 90)
+confirmStroke.Thickness = 2
+confirmStroke.Transparency = 0.25
+confirmStroke.Parent = confirmPanel
+
+local confirmTitle = Instance.new("TextLabel")
+confirmTitle.Size = UDim2.new(1, -24, 0, 30)
+confirmTitle.Position = UDim2.new(0, 12, 0, 14)
+confirmTitle.BackgroundTransparency = 1
+confirmTitle.Text = "Desistir da partida?"
+confirmTitle.TextColor3 = Color3.new(1, 1, 1)
+confirmTitle.TextScaled = true
+confirmTitle.Font = Enum.Font.GothamBlack
+confirmTitle.ZIndex = 46
+confirmTitle.Parent = confirmPanel
+
+local confirmText = Instance.new("TextLabel")
+confirmText.Size = UDim2.new(1, -28, 0, 40)
+confirmText.Position = UDim2.new(0, 14, 0, 48)
+confirmText.BackgroundTransparency = 1
+confirmText.Text = ""
+confirmText.TextColor3 = Color3.fromRGB(200, 208, 224)
+confirmText.TextWrapped = true
+confirmText.TextSize = 14
+confirmText.Font = Enum.Font.Gotham
+confirmText.ZIndex = 46
+confirmText.Parent = confirmPanel
+
+local function confirmButton(name, text, color, alignRight)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.AnchorPoint = Vector2.new(alignRight and 1 or 0, 1)
+	button.Position = UDim2.new(alignRight and 1 or 0, alignRight and -16 or 16, 1, -16)
+	button.Size = UDim2.new(0.5, -24, 0, 42)
+	button.BackgroundColor3 = color
+	button.TextColor3 = Color3.new(1, 1, 1)
+	button.Text = text
+	button.TextSize = 17
+	button.Font = Enum.Font.GothamBold
+	button.BorderSizePixel = 0
+	button.ZIndex = 47
+	button.Parent = confirmPanel
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = button
+
+	return button
+end
+
+local keepPlayingButton = confirmButton("KeepPlaying", "Continuar", Color3.fromRGB(60, 70, 90), false)
+local giveUpButton = confirmButton("GiveUp", "Desistir", Color3.fromRGB(170, 60, 60), true)
+
+local function closeConfirm()
+	confirmLayer.Visible = false
+end
+
+confirmBackdrop.MouseButton1Click:Connect(closeConfirm)
+keepPlayingButton.MouseButton1Click:Connect(closeConfirm)
+
+surrenderButton.MouseButton1Click:Connect(function()
+	if not state or state.phase ~= "battle" then return end
+
+	-- O texto muda com o modo porque a consequência muda: contra o bot ninguém
+	-- recebe nada (o AwardAbandon ignora lado sem jogador), em PvP o adversário
+	-- leva a vitória. Prometer punição que não existe faz o jogador desconfiar
+	-- do aviso da próxima vez.
+	confirmText.Text = state.vsBot
+		and "A partida acaba na hora e você volta pro lobby. Nenhum XP é pago."
+		or "Seu adversário leva a vitória e o XP dela. Você não ganha nada."
+
+	confirmLayer.Visible = true
+end)
+
+giveUpButton.MouseButton1Click:Connect(function()
+	closeConfirm()
+	GameAction:FireServer("leaveMatch")
+end)
+
 -- ===== PAINEL DE DETALHE DO HERÓI SELECIONADO =====
 local detailPanel = Instance.new("Frame")
 detailPanel.Size = UDim2.new(0, 210, 0, 96)
-detailPanel.Position = UDim2.new(0, 16, 1, -112)
+-- empurrado pra direita: o canto inferior esquerdo virou a casa do botão de
+-- desistir, e os dois lado a lado não crescem a altura da barra de baixo
+detailPanel.Position = UDim2.new(0, 64, 1, -112)
 detailPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
 detailPanel.BackgroundTransparency = 0.15
 detailPanel.BorderSizePixel = 0
@@ -1158,6 +1337,10 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		counterBadge.Visible = false
 		endTurnButton.Visible = false
 		detailPanel.Visible = false
+		-- acabou: não há mais o que desistir, e o painel de resultado já oferece
+		-- "voltar pro lobby"
+		surrenderButton.Visible = false
+		closeConfirm()
 		resultPanel.Visible = true
 		secondsLeft = nil
 		wasMyTurn = false
@@ -1191,6 +1374,8 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	if state.phase ~= "battle" then
 		gui.Enabled = false
 		counterBadge.Visible = false
+		surrenderButton.Visible = false
+		closeConfirm()
 		hideTeams()
 		clearHighlights()
 		selectedUid = nil
@@ -1201,6 +1386,10 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	gui.Enabled = true
 	turnPanel.Visible = true
 	resultPanel.Visible = false
+
+	-- Disponível o turno inteiro, inclusive na vez do adversário: quem quer sair
+	-- não deveria ter que esperar a própria vez pra conseguir.
+	surrenderButton.Visible = true
 
 	counterBadge.Visible = true
 	renderCounterBadge(state.counterAttackUsed)

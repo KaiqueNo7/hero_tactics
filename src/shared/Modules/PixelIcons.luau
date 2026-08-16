@@ -90,6 +90,19 @@ PixelIcons.PATTERNS = {
     "######.",
   },
 
+	-- Bandeira de rendição: mastro na coluna 1 descendo inteiro, e o pano
+	-- ondulado à direita. A borda irregular é o que separa de um retângulo
+	-- qualquer no tamanho real.
+	flag = {
+		"######.",
+		"#####..",
+		"######.",
+		"#####..",
+		"#......",
+		"#......",
+		"#......",
+	},
+
 	-- RANGED: círculo com os quatro traços e o ponto no centro
 	ranged = {
 		"...#...",

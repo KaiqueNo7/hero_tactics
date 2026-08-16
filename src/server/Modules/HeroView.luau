@@ -46,7 +46,26 @@ end
 -- tabuleiro visto de cima. 5,2 dá presença sem transbordar pra casa vizinha nem
 -- tapar o vizinho de trás. Tudo que é derivado (altura, elevação da âncora,
 -- posição dos selos de ATK/HP e do texto flutuante) acompanha sozinho.
-local SPRITE_WIDTH = 5.2
+local SPRITE_WIDTH = 5.8
+
+-- ===== PISO EM PIXELS DO SPRITE =====
+-- BillboardGui com Size em Scale mede STUDS: encolhe com o zoom. Com Size em
+-- Offset mede PIXELS: fica constante. O crachá de status usa Offset, o sprite
+-- usava só Scale — então afastando a câmera o herói caía de 68 para 38 px de
+-- altura enquanto o crachá continuava com os mesmos 124 px de largura. O boneco
+-- ficava menor que a própria ficha dele.
+--
+-- A correção é usar os DOIS ao mesmo tempo: o Roblox soma as duas partes, então
+-- a parcela em Scale mantém a perspectiva (quem está longe no tabuleiro parece
+-- mais longe) e a parcela em Offset é um piso que não deixa o herói sumir.
+--
+-- Isso muda a altura desenhada conforme o zoom, e um StudsOffset fixo em studs
+-- deixaria os pés flutuando. Quem resolve é o SizeOffset lá embaixo: ele
+-- desloca em fração do PRÓPRIO tamanho, então a base do sprite fica colada na
+-- casa em qualquer zoom.
+local SPRITE_PIXEL_FLOOR_H = 18
+local SPRITE_PIXEL_FLOOR_W = 13 -- mesma proporção do quadro (165x231)
+
 local TILE_TOP_Y = 0.5
 local MOVE_STEP_TIME = 0.22
 local BOT_ID = "BOT"
@@ -445,8 +464,13 @@ function HeroView.Create(hero)
 	if SPRITES_ENABLED then
 		local spriteGui = Instance.new("BillboardGui")
 		spriteGui.Name = "Sprite"
-		spriteGui.Size = UDim2.fromScale(SPRITE_WIDTH, SPRITE_HEIGHT)
-		spriteGui.StudsOffsetWorldSpace = Vector3.new(0, SPRITE_HEIGHT / 2 - ANCHOR_LIFT, 0)
+		spriteGui.Size = UDim2.new(
+			SPRITE_WIDTH, SPRITE_PIXEL_FLOOR_W,
+			SPRITE_HEIGHT, SPRITE_PIXEL_FLOOR_H)
+		-- referência no topo da casa; o SizeOffset sobe meio sprite a partir
+		-- dali, então os pés ficam plantados seja qual for o tamanho desenhado
+		spriteGui.StudsOffsetWorldSpace = Vector3.new(0, -ANCHOR_LIFT, 0)
+		spriteGui.SizeOffset = Vector2.new(0, 0.5)
 		spriteGui.LightInfluence = 0
 		spriteGui.Parent = anchor
 
