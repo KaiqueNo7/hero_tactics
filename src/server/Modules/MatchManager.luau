@@ -1149,6 +1149,51 @@ function MatchManager.PlaceHero(player, dataId, hexId)
 	AdvancePlacement(match)
 end
 
+-- ===================== STREAMING =====================
+-- Com Workspace.StreamingEnabled, o cliente só recebe as regiões perto do
+-- personagem dele. A arena fica a centenas de studs do lobby, então no primeiro
+-- instante da partida o tabuleiro AINDA NÃO EXISTE no cliente — e o
+-- `boardFolder` que viaja no snapshot é uma REFERÊNCIA de instância: referência
+-- para algo que não foi transmitido chega `nil` do outro lado.
+--
+-- É a causa de raiz de uma família de remendos espalhados pelo cliente ("o Board
+-- é replicado de forma assíncrona", a zona de largada que às vezes não ficava
+-- verde, o retry do selectHero). Pedir o streaming ANTES de avisar o cliente
+-- resolve na origem; os remendos continuam lá como rede de segurança para
+-- quando o pedido estourar o prazo.
+local STREAM_TIMEOUT = 5
+
+local function StreamArenaTo(players, origin)
+	if not Workspace.StreamingEnabled then return end
+
+	local center = HexGrid.GetBoardCenter(origin)
+	local pending = 0
+
+	for _, player in ipairs(players) do
+		if player and player.Parent then
+			pending += 1
+			task.spawn(function()
+				local ok, err = pcall(function()
+					player:RequestStreamAroundAsync(center, STREAM_TIMEOUT)
+				end)
+				if not ok then
+					warn(("MatchManager: streaming da arena falhou para %s: %s")
+						:format(player.Name, tostring(err)))
+				end
+				pending -= 1
+			end)
+		end
+	end
+
+	-- Espera os dois lados, mas nunca além do prazo: entrar com o tabuleiro meio
+	-- carregado é ruim; travar a partida esperando é pior.
+	local waited = 0
+	while pending > 0 and waited < STREAM_TIMEOUT + 1 do
+		task.wait(0.1)
+		waited += 0.1
+	end
+end
+
 -- ===================== SLOTS DE ARENA =====================
 local function AllocateSlot()
 	for slot = 1, GameConfig.MAX_SIMULTANEOUS_MATCHES do
@@ -1234,6 +1279,10 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 
 	matches[matchId] = match
 	matchBySlot[slot] = match
+
+	-- O tabuleiro já existe no servidor; garante que ele existe no CLIENTE antes
+	-- de mandar a câmera pra lá e antes do primeiro snapshot.
+	StreamArenaTo(players, origin)
 
 	-- a câmera do cliente se ancora na arena DESTA partida
 	local hexSize = HexGrid.GetHexSize()

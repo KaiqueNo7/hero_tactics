@@ -56,7 +56,18 @@ GameConfig.PLAYER_STAND_SPACING = 7 -- distância entre os dois competidores
 -- roda normalmente só que sem chão nenhum embaixo.
 GameConfig.ARENA_ORIGIN = Vector3.new(304, 664, 313)
 GameConfig.ARENA_SPACING = 200
-GameConfig.MAX_SIMULTANEOUS_MATCHES = 6
+
+-- Cada arena comporta 2 jogadores, então este número TEM que acompanhar o
+-- tamanho do servidor: com 8 arenas cabem 16 em partida. Se o servidor for
+-- maior que o dobro disto, a diferença é gente parada no lobby recebendo
+-- "Todas as arenas estão ocupadas" — a pior primeira impressão possível.
+--
+-- O tamanho do servidor não se configura por script: é Game Settings > Players
+-- > Max Players. Mantenha os dois em par (16 jogadores / 8 arenas).
+--
+-- Arena parada custa pouco (é cenário clonado, sem script), então o teto real
+-- é memória e replicação, não CPU.
+GameConfig.MAX_SIMULTANEOUS_MATCHES = 8
 
 function GameConfig.ArenaOrigin(slot)
 	return GameConfig.ARENA_ORIGIN + Vector3.new((slot - 1) * GameConfig.ARENA_SPACING, 0, 0)
