@@ -149,11 +149,11 @@ end
 local menuGui = Instance.new("ScreenGui")
 menuGui.Name = "LobbyMenuGui"
 menuGui.ResetOnSpawn = false
--- ACIMA do modal (60), não abaixo: o fundo escurecido do modal é um botão que
--- cobre a tela inteira, então com a barra por baixo dele um toque em "HERÓIS"
--- com as regras abertas só fechava o painel. Por cima, dá pra pular de um
--- painel pro outro direto — e o saldo continua visível enquanto se lê a vitrine.
-menuGui.DisplayOrder = 70
+-- ABAIXO do modal (60). Modal é modal: nada da interface do lobby passa na
+-- frente dele. A troca de painel, que era o motivo de eu ter posto a barra por
+-- cima antes, virou uma fileira de abas DENTRO do modal — resolve a navegação
+-- sem quebrar a hierarquia visual.
+menuGui.DisplayOrder = 25
 menuGui.Parent = playerGui
 
 local modalGui = Instance.new("ScreenGui")
@@ -296,10 +296,71 @@ panelTitle.TextScaled = true
 panelTitle.Font = Enum.Font.GothamBlack
 panelTitle.Parent = panel
 
+-- ===== ABAS DENTRO DO MODAL =====
+-- A barra do lobby fica ABAIXO do modal (é o certo: modal é modal). Só que o
+-- fundo escurecido cobre a tela inteira, então com a barra embaixo dela um
+-- toque em "HERÓIS" com as regras abertas ia parar no fundo e só fechava o
+-- painel. A troca de painel mudou de lugar: agora mora aqui dentro, onde
+-- nenhum fundo passa na frente.
+local TAB_HEIGHT = 26
+local BODY_TOP = 36 + TAB_HEIGHT + 6
+
+local openModal -- definido mais abaixo; as abas precisam dele aqui
+
+local tabRow = Instance.new("Frame")
+tabRow.Name = "Tabs"
+tabRow.Position = UDim2.new(0, 0, 0, 36)
+tabRow.Size = UDim2.new(1, 0, 0, TAB_HEIGHT)
+tabRow.BackgroundTransparency = 1
+tabRow.Parent = panel
+
+local tabLayout = Instance.new("UIListLayout")
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.Padding = UDim.new(0, 6)
+tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+tabLayout.Parent = tabRow
+
+local tabs = {}
+
+local function buildTab(text, key, order, accent)
+	local button = Instance.new("TextButton")
+	button.Name = key
+	button.Size = UDim2.new(0, 96, 1, 0)
+	button.BackgroundColor3 = CARD_BG
+	button.Text = text
+	button.TextColor3 = TEXT_SOFT
+	button.TextSize = 13
+	button.Font = Enum.Font.GothamBold
+	button.BorderSizePixel = 0
+	button.LayoutOrder = order
+	button.Parent = tabRow
+	corner(button, 6)
+
+	local edge = stroke(button, accent or ACCENT, 1, 0.6)
+	tabs[key] = { button = button, edge = edge, accent = accent or ACCENT }
+
+	button.MouseButton1Click:Connect(function()
+		openModal(key)
+	end)
+end
+
+local function refreshTabs(activeKey)
+	for key, tab in pairs(tabs) do
+		local active = key == activeKey
+		tab.button.BackgroundColor3 = active and Color3.fromRGB(42, 48, 66) or CARD_BG
+		tab.button.TextColor3 = active and tab.accent or TEXT_SOFT
+		tab.edge.Transparency = active and 0 or 0.6
+	end
+end
+
+buildTab("REGRAS", "rules", 1)
+buildTab("HERÓIS", "store", 2)
+buildTab("APOIAR", "tips", 3, GOLD)
+
 local body = Instance.new("ScrollingFrame")
 body.Name = "Body"
-body.Position = UDim2.new(0, 0, 0, 36)
-body.Size = UDim2.new(1, 0, 1, -36)
+body.Position = UDim2.new(0, 0, 0, BODY_TOP)
+body.Size = UDim2.new(1, 0, 1, -BODY_TOP)
 body.BackgroundTransparency = 1
 body.BorderSizePixel = 0
 body.CanvasSize = UDim2.new()
@@ -535,10 +596,16 @@ local function buildTipButton(tip, order)
 
 	if not configured then
 		-- Sem id de produto o PromptProductPurchase erra e o jogador leva um
-		-- diálogo de falha sem entender. Melhor deixar claro que falta config.
-		paragraph(card, "Indisponível: falta cadastrar o id do Developer Product " ..
-			"em ReplicatedStorage.Modules.Monetization.",
-			Color3.fromRGB(226, 150, 120), 12, 4)
+		-- diálogo de falha sem entender — por isso o botão nasce desabilitado.
+		--
+		-- O QUE O JOGADOR LÊ é só "Em breve". A pendência é do desenvolvedor, e
+		-- despejar "falta cadastrar o id do Developer Product em
+		-- ReplicatedStorage.Modules.Monetization" na tela de quem está jogando
+		-- não conserta nada: expõe caminho interno do projeto e passa a
+		-- impressão de jogo quebrado. O recado técnico vai pro console.
+		paragraph(card, "Em breve.", Color3.fromRGB(150, 156, 170), 12, 4)
+		warn(("LobbyMenu: apoio '%s' sem Developer Product cadastrado — " ..
+			"preencha productId em ReplicatedStorage.Modules.Monetization."):format(tip.key))
 		return
 	end
 
@@ -606,18 +673,21 @@ local PANELS = {
 	tips = { title = "SEJA UM APOIADOR", build = buildTips },
 }
 
-local function openModal(key)
+-- atribui ao local declarado lá em cima (as abas do modal já apontam pra ele)
+function openModal(key)
 	local entry = PANELS[key]
 	if not entry then return end
 
-	-- tocar de novo no mesmo botão fecha, como qualquer menu
-	if currentPanel == key then
-		closeModal()
-		return
-	end
+	-- Já está neste painel: não faz nada. (Antes isto fechava o modal, pra servir
+	-- de liga-desliga na barra do lobby — mas a barra agora fica debaixo do
+	-- fundo escurecido e não recebe clique com o modal aberto. Quem chega aqui
+	-- repetido é a aba de dentro, e fechar o painel ao clicar na aba em que
+	-- você já está seria só confuso.)
+	if currentPanel == key then return end
 
 	currentPanel = key
 	panelTitle.Text = entry.title
+	refreshTabs(key)
 	clearBody()
 	entry.build()
 
