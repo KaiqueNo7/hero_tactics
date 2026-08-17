@@ -23,6 +23,7 @@ local mouse = player:GetMouse()
 
 local MOVE_COLOR = Color3.fromRGB(110, 220, 130)
 local ATTACK_COLOR = Color3.fromRGB(230, 90, 90)
+local BARREL_COLOR = Color3.fromRGB(232, 172, 74) -- alvo neutro: nem inimigo, nem passagem
 
 -- cor base caso o attribute BaseColor não exista (defensivo)
 local COLOR_A = Color3.fromRGB(120, 170, 220)
@@ -56,6 +57,13 @@ gui.ResetOnSpawn = false
 gui.Enabled = false
 gui.IgnoreGuiInset = true
 gui.Parent = player:WaitForChild("PlayerGui")
+
+-- ===== TOPO DA TELA =====
+-- Aqui NÃO entra margem de segurança contra a barra do Roblox, e é de propósito:
+-- os botões dela ficam na quina esquerda (o TopbarInset mede isso), enquanto
+-- este bloco é centralizado ou colado na direita — nunca chega perto deles.
+-- Descer tudo pra baixo da faixa só empurrava a coluna de heróis contra os
+-- botões de desistir e de passar turno, no rodapé.
 
 -- ===== INDICADOR DE TURNO (centralizado) =====
 local turnPanel = Instance.new("Frame")
@@ -175,8 +183,9 @@ local CARD_SIZE = 54
 local CARD_GAP = 5
 local NAME_STRIP = 12
 local COLUMN_HEADER = 18
--- Começa abaixo do selo de contra-ataque e termina acima do painel de detalhe
--- (que fica a 112px do rodapé), pra caber até em celular deitado.
+-- Começa abaixo do selo de contra-ataque e termina acima do rodapé, onde ficam
+-- os botões de desistir e de passar turno. É pouco espaço: descer estas colunas
+-- encosta uma coisa na outra.
 local COLUMN_TOP = 78
 
 local SIDE_ONE_COLOR = Color3.fromRGB(70, 150, 255)
@@ -339,7 +348,11 @@ end
 local myTeam = buildTeamColumn(true)
 local theirTeam = buildTeamColumn(false)
 
-local SPRITE_SHEET_ID = HeroData.GetSpriteId()
+-- O retrato vem do próprio herói: os criados depois da folha original moram em
+-- assets separados, então não dá pra guardar um id só pro catálogo inteiro.
+local function spriteOf(data)
+	return data and HeroData.GetSpriteId(data) or nil
+end
 
 -- O servidor transmite o estado várias vezes por ação (mover manda dois, atacar
 -- manda mais um, o fim de partida outro). Sem esta guarda, cada transmissão
@@ -367,9 +380,10 @@ local function renderRow(row, hero)
 
 	row.card.Visible = true
 
-	if SPRITE_SHEET_ID and data then
-		row.portrait.Image = SPRITE_SHEET_ID
-		row.portrait.ImageRectSize = HeroData.GetFrameSize()
+	local spriteId = spriteOf(data)
+	if spriteId then
+		row.portrait.Image = spriteId
+		row.portrait.ImageRectSize = HeroData.GetFrameSize(data)
 		row.portrait.ImageRectOffset = HeroData.GetFrameOffset(data)
 		row.portrait.BackgroundTransparency = 1
 	else
@@ -533,7 +547,8 @@ local finisherToken = 0
 
 local function playFinisher(info)
 	local data = HeroData.GetById(info.dataId)
-	if not (SPRITE_SHEET_ID and data) then return end
+	local spriteId = spriteOf(data)
+	if not spriteId then return end
 
 	finisherToken += 1
 	local token = finisherToken
@@ -548,8 +563,8 @@ local function playFinisher(info)
 		streak.BackgroundColor3 = accent
 	end
 
-	finisherPortrait.Image = SPRITE_SHEET_ID
-	finisherPortrait.ImageRectSize = HeroData.GetFrameSize()
+	finisherPortrait.Image = spriteId
+	finisherPortrait.ImageRectSize = HeroData.GetFrameSize(data)
 	finisherPortrait.ImageRectOffset = HeroData.GetFrameOffset(data)
 	finisherPortrait.ImageTransparency = 0
 
@@ -830,73 +845,12 @@ giveUpButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("leaveMatch")
 end)
 
--- ===== PAINEL DE DETALHE DO HERÓI SELECIONADO =====
-local detailPanel = Instance.new("Frame")
-detailPanel.Size = UDim2.new(0, 210, 0, 96)
--- empurrado pra direita: o canto inferior esquerdo virou a casa do botão de
--- desistir, e os dois lado a lado não crescem a altura da barra de baixo
-detailPanel.Position = UDim2.new(0, 64, 1, -112)
-detailPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
-detailPanel.BackgroundTransparency = 0.15
-detailPanel.BorderSizePixel = 0
-detailPanel.Visible = false
-detailPanel.Parent = gui
-
-local detailCorner = Instance.new("UICorner")
-detailCorner.CornerRadius = UDim.new(0, 8)
-detailCorner.Parent = detailPanel
-
-local detailName = Instance.new("TextLabel")
-detailName.Size = UDim2.new(1, -16, 0, 24)
-detailName.Position = UDim2.new(0, 8, 0, 6)
-detailName.BackgroundTransparency = 1
-detailName.TextColor3 = Color3.new(1, 1, 1)
-detailName.TextXAlignment = Enum.TextXAlignment.Left
-detailName.TextScaled = true
-detailName.Font = Enum.Font.GothamBold
-detailName.Parent = detailPanel
-
-local detailStats = Instance.new("TextLabel")
-detailStats.Size = UDim2.new(1, -16, 0, 20)
-detailStats.Position = UDim2.new(0, 8, 0, 32)
-detailStats.BackgroundTransparency = 1
-detailStats.TextColor3 = Color3.fromRGB(210, 220, 235)
-detailStats.TextXAlignment = Enum.TextXAlignment.Left
-detailStats.TextScaled = true
-detailStats.Font = Enum.Font.Gotham
-detailStats.Parent = detailPanel
-
-local detailSkills = Instance.new("TextLabel")
-detailSkills.Size = UDim2.new(1, -16, 0, 34)
-detailSkills.Position = UDim2.new(0, 8, 0, 54)
-detailSkills.BackgroundTransparency = 1
-detailSkills.TextColor3 = Color3.fromRGB(180, 215, 255)
-detailSkills.TextXAlignment = Enum.TextXAlignment.Left
-detailSkills.TextYAlignment = Enum.TextYAlignment.Top
-detailSkills.TextWrapped = true
-detailSkills.TextSize = 13
-detailSkills.Font = Enum.Font.Gotham
-detailSkills.Parent = detailPanel
-
-local function showDetail(hero)
-	if not hero then
-		detailPanel.Visible = false
-		return
-	end
-
-	local data = HeroData.GetById(hero.dataId)
-	detailPanel.Visible = true
-	detailName.Text = hero.name
-	detailStats.Text = ("%d ATK   %d/%d HP   %s"):format(
-		hero.attack, math.max(hero.currentHp, 0), hero.maxHp, hero.ability or "-")
-
-	local names = {}
-	for _, key in ipairs(data and data.abilities or {}) do
-		local info = HeroData.SKILL_INFO[key]
-		table.insert(names, info and info.name or key)
-	end
-	detailSkills.Text = table.concat(names, " • ")
-end
+-- O painel de detalhe do herói selecionado (nome, ATK/HP, lista de habilidades)
+-- foi REMOVIDO daqui. Ele ocupava 210x96 no canto inferior esquerdo, em cima do
+-- tabuleiro, pra repetir o que o jogador já enxerga: o crachá de ataque e vida
+-- fica embaixo do próprio boneco, a vida também está na coluna de retratos, e as
+-- habilidades ele leu no draft. Quem quiser rever a ficha completa tem o menu do
+-- lobby. As colunas das laterais continuam sendo a leitura rápida da partida.
 
 -- ===== PAINEL DE FIM DE PARTIDA =====
 local resultPanel = Instance.new("Frame")
@@ -1110,7 +1064,16 @@ local function hoveredHexId()
 
 	local heroUid = target:GetAttribute("HeroUid")
 	local hero = heroUid and state and heroByUid(heroUid)
-	return hero and hero.position or nil
+	if hero then return hero.position end
+
+	-- o barril também conta como "estou apontando pra casa dele"
+	local barrelUid = target:GetAttribute("BarrelUid")
+	if barrelUid and state then
+		for _, barrel in ipairs(state.barrels or {}) do
+			if barrel.uid == barrelUid then return barrel.position end
+		end
+	end
+	return nil
 end
 
 local function updateAim()
@@ -1190,7 +1153,6 @@ local function selectHero(uid)
 	local hero = heroByUid(uid)
 	if not hero or not hero.isMine or not hero.isAlive then
 		selectedUid = nil
-		showDetail(nil)
 		return
 	end
 
@@ -1212,8 +1174,19 @@ local function selectHero(uid)
 		end
 	end
 
+	-- Barril entra nas duas listas: bloqueia passagem como qualquer coisa em pé
+	-- na casa, e é alvo de ataque como um inimigo. Quem decide o que acontece no
+	-- clique é o servidor — aqui ele só precisa ser clicável e não prometer
+	-- passagem por cima.
+	local barrelAt = {}
+	for _, barrel in ipairs(state.barrels or {}) do
+		blocked[barrel.position] = true
+		barrelAt[barrel.position] = barrel.uid
+	end
+
 	local isFree = function(hexId) return not blocked[hexId] end
 
+	-- o moveRange já vem descontado do congelamento pelo servidor
 	if not hero.hasMoved and not hero.hasAttacked then
 		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.moveRange, isFree)) do
 			if isFree(hexId) then
@@ -1229,11 +1202,16 @@ local function selectHero(uid)
 				attackTargets[hexId] = enemyAt[hexId]
 				moveTargets[hexId] = nil
 				paint(hexId, ATTACK_COLOR)
+			elseif barrelAt[hexId] then
+				-- âmbar em vez do vermelho de inimigo: bater no barril é uma
+				-- jogada diferente de bater em gente, e a cor avisa isso antes
+				-- do clique
+				attackTargets[hexId] = barrelAt[hexId]
+				moveTargets[hexId] = nil
+				paint(hexId, BARREL_COLOR)
 			end
 		end
 	end
-
-	showDetail(hero)
 end
 
 -- ===== CLIQUES =====
@@ -1245,12 +1223,24 @@ mouse.Button1Down:Connect(function()
 
 	local heroUid = target:GetAttribute("HeroUid")
 	local hexId = target:GetAttribute("HexId")
+	local barrelUid = target:GetAttribute("BarrelUid")
 
 	-- fora do turno o clique não faz nada, mas ficar em silêncio parecia bug:
-	-- avisa sempre que a tentativa foi no tabuleiro (casa ou herói)
+	-- avisa sempre que a tentativa foi no tabuleiro (casa, herói ou barril)
 	if not state.isMyTurn then
-		if heroUid or hexId then
+		if heroUid or hexId or barrelUid then
 			warnNotYourTurn()
+		end
+		return
+	end
+
+	-- clique no próprio barril: mesma jogada de clicar na casa dele
+	if barrelUid and selectedUid then
+		for _, barrel in ipairs(state.barrels or {}) do
+			if barrel.uid == barrelUid and attackTargets[barrel.position] then
+				GameAction:FireServer("attack", selectedUid, barrelUid)
+				return
+			end
 		end
 		return
 	end
@@ -1336,7 +1326,6 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		timerLabel.Visible = false
 		counterBadge.Visible = false
 		endTurnButton.Visible = false
-		detailPanel.Visible = false
 		-- acabou: não há mais o que desistir, e o painel de resultado já oferece
 		-- "voltar pro lobby"
 		surrenderButton.Visible = false
@@ -1379,7 +1368,6 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		hideTeams()
 		clearHighlights()
 		selectedUid = nil
-		showDetail(nil)
 		return
 	end
 
@@ -1420,12 +1408,12 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	clearHighlights()
 	selectedUid = nil
 
+	-- a seleção sobrevive à atualização do estado: sem isto, cada snapshot
+	-- (e são vários por ação) apagaria as casas destacadas no meio da jogada
 	if state.isMyTurn and previous then
 		local hero = heroByUid(previous)
 		if hero and hero.isAlive then
 			selectHero(previous)
 		end
-	else
-		showDetail(nil)
 	end
 end)

@@ -89,6 +89,14 @@ function ProgressionService.GetTotalXp(userId)
 	return totalXp[userId] or 0
 end
 
+-- Nível atual pela curva. Se o GetAsync do login ainda não voltou (ou falhou), o
+-- cache está em 0 e isto devolve 1 — o jogador entra com o elenco inicial em vez
+-- de travar a partida. Vale saber que é assim: um soluço de DataStore no login
+-- não bloqueia ninguém, só esconde os heróis avançados naquela partida.
+function ProgressionService.GetLevel(userId)
+	return Progression.FromTotalXp(ProgressionService.GetTotalXp(userId)).level
+end
+
 Players.PlayerAdded:Connect(function(player)
 	task.spawn(Load, player)
 end)

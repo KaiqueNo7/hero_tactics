@@ -229,7 +229,15 @@ heroDataModule = heroDataModule and heroDataModule:FindFirstChild("HeroData")
 if heroDataModule then
 	local ok, HeroData = pcall(require, heroDataModule)
 	if ok then
-		for _, id in ipairs({ HeroData.GetSpriteId(), HeroData.GetPoisonSpriteId() }) do
+		local ids = { HeroData.GetSpriteId(), HeroData.GetPoisonSpriteId() }
+
+		-- herói novo não entra na folha: cada um traz o próprio asset, e sem
+		-- preload ele aparece branco no primeiro quadro da partida
+		for _, data in ipairs(HeroData.CATALOG) do
+			if data.sprite then table.insert(ids, HeroData.GetSpriteId(data)) end
+		end
+
+		for _, id in ipairs(ids) do
 			if id then table.insert(assets, id) end
 		end
 	end

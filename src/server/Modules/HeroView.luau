@@ -32,9 +32,8 @@ local Sounds = ReplicatedStorage:WaitForChild("Sounds")
 local HeroView = {}
 
 local SPRITE_SHEET_ID = HeroData.GetSpriteId()
-local SPRITES_ENABLED = SPRITE_SHEET_ID ~= nil
 
-if SPRITES_ENABLED then
+if SPRITE_SHEET_ID then
 	print("HeroView: spritesheet = " .. SPRITE_SHEET_ID)
 else
 	warn("HeroView: sem spritesheet — usando cilindros como placeholder.")
@@ -107,6 +106,9 @@ local HP_TEXT_FULL = Color3.new(1, 1, 1)
 local HP_TEXT_HURT = Color3.fromRGB(255, 214, 120)
 local HP_TEXT_CRITICAL = Color3.fromRGB(255, 120, 120)
 
+-- Gelo do Kor: floco azul-claro no crachá enquanto o inimigo estiver congelado
+local FREEZE_ICON_COLOR = Color3.fromRGB(150, 225, 255)
+
 -- Passiva do herói (data.ability) -> ícone e cor do selo ao lado da vida
 local ABILITY_BADGES = {
 	Taunt  = { icon = "taunt",  color = Color3.fromRGB(198, 202, 212) },
@@ -123,26 +125,15 @@ local BUBBLE_GAP = 0.42 -- espaço entre mensagens seguidas do mesmo herói
 
 local DEFAULT_STYLE = { color = Color3.fromRGB(255, 250, 190), font = Enum.Font.GothamBold, size = 22, rise = 2.4 }
 
+-- Só os números agora: o balão perdeu os gritos das habilidades ("Veneno!",
+-- "Esmaga!") pros efeitos de partícula, e ficou com o que ele fazia melhor —
+-- dizer quanto de vida entrou ou saiu.
 local TEXT_STYLES = {
-	-- tipos genéricos
 	damage = { color = Color3.fromRGB(255, 85, 75),  font = Enum.Font.GothamBlack,   size = 30, rise = 3.0 },
 	heal   = { color = Color3.fromRGB(105, 240, 130), font = Enum.Font.GothamBlack,  size = 28, rise = 2.7 },
 	buff   = { color = Color3.fromRGB(120, 215, 255), font = Enum.Font.GothamBlack,  size = 25, rise = 2.5 },
 	debuff = { color = Color3.fromRGB(255, 175, 75),  font = Enum.Font.GothamBlack,  size = 25, rise = 2.5 },
 	info   = DEFAULT_STYLE,
-
-	-- identidade própria por habilidade
-	rage          = { color = Color3.fromRGB(255, 115, 45),  font = Enum.Font.LuckiestGuy,    size = 32, rise = 3.3 },
-	goodLuck      = { color = Color3.fromRGB(255, 214, 84),  font = Enum.Font.PermanentMarker, size = 30, rise = 2.9 },
-	poisonAttack  = { color = Color3.fromRGB(150, 240, 105), font = Enum.Font.Creepster,      size = 32, rise = 2.9 },
-	aloneIsBetter = { color = Color3.fromRGB(198, 148, 255), font = Enum.Font.SpecialElite,   size = 26, rise = 2.9 },
-	beyondFront   = { color = Color3.fromRGB(205, 225, 255), font = Enum.Font.Michroma,       size = 24, rise = 2.9 },
-	absorbRoots   = { color = Color3.fromRGB(135, 232, 158), font = Enum.Font.Fondamento,     size = 28, rise = 2.7 },
-	brokenDefense = { color = Color3.fromRGB(255, 168, 105), font = Enum.Font.Antique,        size = 27, rise = 2.7 },
-	firstPunch    = { color = Color3.fromRGB(255, 138, 118), font = Enum.Font.Bangers,        size = 31, rise = 3.0 },
-	trustInTeam   = { color = Color3.fromRGB(150, 200, 255), font = Enum.Font.JosefinSans,    size = 26, rise = 2.6 },
-	health        = { color = Color3.fromRGB(140, 240, 175), font = Enum.Font.Fondamento,     size = 27, rise = 2.6 },
-	clean         = { color = Color3.fromRGB(225, 245, 255), font = Enum.Font.Kalam,          size = 27, rise = 2.6 },
 }
 
 local sayQueue, sayRunning = {}, {}
@@ -184,6 +175,10 @@ end
 function HeroView.PlayAttackSound(hero)
 	if hero.name == "Blade" then
 		PlaySound("SwordSwing", hero.view)
+	elseif hero.name == "Kor" then
+		PlaySound("IceSwing", hero.view)
+	elseif hero.name == "Dante" then
+		PlaySound("arrowSwing", hero.view)
 	elseif table.find(hero.abilities, "poisonAttack") then
 		PlaySound("PoisonHiss", hero.view)
 	end
@@ -208,6 +203,196 @@ local SKILL_SOUNDS = {
 function HeroView.PlaySkillSound(key, view)
 	local name = SKILL_SOUNDS[key]
 	if name then PlaySound(name, view) end
+end
+
+-- ===== EFEITOS VISUAIS DE HABILIDADE =====
+-- Cada skill tinha um grito próprio ("Veneno!", "Esmaga!", "Muahauhauhaua!") com
+-- fonte e cor próprias. Era texto pedindo leitura no meio da ação, em cima do
+-- tabuleiro, e ainda disputava a fila do balão com os números de dano e cura —
+-- que são o que o jogador realmente precisa ver. Agora cada habilidade solta um
+-- jato de partículas com cor, tamanho e direção próprios: reconhece-se de
+-- relance, sem parar pra ler, e o balão fica só pros números.
+--
+-- As texturas são as que já vêm no cliente (rbxasset://), então não há upload
+-- nem risco de quadrado cinza no lugar do efeito.
+local FX_SPARK = "rbxasset://textures/particles/sparkles_main.dds"
+local FX_SMOKE = "rbxasset://textures/particles/smoke_main.dds"
+
+-- shape: "burst" explode pra fora (impacto), "rise" sobe do chão (buff/cura)
+--
+-- Os tamanhos parecem grandes escritos aqui, e são: a câmera fica a ~90 studs do
+-- tabuleiro e o sprite do herói tem 5,8 de largura. Com partícula de 1 stud o
+-- efeito virava um pontinho — e pior, o billboard do herói tapava quase tudo,
+-- porque a rajada nascia dentro do desenho e não tinha velocidade pra sair dele.
+-- Partícula grande + velocidade alta é o que faz o efeito escapar da silhueta e
+-- ser visto de onde o jogador está olhando.
+local SKILL_EFFECTS = {
+	poisonAttack  = { color = Color3.fromRGB(120, 235, 90),  texture = FX_SMOKE, shape = "rise",  count = 18, size = 2.6, speed = 7 },
+	rage          = { color = Color3.fromRGB(255, 120, 45),  texture = FX_SMOKE, shape = "burst", count = 20, size = 3.2, speed = 17 },
+	brokenDefense = { color = Color3.fromRGB(255, 170, 90),  texture = FX_SPARK, shape = "burst", count = 18, size = 2.5, speed = 15 },
+	aloneIsBetter = { color = Color3.fromRGB(190, 140, 255), texture = FX_SMOKE, shape = "burst", count = 22, size = 3.0, speed = 14 },
+	firstPunch    = { color = Color3.fromRGB(255, 140, 110), texture = FX_SPARK, shape = "rise",  count = 16, size = 2.2, speed = 8 },
+	goodLuck      = { color = Color3.fromRGB(255, 215, 90),  texture = FX_SPARK, shape = "rise",  count = 20, size = 2.2, speed = 9 },
+	absorbRoots   = { color = Color3.fromRGB(130, 240, 160), texture = FX_SPARK, shape = "rise",  count = 18, size = 2.2, speed = 8 },
+	clean         = { color = Color3.fromRGB(230, 250, 255), texture = FX_SPARK, shape = "rise",  count = 16, size = 2.0, speed = 9 },
+	iceEffect     = { color = Color3.fromRGB(150, 225, 255), texture = FX_SPARK, shape = "burst", count = 22, size = 2.4, speed = 16 },
+
+	-- a tempestade é a morte do Kor: mais partícula e mais alcance que o gelo comum
+	iceStorm      = { color = Color3.fromRGB(195, 245, 255), texture = FX_SPARK, shape = "burst", count = 40, size = 3.0, speed = 24 },
+
+	-- o faro é tique de passiva (acontece direto): discreto de propósito, senão
+	-- o Merlin vira uma fonte de fumaça vermelha a cada morte no tabuleiro
+	bloodScent    = { color = Color3.fromRGB(190, 60, 60),   texture = FX_SMOKE, shape = "rise",  count = 12, size = 2.0, speed = 6 },
+
+	-- o Frenesi é a virada do personagem e só acontece uma vez: explode
+	frenzy        = { color = Color3.fromRGB(235, 45, 40),   texture = FX_SPARK, shape = "burst", count = 36, size = 3.0, speed = 20 },
+
+	-- o goodLuck que não deu sorte: fumacinha cinza, pra ficar claro que a
+	-- habilidade rodou e não deu em nada (antes era o "Nada..." escrito)
+	goodLuckFail  = { color = Color3.fromRGB(140, 140, 150), texture = FX_SMOKE, shape = "rise",  count = 8,  size = 2.2, speed = 3 },
+
+	-- prêmios do barril: sobem do herói que quebrou, com as cores que o jogo já
+	-- usa pra vida (verde) e pra ataque (o mesmo âmbar do crachá de buff)
+	barrelHeal    = { color = Color3.fromRGB(120, 245, 150), texture = FX_SPARK, shape = "rise",  count = 20, size = 2.4, speed = 9 },
+	barrelAttack  = { color = Color3.fromRGB(255, 200, 90),  texture = FX_SPARK, shape = "rise",  count = 20, size = 2.4, speed = 9 },
+}
+
+-- ===== CORTE DO BLADE (IMAGEM ANIMADA) =====
+-- O golpe do Blade não é jato de partícula: é UM quadro grande, de frente pra
+-- câmera, cruzando o inimigo — uma animação de 16 poses numa grade 4x4 que roda
+-- em 0,25s. Veio do pacote "SwordSlash" (asset 16228071670); dele o que importa
+-- é a textura e os números abaixo, então está tudo em código. Nada depende de um
+-- modelo guardado no place, que não entra no Rojo nem no git.
+local FLIPBOOK_EFFECTS = {
+	beyondFront = {
+		texture = "rbxassetid://16227989129",
+		layout = Enum.ParticleFlipbookLayout.Grid4x4,
+		framerate = 16,
+		lifetime = 0.25,
+
+		-- O pacote vem com 10, que é quase exatamente a largura de uma casa
+		-- (~9,8 de ponta a ponta). Só que o desenho é um risco fino e horizontal,
+		-- a câmera fica a ~90 studs e a animação inteira dura 0,25s: nesse tamanho
+		-- o corte passava despercebido. 13 transborda um pouco a casa e é o que
+		-- faz ele LER como um golpe atravessando o inimigo.
+		size = 13,
+	},
+}
+
+-- Um emissor por herói, montado na primeira vez e RECONFIGURADO a cada uso.
+-- Criar e destruir ParticleEmitter no meio do golpe é o mesmo engasgo que o
+-- balão de texto custava antes de virar objeto reaproveitado.
+local function EnsureEmitter(hero)
+	local part = hero.part
+	if not (part and part.Parent) then return nil end
+
+	local attachment = part:FindFirstChild("SkillFx")
+	if attachment then return attachment:FindFirstChild("Emitter") end
+
+	attachment = Instance.new("Attachment")
+	attachment.Name = "SkillFx"
+	-- na altura do peito do desenho, não no centro da âncora: a rajada saindo do
+	-- meio do corpo se espalha em volta da cabeça e dos ombros, que é onde o olho
+	-- está. Saindo de baixo, ela ficava atrás do sprite e só aparecia nos pés.
+	attachment.Position = Vector3.new(0, SPRITE_HEIGHT * 0.2, 0)
+	attachment.Parent = part
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "Emitter"
+	emitter.Enabled = false -- só solta em rajada, nunca contínuo
+	emitter.Rate = 0
+	emitter.LightEmission = 0.65
+	emitter.LightInfluence = 0
+	emitter.Parent = attachment
+	return emitter
+end
+
+-- O corte usa emissor SEPARADO do das partículas: ele liga o modo flipbook, e
+-- reaproveitar o mesmo objeto obrigaria a desligar meia dúzia de propriedades a
+-- cada troca — uma sobra qualquer entre um efeito e outro e o desenho sai errado.
+local function EnsureFlipbook(hero)
+	local part = hero.part
+	if not (part and part.Parent) then return nil end
+
+	local attachment = part:FindFirstChild("SkillSlash")
+	if attachment then return attachment:FindFirstChild("Emitter") end
+
+	attachment = Instance.new("Attachment")
+	attachment.Name = "SkillSlash"
+	attachment.Position = Vector3.new(0, SPRITE_HEIGHT * 0.1, 0)
+	attachment.Parent = part
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "Emitter"
+	emitter.Enabled = false
+	emitter.Rate = 0
+	emitter.Speed = NumberRange.new(0, 0) -- fica parado em cima do alvo
+	emitter.Rotation = NumberRange.new(0, 0)
+	emitter.RotSpeed = NumberRange.new(0, 0)
+	emitter.SpreadAngle = Vector2.new(0, 0)
+	emitter.Drag = 0
+	emitter.Acceleration = Vector3.zero
+	emitter.LightEmission = 1
+	emitter.LightInfluence = 0
+	emitter.Color = ColorSequence.new(Color3.new(1, 1, 1))
+	emitter.Transparency = NumberSequence.new(0)
+	emitter.Orientation = Enum.ParticleOrientation.FacingCamera
+	emitter.FlipbookMode = Enum.ParticleFlipbookMode.OneShot
+
+	-- puxa o desenho na direção da câmera: o herói é um BillboardGui plantado na
+	-- mesma casa, e sem isso o corte sairia ATRÁS do boneco que ele acabou de
+	-- cortar (foi o que aconteceu com as partículas antes de crescerem)
+	emitter.ZOffset = 2
+	emitter.Parent = attachment
+	return emitter
+end
+
+function HeroView.PlaySkillEffect(hero, key)
+	local slash = FLIPBOOK_EFFECTS[key]
+	if slash then
+		local emitter = EnsureFlipbook(hero)
+		if not emitter then return end
+
+		emitter.Texture = slash.texture
+		emitter.FlipbookLayout = slash.layout
+		emitter.FlipbookFramerate = NumberRange.new(slash.framerate, slash.framerate)
+		emitter.Lifetime = NumberRange.new(slash.lifetime, slash.lifetime)
+		emitter.Size = NumberSequence.new(slash.size)
+		emitter:Emit(1)
+		return
+	end
+
+	local spec = SKILL_EFFECTS[key]
+	if not spec then return end
+
+	local emitter = EnsureEmitter(hero)
+	if not emitter then return end
+
+	local rise = spec.shape == "rise"
+
+	emitter.Texture = spec.texture
+	emitter.Color = ColorSequence.new(spec.color)
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.15),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, spec.size),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	emitter.Lifetime = NumberRange.new(0.4, 0.85)
+	emitter.Speed = NumberRange.new(spec.speed * 0.55, spec.speed)
+	emitter.Rotation = NumberRange.new(0, 360)
+	emitter.RotSpeed = NumberRange.new(-140, 140)
+	emitter.Drag = rise and 2 or 3.5
+
+	-- subindo: jato estreito pra cima que desacelera; impacto: esfera pra todo
+	-- lado que cai. É o que separa "ganhei alguma coisa" de "levei uma pancada".
+	emitter.EmissionDirection = rise and Enum.NormalId.Top or Enum.NormalId.Front
+	emitter.SpreadAngle = rise and Vector2.new(28, 28) or Vector2.new(180, 180)
+	emitter.Acceleration = rise and Vector3.new(0, 7, 0) or Vector3.new(0, -7, 0)
+
+	emitter:Emit(spec.count)
 end
 
 -- As duas peças do tiro (a bolinha e a retícula) são criadas UMA vez por
@@ -315,6 +500,227 @@ end
 
 local function AnchorCFrame(hexId, origin)
 	return GroundCFrame(hexId, origin) * CFrame.new(0, ANCHOR_LIFT, 0)
+end
+
+-- ===== BARRIL =====
+-- O asset (130205426920176) é um Model com um MeshPart dentro. Aqui ele é
+-- remontado como Part + SpecialMesh a partir da malha e da textura dele: assim o
+-- barril nasce por código, versionado junto com o resto, sem depender de um
+-- modelo guardado no place — que não entra no Rojo nem no git.
+--
+-- A malha nasce com ~3,0 x 3,6 studs. A casa mede ~9,8 de ponta a ponta e o
+-- herói desenhado tem ~8 de altura: sem ampliar, o barril viraria um pontinho no
+-- meio do hexágono. 1,45 deixa ele com pouco mais de 5 de altura — objeto de
+-- cenário que dá pra acertar, sem competir com o herói.
+local BARREL_MESH = "rbxassetid://119956806509588"
+local BARREL_TEXTURE = "rbxassetid://137018550249951"
+local BARREL_NATIVE = Vector3.new(3.011, 3.583, 3.011)
+local BARREL_SCALE = 1.45
+
+local BARREL_DUST = Color3.fromRGB(196, 150, 96)
+
+local function BarrelCFrame(barrel)
+	local size = BARREL_NATIVE * BARREL_SCALE
+	return GroundCFrame(barrel.position, barrel.view.origin) * CFrame.new(0, size.Y / 2, 0)
+end
+
+-- ===== VIDA DO BARRIL =====
+-- Um quadradinho por golpe que ele ainda aguenta, na mesma casca escura com
+-- moldura dourada dos crachás de herói. Bolinhas e não número porque a vida do
+-- barril não é vida: são DUAS pancadas, e duas pecinhas se leem sem contar.
+-- Apaga da direita pra esquerda conforme apanha.
+local BARREL_PIP_ON = Color3.fromRGB(232, 172, 74) -- o mesmo âmbar que o cliente pinta na casa
+local BARREL_PIP_OFF = Color3.fromRGB(64, 54, 44)
+local BARREL_PIP = 9
+
+local function BuildBarrelBadge(part, barrel)
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "BarrelInfo"
+	gui.Size = UDim2.new(0, barrel.hitsLeft * (BARREL_PIP + 3) + 7, 0, BARREL_PIP + 8)
+	gui.StudsOffset = Vector3.new(0, (BARREL_NATIVE.Y * BARREL_SCALE) * 0.72, 0)
+	-- sem AlwaysOnTop: nada fica na frente do barril no tabuleiro, e assim ele
+	-- não atravessa cenário nem rouba o clique de quem estiver atrás
+	gui.Parent = part
+
+	local shell = Instance.new("Frame")
+	shell.Name = "Shell"
+	shell.Size = UDim2.fromScale(1, 1)
+	shell.BackgroundColor3 = BADGE_BG
+	shell.BorderSizePixel = 0
+	shell.Parent = gui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 4)
+	corner.Parent = shell
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = BADGE_GOLD
+	stroke.Thickness = 1.1
+	stroke.Transparency = 0.15
+	stroke.Parent = shell
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, 3)
+	layout.Parent = shell
+
+	for index = 1, barrel.hitsLeft do
+		local pip = Instance.new("Frame")
+		pip.Name = "Pip" .. index
+		pip.LayoutOrder = index
+		pip.Size = UDim2.new(0, BARREL_PIP, 0, BARREL_PIP)
+		pip.BackgroundColor3 = BARREL_PIP_ON
+		pip.BorderSizePixel = 0
+		pip.Parent = shell
+
+		local pipCorner = Instance.new("UICorner")
+		pipCorner.CornerRadius = UDim.new(0, 2)
+		pipCorner.Parent = pip
+	end
+
+	return gui
+end
+
+function HeroView.UpdateBarrelBadge(barrel)
+	local part = barrel.part
+	if not (part and part.Parent) then return end
+
+	local gui = part:FindFirstChild("BarrelInfo")
+	local shell = gui and gui:FindFirstChild("Shell")
+	if not shell then return end
+
+	for _, pip in ipairs(shell:GetChildren()) do
+		local index = tonumber(pip.Name:match("^Pip(%d+)$") or "")
+		if index then
+			local aceso = index <= barrel.hitsLeft
+			TweenService:Create(pip, TweenInfo.new(0.2), {
+				BackgroundColor3 = aceso and BARREL_PIP_ON or BARREL_PIP_OFF,
+			}):Play()
+		end
+	end
+end
+
+-- Rajada de lascas/poeira presa ao barril. Usada no golpe e na quebra.
+local function BarrelBurst(part, count, speed)
+	local attachment = part:FindFirstChild("Dust")
+	if not attachment then
+		attachment = Instance.new("Attachment")
+		attachment.Name = "Dust"
+		attachment.Parent = part
+
+		local emitter = Instance.new("ParticleEmitter")
+		emitter.Name = "Emitter"
+		emitter.Enabled = false
+		emitter.Rate = 0
+		emitter.Texture = FX_SMOKE
+		emitter.Color = ColorSequence.new(BARREL_DUST)
+		emitter.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.2),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		emitter.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 2.2),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		emitter.Lifetime = NumberRange.new(0.35, 0.8)
+		emitter.Rotation = NumberRange.new(0, 360)
+		emitter.RotSpeed = NumberRange.new(-160, 160)
+		emitter.SpreadAngle = Vector2.new(180, 180)
+		emitter.Acceleration = Vector3.new(0, -12, 0)
+		emitter.Drag = 3
+		emitter.LightEmission = 0.2
+		emitter.Parent = attachment
+	end
+
+	local emitter = attachment:FindFirstChild("Emitter")
+	if emitter then
+		emitter.Speed = NumberRange.new(speed * 0.5, speed)
+		emitter:Emit(count)
+	end
+end
+
+function HeroView.CreateBarrel(barrel)
+	local size = BARREL_NATIVE * BARREL_SCALE
+
+	local part = Instance.new("Part")
+	part.Name = "Barrel_" .. barrel.uid
+	-- A caixa é o que recebe o clique; quem aparece é a malha, que substitui a
+	-- geometria do bloco. NÃO adianta pôr Transparency em 1 achando que esconde
+	-- só o bloco: com SpecialMesh a transparência da peça vale pro desenho todo e
+	-- o barril fica invisível (foi o primeiro erro desta função).
+	part.Size = size
+	part.Transparency = 0
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = true
+	part.CFrame = BarrelCFrame(barrel)
+	part:SetAttribute("BarrelUid", barrel.uid)
+	part.Parent = barrel.view.heroesFolder
+
+	local mesh = Instance.new("SpecialMesh")
+	mesh.MeshType = Enum.MeshType.FileMesh
+	mesh.MeshId = BARREL_MESH
+	mesh.TextureId = BARREL_TEXTURE
+	mesh.Scale = Vector3.new(BARREL_SCALE, BARREL_SCALE, BARREL_SCALE)
+	mesh.Parent = part
+
+	BuildBarrelBadge(part, barrel)
+
+	barrel.part = part
+	return part
+end
+
+-- Primeiro golpe: apaga um quadradinho do crachá, sacode, solta poeira e fica
+-- TORTO até a próxima pancada. A inclinação é redundante com o crachá de
+-- propósito: o barril fica óbvio mesmo pra quem está com a câmera longe.
+function HeroView.PlayBarrelHit(barrel)
+	local part = barrel.part
+	if not (part and part.Parent) then return end
+
+	PlaySound("Hit", barrel.view)
+	BarrelBurst(part, 10, 9)
+	HeroView.UpdateBarrelBadge(barrel)
+
+	local base = BarrelCFrame(barrel)
+	local tombado = base * CFrame.Angles(math.rad(9), 0, math.rad(13))
+	local repouso = (barrel.hitsLeft <= 1) and tombado or base
+
+	TweenService:Create(part, TweenInfo.new(0.08, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		CFrame = base * CFrame.new(0, 0.5, 0) * CFrame.Angles(math.rad(-12), 0, math.rad(10)),
+	}):Play()
+
+	task.delay(0.1, function()
+		if part.Parent then
+			TweenService:Create(part, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { CFrame = repouso }):Play()
+		end
+	end)
+end
+
+function HeroView.BreakBarrel(barrel)
+	local part = barrel.part
+	barrel.part = nil
+	if not (part and part.Parent) then return end
+
+	PlaySound("HeroDeath", barrel.view)
+	BarrelBurst(part, 30, 20)
+
+	-- o crachá some junto com o barril, não com o Part: ele ainda vive ~1s pra
+	-- as partículas terminarem, e um placar de vida boiando sobre os cacos seria
+	-- a única coisa na tela dizendo que ainda tem barril ali
+	local badge = part:FindFirstChild("BarrelInfo")
+	if badge then badge.Enabled = false end
+
+	-- o barril some rápido, mas o Part só é destruído depois: destruir na hora
+	-- levaria as partículas junto e a quebra não apareceria
+	local mesh = part:FindFirstChildWhichIsA("SpecialMesh")
+	if mesh then
+		TweenService:Create(mesh, TweenInfo.new(0.25), { Scale = Vector3.new(0.1, 0.1, 0.1) }):Play()
+	end
+	part.CanQuery = false
+	Debris:AddItem(part, 1.2)
 end
 
 -- A cor vem do lado (1 = azul, 2 = vermelho), não de "é o bot?": em PvP os
@@ -461,7 +867,10 @@ function HeroView.Create(hero)
 
 	BuildTeamRing(anchor, hero.position, TeamColor(hero), view.origin)
 
-	if SPRITES_ENABLED then
+	-- por herói, não global: quem veio depois da folha tem asset próprio
+	local spriteId = HeroData.GetSpriteId(data)
+
+	if spriteId then
 		local spriteGui = Instance.new("BillboardGui")
 		spriteGui.Name = "Sprite"
 		spriteGui.Size = UDim2.new(
@@ -478,8 +887,8 @@ function HeroView.Create(hero)
 		image.Name = "Frame"
 		image.Size = UDim2.fromScale(1, 1)
 		image.BackgroundTransparency = 1
-		image.Image = SPRITE_SHEET_ID
-		image.ImageRectSize = HeroData.GetFrameSize()
+		image.Image = spriteId
+		image.ImageRectSize = HeroData.GetFrameSize(data)
 		image.ImageRectOffset = HeroData.GetFrameOffset(data)
 		image.ResampleMode = Enum.ResamplerMode.Pixelated
 		image.Parent = spriteGui
@@ -514,12 +923,12 @@ function HeroView.Create(hero)
 	bubbleLabel.TextTransparency = 1
 	bubbleLabel.Parent = bubble
 
-	-- A caixa é larga o bastante pro pior caso (ataque + vida + passiva + veneno);
-	-- o UIListLayout centraliza o que existir, então herói sem passiva continua
-	-- com o crachá curtinho e centrado.
+	-- A caixa é larga o bastante pro pior caso (ataque + vida + passiva + veneno +
+	-- gelo); o UIListLayout centraliza o que existir, então herói sem passiva
+	-- continua com o crachá curtinho e centrado.
 	local statsGui = Instance.new("BillboardGui")
 	statsGui.Name = "HeroInfo"
-	statsGui.Size = UDim2.new(0, 124, 0, BADGE_HEIGHT + 2)
+	statsGui.Size = UDim2.new(0, 148, 0, BADGE_HEIGHT + 2)
 	statsGui.StudsOffset = Vector3.new(0, -SPRITE_HEIGHT * 0.34, 0)
 	statsGui.AlwaysOnTop = true
 	statsGui.Parent = anchor
@@ -640,6 +1049,22 @@ function HeroView.Create(hero)
 	statusIcon.ZIndex = 3
 	statusIcon.Parent = statusSlot
 
+	-- Gelo do Kor: mesma casca dos outros selos, com o floco desenhado (PixelIcons)
+	-- em vez de tira de imagem. Montado uma vez; o UpdateStats só liga e desliga.
+	local chill = shell("Chill", SQUARE_BADGE_WIDTH, 6)
+	chill.Visible = false
+
+	local chillSlot = Instance.new("Frame")
+	chillSlot.Name = "Slot"
+	chillSlot.AnchorPoint = Vector2.new(0.5, 0.5)
+	chillSlot.Position = UDim2.fromScale(0.5, 0.5)
+	chillSlot.Size = UDim2.new(0, ICON_SLOT, 0, ICON_SLOT)
+	chillSlot.BackgroundTransparency = 1
+	chillSlot.ZIndex = 2
+	chillSlot.Parent = chill
+
+	PixelIcons.Build("freeze", chillSlot, FREEZE_ICON_COLOR, 2)
+
 	local statusFallback = Instance.new("TextLabel")
 	statusFallback.Name = "Fallback"
 	statusFallback.Size = UDim2.fromScale(1, 1)
@@ -667,6 +1092,7 @@ function HeroView.UpdateStats(hero)
 	local atk = row:FindFirstChild("Atk")
 	local hp = row:FindFirstChild("Hp")
 	local status = row:FindFirstChild("Status")
+	local chill = row:FindFirstChild("Chill")
 
 	if atk then
 		atk.Value.Text = tostring(hero.attack)
@@ -733,6 +1159,14 @@ function HeroView.UpdateStats(hero)
 			icon.Visible = false
 			fallback.Text = ""
 		end
+	end
+
+	if chill then
+		local frozen = false
+		for _, effect in ipairs(hero.statusEffects) do
+			if effect.type == "freeze" then frozen = true end
+		end
+		chill.Visible = frozen
 	end
 end
 

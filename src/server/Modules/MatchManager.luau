@@ -28,6 +28,7 @@ local HeroView = require(ServerScriptService.Modules.HeroView)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local LeaderboardService = require(ServerScriptService.Modules.LeaderboardService)
 local ProgressionService = require(ServerScriptService.Modules.ProgressionService)
+local DevAccess = require(ServerScriptService.Modules.DevAccess)
 
 local MatchUpdate = ReplicatedStorage.Remotes.MatchUpdate
 local BoardReady = ReplicatedStorage.Remotes.BoardReady
@@ -97,8 +98,16 @@ end
 -- ===================== OCUPAÇÃO =====================
 -- Mora na partida, não no HexGrid: duas partidas usam as MESMAS casas (A1, B2...)
 -- e com ocupação global uma bloquearia a outra.
+--
+-- `occupied` guarda TUDO que ocupa casa — heróis, túmulos e barris. É de
+-- propósito: quem pergunta "dá pra andar/atirar através daqui?" (IsFree,
+-- FindPath, ComputeReach) quer saber se tem algo no caminho, não o quê. Já quem
+-- pergunta por HERÓI usa o GetHeroAt abaixo, que filtra o barril fora — assim
+-- nenhuma skill escrita antes do barril precisa saber que ele existe.
 local function GetHeroAt(match, hexId)
-	return match.occupied[hexId]
+	local occupant = match.occupied[hexId]
+	if occupant and occupant.isBarrel then return nil end
+	return occupant
 end
 
 local function IsFree(match, hexId)
@@ -125,6 +134,34 @@ local function GetAlliesInRange(match, hero, range)
 	return allies
 end
 
+local function GetEnemiesInRange(match, hero, range)
+	local enemies = {}
+	for _, other in pairs(match.heroes) do
+		if other.isAlive and other.ownerId ~= hero.ownerId then
+			if HexGrid.Distance(hero.position, other.position) <= range then
+				table.insert(enemies, other)
+			end
+		end
+	end
+	return enemies
+end
+
+-- Conjunto de heróis que este jogador pode usar, pelo nível dele. Dono e
+-- testadores (DevAccess) recebem o catálogo inteiro sem olhar o nível.
+local function UnlockedIdsFor(player)
+	local userId = player and player.UserId or nil
+	local level = userId and ProgressionService.GetLevel(userId) or 1
+	local fullCatalog = DevAccess.HasFullCatalog(player)
+
+	local set = {}
+	for _, data in ipairs(HeroData.CATALOG) do
+		if fullCatalog or HeroData.IsUnlockedFor(data, level) then
+			set[data.id] = true
+		end
+	end
+	return set
+end
+
 local function LivingHeroesOf(match, ownerId)
 	local result = {}
 	for _, hero in pairs(match.heroes) do
@@ -146,8 +183,13 @@ local function TriggerSkills(match, hero, triggerName, target, isCounterAttack, 
 			scope.hero = hero
 			scope.target = target
 			scope.isCounterAttack = isCounterAttack or false
+			-- o efeito visual sai com a assinatura da skill que está disparando,
+			-- então a skill só diz EM QUEM ele acontece (e, se precisar, qual
+			-- variante — o goodLuck tem uma pro sucesso e outra pro fracasso)
 			scope.api = setmetatable({
-				Say = function(target, text) HeroView.Say(target, text, key) end,
+				Effect = function(target, variant)
+					HeroView.PlaySkillEffect(target, variant or key)
+				end,
 			}, { __index = match.skillApi })
 
 			local ok, err = pcall(skill.apply, scope)
@@ -180,6 +222,15 @@ function KillHero(match, hero, attacker)
 
 	-- a casa NÃO é liberada: o túmulo continua ocupando o hex
 	TriggerSkills(match, hero, "onDie")
+
+	-- Quem abateu também é avisado, com o morto chegando em ctx.target. Vem
+	-- DEPOIS do onDie de propósito: aí o tabuleiro que o finalizador enxerga já
+	-- contabiliza a baixa (é disso que o Faro de Sangue do Merlin depende).
+	-- Se o autor morreu no mesmo lance — troca por contra-ataque —, o próprio
+	-- TriggerSkills barra, porque só o onDie roda em herói morto.
+	if attacker and attacker ~= hero then
+		TriggerSkills(match, attacker, "onKill", hero)
+	end
 
 	HeroView.PlayAnimation(hero, "die")
 	HeroView.Destroy(hero)
@@ -238,7 +289,17 @@ local function FindStatusEffect(hero, effectType)
 	return nil
 end
 
+-- Aplicar SUBSTITUI o efeito do mesmo tipo que já estiver lá, em vez de empilhar
+-- um segundo. Renovar veneno ou gelo passa por aqui, e é isso que garante que o
+-- carimbo de turno (ver BuildSkillApi) seja refeito na renovação — antes as
+-- skills mexiam na duração do efeito antigo na mão e o carimbo ficava velho.
 local function ApplyStatusEffect(hero, effect)
+	for index = #hero.statusEffects, 1, -1 do
+		if hero.statusEffects[index].type == effect.type then
+			table.remove(hero.statusEffects, index)
+		end
+	end
+
 	table.insert(hero.statusEffects, effect)
 	HeroView.UpdateStats(hero)
 end
@@ -248,17 +309,52 @@ local function ClearStatusEffects(hero)
 	HeroView.UpdateStats(hero)
 end
 
--- Roda no fim do turno do próprio herói: aplica o efeito e decrementa
+-- ===================== GELO =====================
+-- Alcance de movimento DEPOIS dos efeitos. O `hero.moveRange` continua sendo o
+-- valor de ficha (Sprint ou não); quem manda no que o herói consegue andar
+-- agora é esta função — e é ela que vai no snapshot, pra pintura de casas do
+-- cliente não prometer um passo que o servidor vai recusar.
+local function MoveRangeOf(hero)
+	local range = hero.moveRange
+
+	-- Teto, não desconto: congelado anda FREEZE_MOVE_RANGE, venha ele de ficha
+	-- comum ou de Sprint. Descontando uma casa, o Sprint congelado ainda andava
+	-- 2 — mais do que um herói normal inteiro, o que fazia o gelo do Kor valer
+	-- menos justamente contra quem corre mais.
+	if FindStatusEffect(hero, "freeze") then
+		range = math.min(range, GameConfig.FREEZE_MOVE_RANGE)
+	end
+
+	return math.max(1, range)
+end
+
+-- Roda no fim do turno do próprio herói: aplica o efeito e decrementa.
+--
+-- EFEITO NÃO É CONSUMIDO NO TURNO EM QUE ENTROU. O Kor congela contra-atacando,
+-- ou seja, no meio do turno do próprio inimigo — que a essa altura já andou as
+-- três casas dele. Sem esta regra, o gelo ainda perdia um dos dois turnos aqui,
+-- no fim desse mesmo turno: o jogador congelava o inimigo, via ele andar 3 e
+-- ainda descolava o efeito na metade do tempo. Vale pra todo efeito com prazo
+-- (o veneno pego em contra-ataque tinha exatamente o mesmo furo).
 local function ProcessStatusEffects(match, hero)
 	local remaining = {}
 
 	for _, effect in ipairs(hero.statusEffects) do
+		if effect.appliedTurnToken == match.turnToken then
+			table.insert(remaining, effect)
+			continue
+		end
+
 		if effect.damagePerTurn then
 			ApplyDamage(match, hero, effect.damagePerTurn, nil, false)
 		end
 		if effect.duration > 1 then
 			effect.duration -= 1
 			table.insert(remaining, effect)
+		elseif effect.attackBonus then
+			-- acabou o empréstimo: o bônus temporário do barril é devolvido aqui,
+			-- no mesmo lugar em que o efeito sai da lista
+			IncreaseAttack(hero, -effect.attackBonus)
 		end
 	end
 
@@ -291,14 +387,45 @@ local function BuildSkillApi(match)
 		IncreaseAttack = IncreaseAttack,
 		GetHeroAt = function(hexId) return GetHeroAt(match, hexId) end,
 		GetAlliesInRange = function(hero, range) return GetAlliesInRange(match, hero, range) end,
+		GetEnemiesInRange = function(hero, range) return GetEnemiesInRange(match, hero, range) end,
 		GetLineBeyond = HexGrid.GetLineBeyond,
 		IsFree = function(hexId) return IsFree(match, hexId) end,
 		ForceMove = function(hero, hexId) return ForceMove(match, hero, hexId) end,
 		FindStatusEffect = FindStatusEffect,
-		ApplyStatusEffect = ApplyStatusEffect,
+
+		-- carimba em que turno o efeito entrou: é o que o ProcessStatusEffects usa
+		-- pra não gastar um prazo no mesmo turno em que ele começou
+		ApplyStatusEffect = function(hero, effect)
+			effect.appliedTurnToken = match.turnToken
+			ApplyStatusEffect(hero, effect)
+		end,
+
 		ClearStatusEffects = ClearStatusEffects,
+
+		-- Contagem no TABULEIRO INTEIRO, não por alcance. O GetAlliesInRange só
+		-- enxerga vizinhança, e o Merlin precisa saber se sobrou alguém do time
+		-- dele em qualquer casa. Devolve vivos e total (o total inclui os mortos,
+		-- porque heróis abatidos continuam em match.heroes com isAlive = false).
+		-- Não conta o próprio herói: assim "vivos == 0 e total > 0" lê direto
+		-- como "sou o último, e eu tinha alcateia".
+		CountAllies = function(hero)
+			local living, total = 0, 0
+			for _, other in pairs(match.heroes) do
+				if other ~= hero and other.ownerId == hero.ownerId then
+					total += 1
+					if other.isAlive then living += 1 end
+				end
+			end
+			return living, total
+		end,
+		CountDeaths = function()
+			local dead = 0
+			for _, other in pairs(match.heroes) do
+				if not other.isAlive then dead += 1 end
+			end
+			return dead
+		end,
 		PlaySkillSound = function(key) HeroView.PlaySkillSound(key, match.view) end,
-		Say = HeroView.Say,
 	}
 end
 
@@ -327,8 +454,12 @@ local function Snapshot(match, viewerId)
 			attack = hero.attack,
 			ability = hero.ability,
 			attackRange = hero.attackRange,
-			moveRange = hero.moveRange,
+			moveRange = MoveRangeOf(hero), -- já descontado o gelo
 			isAlive = hero.isAlive,
+
+			-- o cliente precisa saber POR QUE o herói anda menos: sem isso o
+			-- congelado só parece ter perdido alcance sem explicação
+			frozen = FindStatusEffect(hero, "freeze") ~= nil,
 			isMine = hero.ownerId == viewerId,
 			-- 1 = azul, 2 = vermelho. Vai junto pra UI pintar o retrato com a
 			-- MESMA cor do anel embaixo do herói no tabuleiro: em PvP quem joga
@@ -338,6 +469,19 @@ local function Snapshot(match, viewerId)
 			hasAttacked = match.turn and match.turn.attacked[hero.uid] or false,
 		})
 	end
+
+	-- Os barris viajam separados dos heróis porque não têm nada em comum com eles
+	-- além de ocupar casa: sem vida, sem dono, sem turno. O cliente usa isto pra
+	-- (1) não prometer passagem por cima deles e (2) aceitar o clique de ataque.
+	local barrels = {}
+	for _, barrel in pairs(match.barrels) do
+		table.insert(barrels, {
+			uid = barrel.uid,
+			position = barrel.position,
+			hitsLeft = barrel.hitsLeft,
+		})
+	end
+	table.sort(barrels, function(a, b) return a.uid < b.uid end)
 
 	-- `match.heroes` é dicionário: a ordem de pairs() muda entre snapshots. Isso
 	-- nunca importou pra pintar o tabuleiro (tudo é lido por hexId), mas a coluna
@@ -363,6 +507,16 @@ local function Snapshot(match, viewerId)
 	end
 	table.sort(usedHeroIds)
 
+	-- O que ESTE espectador ainda não liberou. Vai como array pelo mesmo motivo
+	-- do usedHeroIds acima: tabela com chave numérica atravessa o RemoteEvent de
+	-- forma inconsistente.
+	local lockedHeroIds = {}
+	for _, data in ipairs(HeroData.CATALOG) do
+		if not viewerSide.unlockedIds[data.id] then
+			table.insert(lockedHeroIds, data.id)
+		end
+	end
+
 	-- `isMine` é resolvido por espectador, igual ao resto do snapshot: o cliente
 	-- pinta o destaque com a cor do lado e precisa saber se foi o time dele que
 	-- abateu ou que apanhou.
@@ -385,7 +539,9 @@ local function Snapshot(match, viewerId)
 		isMyPlacement = match.sides[match.placementSide].id == viewerId,
 		heroesPerPlayer = GameConfig.HEROES_PER_PLAYER,
 		usedHeroIds = usedHeroIds,
+		lockedHeroIds = lockedHeroIds,
 		heroes = heroes,
+		barrels = barrels,
 		turnNumber = match.turn and match.turn.number or 0,
 		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,
 		turnSecondsLeft = TurnSecondsLeft(match),
@@ -449,6 +605,8 @@ local function CreateHero(match, dataId, ownerId, hexId)
 		statusEffects = {},
 		firstAttack = false,
 		firstPunchApplied = false,
+		frenzyActive = false, -- Merlin: Frenesi ligado agora
+		frenzyHealed = false, -- Merlin: a cura de entrada do Frenesi já saiu
 		view = match.view,
 	}
 
@@ -457,6 +615,110 @@ local function CreateHero(match, dataId, ownerId, hexId)
 	HeroView.Create(hero)
 	HeroView.PlayPlaceSound(match.view)
 	return hero
+end
+
+-- ===================== BARRIS =====================
+-- Objeto neutro: ocupa uma casa, não é de ninguém e não tem vida. Quebra por
+-- CONTAGEM de golpes (GameConfig.BARREL_HITS), então o valor do ataque não
+-- importa — o barril custa o mesmo número de turnos pra qualquer herói.
+
+local function CreateBarrel(match, hexId)
+	match.nextBarrelId += 1
+
+	local barrel = {
+		uid = ("%d_barril_%d"):format(match.id, match.nextBarrelId),
+		isBarrel = true, -- é o que o GetHeroAt usa pra não devolver barril como herói
+		position = hexId,
+		hitsLeft = GameConfig.BARREL_HITS,
+		view = match.view,
+	}
+
+	match.barrels[barrel.uid] = barrel
+	match.occupied[hexId] = barrel
+	HeroView.CreateBarrel(barrel)
+	return barrel
+end
+
+-- Nasce no início da partida, antes do draft: os dois jogadores já escolhem os
+-- heróis olhando pro tabuleiro que vão jogar, barris incluídos.
+local function SpawnBarrels(match)
+	for _, hexId in ipairs(GameConfig.BARREL_HEXES) do
+		if not HexGrid.Exists(hexId) then
+			warn("MatchManager: casa de barril inexistente: " .. tostring(hexId))
+		elseif IsFree(match, hexId) then
+			CreateBarrel(match, hexId)
+		end
+	end
+end
+
+-- Prêmio: metade cura, metade ataque emprestado. O sorteio é por barril, não
+-- por partida, e sai no servidor — o cliente só vê o resultado.
+local function BreakBarrel(match, barrel, breaker)
+	match.barrels[barrel.uid] = nil
+
+	-- A casa fica LIVRE, ao contrário do túmulo (que segue ocupando o hex do
+	-- herói morto). Barril quebrado é entulho: some do tabuleiro e a casa volta a
+	-- valer pra andar e pra atirar através.
+	if match.occupied[barrel.position] == barrel then
+		match.occupied[barrel.position] = nil
+	end
+
+	HeroView.BreakBarrel(barrel)
+
+	if not (breaker and breaker.isAlive) then return end
+
+	if math.random() < GameConfig.BARREL_HEAL_CHANCE then
+		HeroView.PlaySkillEffect(breaker, "barrelHeal")
+		Heal(match, breaker, GameConfig.BARREL_HEAL)
+	else
+		HeroView.PlaySkillEffect(breaker, "barrelAttack")
+		IncreaseAttack(breaker, GameConfig.BARREL_ATTACK_BONUS)
+		ApplyStatusEffect(breaker, {
+			type = "attackBuff",
+			duration = GameConfig.BARREL_BUFF_DURATION,
+			attackBonus = GameConfig.BARREL_ATTACK_BONUS, -- devolvido no ProcessStatusEffects
+			-- mesmo carimbo que a API das skills põe: o herói quebra o barril no
+			-- próprio turno, e sem isto o bônus venceria no fim dele
+			appliedTurnToken = match.turnToken,
+		})
+	end
+end
+
+-- Golpe no barril. NÃO passa pelo PerformAttack de propósito: barril não sofre
+-- dano, não revida e não é alvo de habilidade nenhuma — veneno, gelo e corte em
+-- linha são coisas que se fazem a um herói. Também não marca `firstAttack`, pra
+-- não queimar o First Punch do Ralph numa caixa de madeira.
+local function AttackBarrel(match, attacker, barrel)
+	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	if not reach[barrel.position] then return end
+
+	-- Taunt vale aqui também: com um provocador colado, o herói não escolhe alvo
+	for _, neighbor in ipairs(HexGrid.GetNeighbors(attacker.position)) do
+		local occupant = GetHeroAt(match, neighbor.id)
+		if occupant and occupant.isAlive
+			and occupant.ownerId ~= attacker.ownerId
+			and occupant.ability == GameConfig.ABILITIES.TAUNT then
+			Broadcast(match, ("%s está bloqueado por Taunt de %s"):format(attacker.name, occupant.name))
+			return
+		end
+	end
+
+	match.turn.attacked[attacker.uid] = true
+
+	HeroView.PlayAnimation(attacker, "attack")
+	HeroView.PlayAttackSound(attacker)
+	if attacker.attackRange >= 2 then
+		HeroView.ShowRangedAttack(attacker, barrel)
+	end
+
+	barrel.hitsLeft -= 1
+	HeroView.PlayBarrelHit(barrel)
+
+	if barrel.hitsLeft <= 0 then
+		BreakBarrel(match, barrel, attacker)
+	end
+
+	Broadcast(match)
 end
 
 -- ===================== XP =====================
@@ -554,6 +816,7 @@ local function ThreatScore(hero)
 	if HasSkill(hero, "poisonAttack") then threat += 4 end
 	if HasSkill(hero, "beyondFront") then threat += 3 end
 	if HasSkill(hero, "aloneIsBetter") then threat += 3 end
+	if HasSkill(hero, "iceEffect") then threat += 5 end -- controle: rouba turno inteiro
 	return threat
 end
 
@@ -584,9 +847,11 @@ end
 local function EstimateDamage(match, attacker, target, fromPos)
 	local damage = attacker.attack
 
-	-- trustInTeam recalcula no onMove: prevê o ataque já pós-movimento
+	-- trustInTeam recalcula no onMove: prevê o ataque já pós-movimento. Lê a
+	-- marca da própria skill, não `attack > baseAttack`: o herói pode estar com
+	-- ataque acima da ficha por outro motivo (bônus do barril).
 	if HasSkill(attacker, "trustInTeam") then
-		local buffed = attacker.attack > attacker.baseAttack
+		local buffed = attacker.trustInTeamApplied == true
 		local willHaveAlly = #AlliesAdjacentTo(match, attacker, fromPos) > 0
 		if willHaveAlly and not buffed then
 			damage += 1
@@ -603,6 +868,9 @@ local function EstimateDamage(match, attacker, target, fromPos)
 	end
 	if HasSkill(attacker, "poisonAttack") and FindStatusEffect(target, "poison") then
 		damage += 2
+	end
+	if HasSkill(attacker, "iceEffect") and FindStatusEffect(target, "freeze") then
+		damage *= GameConfig.FREEZE_DAMAGE_MULTIPLIER
 	end
 	if HasSkill(attacker, "rage") then
 		local behind = HexGrid.GetLineBeyond(fromPos, target.position, 1)[1]
@@ -656,6 +924,12 @@ local function ScoreAttack(match, attacker, target, fromPos)
 	-- veneno novo rende dano ao longo dos turnos seguintes
 	if HasSkill(attacker, "poisonAttack") and not FindStatusEffect(target, "poison") then
 		score += 15
+	end
+
+	-- gelo do Kor: congelar quem ainda não está congelado rende o dobro de dano
+	-- no golpe seguinte (o bônus em si já entrou pelo EstimateDamage)
+	if HasSkill(attacker, "iceEffect") and not FindStatusEffect(target, "freeze") then
+		score += 16
 	end
 
 	-- Ceos se cura batendo
@@ -730,6 +1004,22 @@ local function ScorePosition(match, hero, fromPos, enemies)
 	return score
 end
 
+-- O barril mais perto de quebrar dentro do alcance. O bot só consulta isto
+-- quando não tem inimigo pra bater: o prêmio é bom, mas trocar um golpe em herói
+-- por um golpe em caixote seria péssimo negócio.
+local function BarrelInReach(match, hero)
+	if match.turn.attacked[hero.uid] then return nil end
+
+	local reach = HexGrid.ComputeReach(hero.position, hero.attackRange, FreeChecker(match))
+	local best = nil
+	for _, barrel in pairs(match.barrels) do
+		if reach[barrel.position] and (not best or barrel.hitsLeft < best.hitsLeft) then
+			best = barrel
+		end
+	end
+	return best
+end
+
 -- Melhor jogada de um herói: para onde ir e quem bater
 local function PlanFor(match, hero, enemies)
 	local canMove = not match.turn.moved[hero.uid] and not match.turn.attacked[hero.uid]
@@ -738,7 +1028,7 @@ local function PlanFor(match, hero, enemies)
 
 	local positions = { [hero.position] = true }
 	if canMove then
-		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.moveRange, FreeChecker(match))) do
+		for hexId in pairs(HexGrid.ComputeReach(hero.position, MoveRangeOf(hero), FreeChecker(match))) do
 			if IsFree(match, hexId) then positions[hexId] = true end
 		end
 	end
@@ -817,6 +1107,14 @@ function BotPlayTurn(match, botId)
 				MatchManager.AttackHero(nil, best.hero.uid, best.target.uid, match)
 				task.wait(BOT_ACTION_DELAY)
 			else
+				-- Sem inimigo no alcance: se sobrou um barril ao lado, o golpe
+				-- parado vira cura ou ataque extra em vez de nada.
+				local barrel = best.hero.isAlive and BarrelInReach(match, best.hero) or nil
+				if barrel then
+					MatchManager.AttackHero(nil, best.hero.uid, barrel.uid, match)
+					task.wait(BOT_ACTION_DELAY)
+				end
+
 				-- só reposicionou: encerra o herói pra não reavaliá-lo em loop
 				resolved[best.hero.uid] = true
 			end
@@ -950,7 +1248,7 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	if not IsFree(match, hexId) then return end
 
 	-- FindPath já garante alcance e caminho livre: substitui o ComputeReach
-	local path = HexGrid.FindPath(hero.position, hexId, hero.moveRange, FreeChecker(match))
+	local path = HexGrid.FindPath(hero.position, hexId, MoveRangeOf(hero), FreeChecker(match))
 	if not path then return end
 
 	-- o estado lógico muda na hora; a caminhada é só visual
@@ -979,11 +1277,20 @@ end
 function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	match = match or MatchOfPlayer(player)
 	local attacker = match and match.heroes[attackerUid]
-	local target = match and match.heroes[targetUid]
 	if not AuthorizeAction(match, player, attacker) then return end
+	if match.turn.attacked[attackerUid] then return end
+
+	-- O barril chega pelo MESMO remote e pelo mesmo botão do ataque: pro jogador
+	-- é "bater naquilo ali", e o alvo é que decide o que acontece.
+	local barrel = match.barrels[targetUid]
+	if barrel then
+		AttackBarrel(match, attacker, barrel)
+		return
+	end
+
+	local target = match.heroes[targetUid]
 	if not target or not target.isAlive then return end
 	if target.ownerId == attacker.ownerId then return end
-	if match.turn.attacked[attackerUid] then return end
 
 	-- alcance + caminho livre até o alvo
 	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
@@ -1027,10 +1334,13 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 end
 
 -- ===================== DRAFT ALTERNADO (1,2,1,2) =====================
-local function AvailableHeroIds(match)
+-- `side` filtra pelo que aquele lado liberou por nível. Sem side, devolve só o
+-- que ainda não foi escolhido (comportamento antigo).
+local function AvailableHeroIds(match, side)
 	local available = {}
 	for _, data in ipairs(HeroData.CATALOG) do
-		if not match.usedHeroIds[data.id] then
+		local unlocked = (side == nil) or side.unlockedIds[data.id]
+		if not match.usedHeroIds[data.id] and unlocked then
 			table.insert(available, data.id)
 		end
 	end
@@ -1047,16 +1357,51 @@ local function FreeHexesIn(match, zone)
 	return free
 end
 
--- Ordem de escolha do bot no draft: tanque que se cura, curandeira, e depois
--- os que fazem mais estrago. Melhor que sortear — o time sai com uma função
--- definida em vez de três heróis aleatórios.
-local BOT_DRAFT_PRIORITY = { 6, 8, 4, 7, 1, 9, 5, 2, 3 }
+-- ===== ESCOLHA DO BOT NO DRAFT =====
+-- Isto era uma lista de prioridade percorrida de cima pra baixo, então o bot
+-- montava SEMPRE o mesmo time — Ceos, Elaria, Blade, partida após partida. Time
+-- coerente, e completamente previsível: depois de duas partidas o jogador já
+-- sabia o que ia encarar e decorava a resposta.
+--
+-- Agora é sorteio COM PESO. O peso é o quanto aquele herói serve ao bot (tanque
+-- que se cura e curandeira valem mais que herói de kit situacional), e o sorteio
+-- é proporcional a ele: o time continua fazendo sentido na maioria das vezes,
+-- mas nenhuma escolha é garantida e de vez em quando aparece uma formação
+-- esquisita — que é justamente o que obriga o jogador a olhar o tabuleiro.
+--
+-- Herói fora da tabela entra com PESO_PADRAO: catálogo novo não precisa mexer
+-- aqui pra já poder ser sorteado.
+local BOT_DRAFT_WEIGHT = {
+	[6] = 10, -- Ceos: tanque que se cura, o mais seguro pra IA
+	[8] = 9,  -- Elaria: cura e limpa, segura o time inteiro
+	[4] = 8,  -- Blade: dano em linha
+	[7] = 7,  -- Noctin: dano alto, corre
+	[10] = 6, -- Kor: controle, alcance 3
+	[1] = 6,  -- Ralph: dano de abertura
+	[9] = 5,  -- Bramm: Taunt que empurra
+	[11] = 4, -- Merlin: o kit dele só paga com o time morto, e o bot não joga pra isso
+	[5] = 4,  -- Dante
+	[2] = 3,  -- Vic: veneno rende a longo prazo, o bot não capitaliza bem
+	[3] = 3,  -- Mineiro: depende de sorte
+}
+local BOT_DRAFT_DEFAULT_WEIGHT = 4
 
 local function BotPickHeroId(available)
-	for _, dataId in ipairs(BOT_DRAFT_PRIORITY) do
-		if table.find(available, dataId) then return dataId end
+	if #available == 0 then return nil end
+
+	local total = 0
+	for _, dataId in ipairs(available) do
+		total += BOT_DRAFT_WEIGHT[dataId] or BOT_DRAFT_DEFAULT_WEIGHT
 	end
-	return available[1]
+
+	local ticket = math.random() * total
+	for _, dataId in ipairs(available) do
+		ticket -= BOT_DRAFT_WEIGHT[dataId] or BOT_DRAFT_DEFAULT_WEIGHT
+		if ticket <= 0 then return dataId end
+	end
+
+	-- só chega aqui por arredondamento de ponto flutuante
+	return available[#available]
 end
 
 -- Tanque no meio da fileira (trava a passagem), ranged nas pontas (fica longe
@@ -1069,11 +1414,17 @@ local function BotPickHex(data, zone, free)
 		return index and math.abs(index - center) or 0
 	end
 
+	-- O desempate é sorteado: numa fileira de 5, as casas 2 e 4 têm a mesma
+	-- distância do centro, e ordenar sem desempate devolvia sempre a mesma. Com o
+	-- sorteio, dois times iguais ainda entram em pé diferente.
+	local jitter = {}
+	for _, hexId in ipairs(free) do jitter[hexId] = math.random() end
+
 	table.sort(free, function(a, b)
-		if data.ability == RANGED then
-			return offsetFromCenter(a) > offsetFromCenter(b)
-		end
-		return offsetFromCenter(a) < offsetFromCenter(b)
+		local da, db = offsetFromCenter(a), offsetFromCenter(b)
+		if da == db then return jitter[a] < jitter[b] end
+		if data.ability == RANGED then return da > db end
+		return da < db
 	end)
 
 	return free[1]
@@ -1115,7 +1466,7 @@ function BotPlaceOne(match)
 	local side = match.sides[match.placementSide]
 	if not side.isBot then return end
 
-	local available = AvailableHeroIds(match)
+	local available = AvailableHeroIds(match, side)
 	local free = FreeHexesIn(match, side.zone)
 
 	if #available > 0 and #free > 0 then
@@ -1139,6 +1490,9 @@ function MatchManager.PlaceHero(player, dataId, hexId)
 	if type(dataId) ~= "number" or type(hexId) ~= "string" then return end
 	if not HeroData.GetById(dataId) then return end
 	if match.usedHeroIds[dataId] then return end
+	-- o cliente já escurece a carta bloqueada, mas quem manda é aqui: sem esta
+	-- linha bastaria um FireServer à mão pra jogar com herói não liberado
+	if not side.unlockedIds[dataId] then return end
 	if not table.find(side.zone, hexId) then return end
 	if not IsFree(match, hexId) then return end
 
@@ -1248,6 +1602,14 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 		},
 	}
 
+	-- Resolvido UMA vez, na criação da partida: o nível não muda no meio do
+	-- draft, e consultar a cada escolha seria uma ida ao cache de XP por clique.
+	-- O bot herda o conjunto do humano (mesma tabela, só leitura) pra partida
+	-- sair simétrica — senão um jogador de nível 1 encararia um bot com Kor e
+	-- Merlin, heróis que ele ainda nem viu.
+	sides[1].unlockedIds = UnlockedIdsFor(playerOne)
+	sides[2].unlockedIds = playerTwo and UnlockedIdsFor(playerTwo) or sides[1].unlockedIds
+
 	local sideIndexById = {}
 	for index, side in ipairs(sides) do
 		sideIndexById[side.id] = index
@@ -1264,6 +1626,8 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 		vsBot = playerTwo == nil,
 		phase = "placement",
 		heroes = {},
+		barrels = {},
+		nextBarrelId = 0,
 		occupied = {},
 		usedHeroIds = {},
 		placementSide = 1, -- lado 1 escolhe primeiro: 1,2,1,2...
@@ -1279,6 +1643,10 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 
 	matches[matchId] = match
 	matchBySlot[slot] = match
+
+	-- antes do draft: os dois já escolhem o time olhando pro tabuleiro que vão
+	-- jogar, com os barris no lugar
+	SpawnBarrels(match)
 
 	-- O tabuleiro já existe no servidor; garante que ele existe no CLIENTE antes
 	-- de mandar a câmera pra lá e antes do primeiro snapshot.

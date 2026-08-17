@@ -146,7 +146,9 @@ local levelBadge = Instance.new("Frame")
 levelBadge.Name = "LevelBadge"
 levelBadge.AnchorPoint = Vector2.new(1, 0)
 levelBadge.Position = UDim2.new(1, -12, 0, 8)
-levelBadge.Size = UDim2.new(0, 136, 0, 46)
+-- 150 e não 136: com o número do nível e o "40/150" do XP na mesma linha, os
+-- dois se encostavam e viravam um bloco de texto só
+levelBadge.Size = UDim2.new(0, 150, 0, 46)
 levelBadge.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
 levelBadge.BackgroundTransparency = 0.2
 levelBadge.BorderSizePixel = 0
@@ -156,9 +158,14 @@ local badgeCorner = Instance.new("UICorner")
 badgeCorner.CornerRadius = UDim.new(0, 8)
 badgeCorner.Parent = levelBadge
 
+-- Nível e XP dividem a linha de cima do crachá, com um vão de 10px entre eles.
+-- Antes o nível ocupava 55% da largura e o XP começava exatamente nos 55%: sem
+-- vão nenhum, "Nível 2" e "40/150" se encostavam. E como os dois usam
+-- TextScaled, o nível esticava até o limite da caixa — o teto de fonte abaixo é
+-- o que impede que ele volte a engolir o espaço quando o número tiver 2 dígitos.
 local levelLabel = Instance.new("TextLabel")
-levelLabel.Size = UDim2.new(0.55, 0, 0, 22)
-levelLabel.Position = UDim2.new(0, 10, 0, 4)
+levelLabel.Size = UDim2.new(0, 78, 0, 20)
+levelLabel.Position = UDim2.new(0, 10, 0, 5)
 levelLabel.BackgroundTransparency = 1
 levelLabel.Text = "Nível 1"
 levelLabel.TextColor3 = Color3.fromRGB(255, 226, 150)
@@ -167,9 +174,14 @@ levelLabel.TextScaled = true
 levelLabel.Font = Enum.Font.GothamBlack
 levelLabel.Parent = levelBadge
 
+local levelSizeLimit = Instance.new("UITextSizeConstraint")
+levelSizeLimit.MaxTextSize = 16
+levelSizeLimit.Parent = levelLabel
+
 local xpLabel = Instance.new("TextLabel")
-xpLabel.Size = UDim2.new(0.45, -10, 0, 16)
-xpLabel.Position = UDim2.new(0.55, 0, 0, 8)
+xpLabel.AnchorPoint = Vector2.new(1, 0)
+xpLabel.Size = UDim2.new(0, 52, 0, 14)
+xpLabel.Position = UDim2.new(1, -10, 0, 8)
 xpLabel.BackgroundTransparency = 1
 xpLabel.Text = ""
 xpLabel.TextColor3 = Color3.fromRGB(190, 200, 220)
@@ -177,6 +189,10 @@ xpLabel.TextXAlignment = Enum.TextXAlignment.Right
 xpLabel.TextScaled = true
 xpLabel.Font = Enum.Font.GothamBold
 xpLabel.Parent = levelBadge
+
+local xpSizeLimit = Instance.new("UITextSizeConstraint")
+xpSizeLimit.MaxTextSize = 12
+xpSizeLimit.Parent = xpLabel
 
 local xpTrack = Instance.new("Frame")
 xpTrack.Size = UDim2.new(1, -20, 0, 6)

@@ -23,6 +23,63 @@ GameConfig.SUDDEN_DEATH_DAMAGE = 1
 GameConfig.GOOD_LUCK_CHANCE = 0.5 -- chance do goodLuck do Mineiro dar +1 de ataque
 GameConfig.POISON_DURATION = 3
 
+-- ===== GELO (Kor) =====
+-- Duração 2 não é "dois turnos de congelamento por gosto": é o mínimo que deixa
+-- o dobro de dano existir. O contador cai no FIM do turno de quem está
+-- congelado, e entre um ataque do Kor e o seguinte passa exatamente um turno do
+-- inimigo. Com duração 1 o gelo derreteria antes do segundo golpe e o bônus
+-- nunca aconteceria em jogo. Cada golpe do Kor renova o gelo.
+GameConfig.FREEZE_DURATION = 2
+
+-- Congelado anda ISTO, não "uma casa a menos". A penalidade relativa deixava o
+-- gelo fraco justamente contra quem ele mais precisa segurar: o Sprint (3 casas)
+-- perdia uma e continuava com 2, mais do que um herói comum inteiro. Teto
+-- absoluto vale o mesmo pra todo mundo — congelou, arrasta o pé.
+GameConfig.FREEZE_MOVE_RANGE = 1
+
+GameConfig.FREEZE_DAMAGE_MULTIPLIER = 2 -- dano do Kor contra alvo já congelado
+
+-- ===== O LOBO (Merlin) =====
+-- Estes números partem de HEROES_PER_PLAYER = 3. Num esquadrão de três, o
+-- Frenesi custa DUAS mortes aliadas — isso acontece em partida equilibrada, não
+-- é situação de desespero. O preço é barato, então o ganho tem que ser modesto:
+-- num time de cinco o mesmo efeito poderia pagar bem mais.
+--
+-- Teto de ataque do Merlin: 2 (ficha) + 2 (faro no máximo) + 2 (frenesi) = 6.
+-- Fica de propósito abaixo dos ~7 que o Mineiro alcança no fim de jogo, porque
+-- ataque em herói corpo a corpo vale duas vezes: é o dano do golpe dele E o do
+-- contra-ataque em quem encostar nele. O Mineiro paga esse mesmo número na
+-- moeda da sorte, e pode terminar a partida em 3.
+GameConfig.MERLIN_DEATH_ATTACK_MAX = 2 -- teto do Faro de Sangue (+1 por morte no tabuleiro)
+GameConfig.MERLIN_FRENZY_ATTACK = 2    -- ataque extra enquanto for o último vivo do time
+GameConfig.MERLIN_FRENZY_HEAL = 4      -- cura ao entrar em Frenesi, uma vez por partida
+GameConfig.MERLIN_FRENZY_KILL_HEAL = 2 -- cura por inimigo abatido durante o Frenesi
+
+-- ===== BARRIL (objeto neutro) =====
+-- Ocupa uma casa como um herói, mas não é de ninguém e não tem vida: quebra por
+-- CONTAGEM DE GOLPES, então um ataque de 1 vale o mesmo que um de 5. É o que
+-- torna o barril interessante pro time fraco em dano — quebrar custa dois
+-- turnos de ataque pra qualquer um.
+GameConfig.BARREL_HITS = 2 -- golpes até quebrar, independente do dano
+
+-- Casas FIXAS, não sorteadas. O sorteio no miolo funcionava, mas fazia cada
+-- partida começar com um tabuleiro diferente: dava pra abrir num barril colado
+-- na sua largada e no outro dia num barril colado na do adversário. Com posição
+-- fixa e simétrica (uma de cada lado do centro, mesma fileira), os dois times
+-- correm a mesma distância pra disputar o prêmio — e o jogador aprende a abertura
+-- em vez de descobrir o mapa toda vez.
+GameConfig.BARREL_HEXES = { "B4", "D4" }
+
+GameConfig.BARREL_HEAL_CHANCE = 0.5 -- o resto da chance vai pro bônus de ataque
+GameConfig.BARREL_HEAL = 2
+GameConfig.BARREL_ATTACK_BONUS = 1
+
+-- Um turno de uso, que é o turno SEGUINTE ao da quebra: o herói gastou o ataque
+-- dele no barril, então o bônus só serve daí em diante. Um prazo nunca é
+-- consumido no turno em que começa (ver ProcessStatusEffects), e é isso que faz
+-- "1" aqui significar um turno inteiro de bônus em vez de nenhum.
+GameConfig.BARREL_BUFF_DURATION = 1
+
 GameConfig.ABILITIES = {
 	SPRINT = "Sprint",
 	TAUNT = "Taunt",

@@ -27,14 +27,13 @@ local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local Monetization = require(ReplicatedStorage.Modules.Monetization)
 local Progression = require(ReplicatedStorage.Modules.Progression)
+local SafeArea = require(ReplicatedStorage.Modules.SafeArea)
 
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local WalletUpdate = ReplicatedStorage.Remotes:WaitForChild("WalletUpdate")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-
-local SPRITE_SHEET_ID = HeroData.GetSpriteId()
 
 local PANEL_BG = Color3.fromRGB(16, 19, 28)
 local CARD_BG = Color3.fromRGB(26, 31, 44)
@@ -132,9 +131,12 @@ local function buildHeroImage(parent, data)
 	image.ScaleType = Enum.ScaleType.Fit
 	image.ResampleMode = Enum.ResamplerMode.Pixelated
 
-	if SPRITE_SHEET_ID then
-		image.Image = SPRITE_SHEET_ID
-		image.ImageRectSize = HeroData.GetFrameSize()
+	-- a folha vem do próprio herói: os criados depois moram em asset separado
+	local spriteId = HeroData.GetSpriteId(data)
+
+	if spriteId then
+		image.Image = spriteId
+		image.ImageRectSize = HeroData.GetFrameSize(data)
 		image.ImageRectOffset = HeroData.GetFrameOffset(data)
 	else
 		image.BackgroundTransparency = 0
@@ -170,7 +172,9 @@ local coinBadge = Instance.new("Frame")
 coinBadge.Name = "CoinBadge"
 coinBadge.AnchorPoint = Vector2.new(1, 0)
 coinBadge.Position = UDim2.new(1, -12, 0, 58)
-coinBadge.Size = UDim2.new(0, 136, 0, 28)
+-- mesma largura do crachá de nível (LobbyClient): os dois ficam um debaixo do
+-- outro na mesma coluna, e larguras diferentes deixavam a pilha torta
+coinBadge.Size = UDim2.new(0, 150, 0, 28)
 coinBadge.BackgroundColor3 = PANEL_BG
 coinBadge.BackgroundTransparency = 0.2
 coinBadge.BorderSizePixel = 0
@@ -186,10 +190,29 @@ coinDot.BorderSizePixel = 0
 coinDot.Parent = coinBadge
 corner(coinDot, 20)
 
+-- A bolinha dourada sozinha não dizia o que era aquele número. O rótulo ao lado
+-- dela resolve sem depender de o jogador adivinhar pelo desenho.
+local coinName = Instance.new("TextLabel")
+coinName.Name = "CoinName"
+coinName.AnchorPoint = Vector2.new(0, 0.5)
+coinName.Position = UDim2.new(0, 29, 0.5, 0)
+coinName.Size = UDim2.new(0, 46, 0, 12)
+coinName.BackgroundTransparency = 1
+coinName.Text = "COINS"
+coinName.TextColor3 = TEXT_SOFT
+coinName.TextXAlignment = Enum.TextXAlignment.Left
+coinName.TextScaled = true
+coinName.Font = Enum.Font.GothamBold
+coinName.Parent = coinBadge
+
+local coinNameLimit = Instance.new("UITextSizeConstraint")
+coinNameLimit.MaxTextSize = 11
+coinNameLimit.Parent = coinName
+
 local coinLabel = Instance.new("TextLabel")
 coinLabel.AnchorPoint = Vector2.new(1, 0.5)
 coinLabel.Position = UDim2.new(1, -10, 0.5, 0)
-coinLabel.Size = UDim2.new(1, -32, 0, 16)
+coinLabel.Size = UDim2.new(1, -90, 0, 16)
 coinLabel.BackgroundTransparency = 1
 coinLabel.Text = "0"
 coinLabel.TextColor3 = GOLD
@@ -198,10 +221,14 @@ coinLabel.TextScaled = true
 coinLabel.Font = Enum.Font.GothamBlack
 coinLabel.Parent = coinBadge
 
+local coinValueLimit = Instance.new("UITextSizeConstraint")
+coinValueLimit.MaxTextSize = 15
+coinValueLimit.Parent = coinLabel
+
 local coinGain = Instance.new("TextLabel")
 coinGain.AnchorPoint = Vector2.new(1, 0)
 coinGain.Position = UDim2.new(1, -12, 0, 88)
-coinGain.Size = UDim2.new(0, 136, 0, 20)
+coinGain.Size = UDim2.new(0, 150, 0, 20)
 coinGain.BackgroundTransparency = 1
 coinGain.Text = ""
 coinGain.TextColor3 = GOLD
@@ -266,6 +293,27 @@ backdrop.Text = ""
 backdrop.AutoButtonColor = false
 backdrop.Parent = modalGui
 
+-- ÁREA ÚTIL DO MODAL
+-- O fundo escurecido cobre a tela inteira (é isso que faz o modal ser modal),
+-- mas o PAINEL não pode subir até o topo: lá moram o menu, o chat e o microfone
+-- do Roblox. No celular, onde essa faixa é proporcionalmente mais alta, a borda
+-- de cima do painel e a fileira de abas caíam bem embaixo dos botões deles — e o
+-- toque ia pro Roblox em vez de trocar de aba. O painel é centralizado DENTRO
+-- desta área, não da tela.
+local modalArea = Instance.new("Frame")
+modalArea.Name = "SafeArea"
+modalArea.BackgroundTransparency = 1
+modalArea.Parent = modalGui
+
+local function layoutModalArea()
+	local top = SafeArea.Top()
+	modalArea.Position = UDim2.new(0, 0, 0, top)
+	modalArea.Size = UDim2.new(1, 0, 1, -(top + SafeArea.MARGIN))
+end
+
+layoutModalArea()
+SafeArea.OnChange(layoutModalArea)
+
 local panel = Instance.new("Frame")
 panel.Name = "Panel"
 panel.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -275,7 +323,7 @@ panel.Position = UDim2.fromScale(0.5, 0.5)
 panel.Size = UDim2.new(0.88, 0, 0.86, 0)
 panel.BackgroundColor3 = PANEL_BG
 panel.BorderSizePixel = 0
-panel.Parent = modalGui
+panel.Parent = modalArea
 corner(panel, 14)
 stroke(panel, ACCENT, 2, 0.2)
 
@@ -513,8 +561,13 @@ local function buildHeroRow(data, order)
 	local nameLabel = paragraph(text, data.name, TEXT_MAIN, 17, 1)
 	nameLabel.Font = Enum.Font.GothamBlack
 
-	paragraph(text, ("%d ATK   •   %d HP   •   %s")
-		:format(data.attack, data.hp, data.ability or "sem passiva"),
+	local unlockLevel = HeroData.GetUnlockLevel(data)
+	local unlockText = unlockLevel > 1
+		and ("   •   libera no nível %d"):format(unlockLevel)
+		or "   •   inicial"
+
+	paragraph(text, ("%d ATK   •   %d HP   •   %s%s")
+		:format(data.attack, data.hp, data.ability or "sem passiva", unlockText),
 		Color3.fromRGB(200, 212, 232), 13, 2).Font = Enum.Font.GothamBold
 
 	local lines = {}
@@ -531,10 +584,17 @@ local function buildHeroRow(data, order)
 end
 
 local function buildStore()
-	paragraph(body, ("Os %d heróis abaixo já estão liberados para todo mundo, de graça. " ..
-		"Cada partida usa %d deles — e o adversário escolhe do mesmo catálogo, então " ..
-		"quem escolhe primeiro decide o que sobra.")
-		:format(#HeroData.CATALOG, GameConfig.HEROES_PER_PLAYER), TEXT_SOFT, 14, 0)
+	-- contado do catálogo em vez de escrito à mão: mexer no `unlock` de um herói
+	-- não pode deixar este texto mentindo
+	local starters = 0
+	for _, data in ipairs(HeroData.CATALOG) do
+		if HeroData.GetUnlockLevel(data) == 1 then starters += 1 end
+	end
+
+	paragraph(body, ("O catálogo tem %d heróis, todos de graça: você começa com %d e libera o " ..
+		"resto subindo de nível — cada um abaixo diz em qual. Cada partida usa %d deles, e o " ..
+		"adversário escolhe do mesmo catálogo, então quem escolhe primeiro decide o que sobra.")
+		:format(#HeroData.CATALOG, starters, GameConfig.HEROES_PER_PLAYER), TEXT_SOFT, 14, 0)
 
 	for index, data in ipairs(HeroData.CATALOG) do
 		buildHeroRow(data, index)

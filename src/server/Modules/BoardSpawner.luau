@@ -362,13 +362,21 @@ local function SpawnBotDummy(boardFolder, origin)
 	local source = template and template:FindFirstChildWhichIsA("Model")
 	if not source then return end
 
-	local boardCenter = HexGrid.GetBoardCenter(origin)
-	local dummyPos = HexGrid.GetStandPosition(2, origin.Y + 3, origin)
-	local lookAt = Vector3.new(boardCenter.X, dummyPos.Y, boardCenter.Z)
-
 	local dummy = source:Clone()
 	dummy.Name = "BotDummy"
-	dummy:PivotTo(CFrame.new(dummyPos, lookAt))
+
+	-- A altura vem do MODELO, não de um número fixo. Antes o pivô ia pra
+	-- origin.Y + 3, uma conta feita pro boneco de 5 studs que estava ali: trocar
+	-- por um avatar mais alto ou mais baixo enterrava os pés no chão ou deixava
+	-- ele flutuando. Medindo a caixa, qualquer modelo que o dono colar no
+	-- template nasce plantado no piso.
+	local _, size = dummy:GetBoundingBox()
+	local floorY = origin.Y - 0.5 -- mesmo piso que o BuildTavern usa
+	local standPos = HexGrid.GetStandPosition(2, floorY + size.Y / 2, origin)
+
+	local boardCenter = HexGrid.GetBoardCenter(origin)
+	local lookAt = Vector3.new(boardCenter.X, standPos.Y, boardCenter.Z)
+	dummy:PivotTo(CFrame.new(standPos, lookAt))
 
 	for _, part in ipairs(dummy:GetDescendants()) do
 		if part:IsA("BasePart") then

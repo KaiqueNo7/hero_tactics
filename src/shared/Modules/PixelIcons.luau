@@ -103,6 +103,20 @@ PixelIcons.PATTERNS = {
 		"#......",
 	},
 
+	-- GELO: floco de neve — os três eixos (vertical, horizontal e as duas
+	-- diagonais) cruzando no centro. É o desenho que mais aguenta o tamanho do
+	-- crachá: mesmo virando uma estrelinha de longe, ninguém confunde com espada
+	-- ou coração.
+	freeze = {
+		"#..#..#",
+		".#.#.#.",
+		"..###..",
+		"#######",
+		"..###..",
+		".#.#.#.",
+		"#..#..#",
+	},
+
 	-- RANGED: círculo com os quatro traços e o ponto no centro
 	ranged = {
 		"...#...",
