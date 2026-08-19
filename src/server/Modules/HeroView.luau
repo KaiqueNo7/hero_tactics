@@ -73,6 +73,18 @@ local RING_SCALE = 0.64
 local RING_THICKNESS = 0.32
 local RING_HEIGHT = 0.08
 
+-- Giro da lápide em torno do eixo vertical. A laje é chata (2,6 de largura por
+-- 0,7 de espessura), então o ângulo decide se o jogador vê a FACE dela ou só um
+-- risco de perfil.
+--
+-- Nasceu em 0°, encarando o eixo Z, que era de frente pra câmera de então. Com a
+-- câmera reposicionada pro azimute 91° (olhando o tabuleiro quase de lado), esse
+-- mesmo 0° virou exatamente o pior caso: a lápide de canto, fina como uma tábua.
+-- 45° põe ela na diagonal — mostra face e espessura ao mesmo tempo, e ainda
+-- desalinha do quadriculado das casas, que é o que faz um cemitério parecer
+-- cemitério em vez de fileira de peças.
+local GRAVE_YAW = 45
+
 local TEAM_COLOR_PLAYER_1 = Color3.fromRGB(70, 150, 255)
 local TEAM_COLOR_PLAYER_2 = Color3.fromRGB(230, 70, 70)
 
@@ -150,13 +162,24 @@ local SPRITE_DEPTH_BIAS = 0.25
 -- ===== ESTILOS DE TEXTO FLUTUANTE =====
 local BUBBLE_LIFETIME = 1.5 -- quanto tempo uma mensagem sozinha fica na tela
 
--- ESTE é o número que decide se dá pra ler o dano numa troca de golpes, não o
--- LIFETIME. Cada herói tem UM balão, reaproveitado: quando várias mensagens
--- entram na fila (dano + contra-ataque + veneno + cura na mesma ação), a
--- seguinte SOBRESCREVE a anterior assim que o GAP vence. Com 0,42s a mensagem
--- do meio aparecia e sumia antes de dar pra ler o número — era o caso mais
--- comum justamente no momento mais importante.
-local BUBBLE_GAP = 0.75 -- espaço entre mensagens seguidas do mesmo herói
+-- Espaço entre mensagens seguidas do MESMO herói. Cada herói tem um balão só,
+-- reaproveitado: a mensagem seguinte sobrescreve a anterior quando o GAP vence.
+--
+-- TEM QUE CABER NO RITMO DO JOGO, não no conforto de leitura. As ações que
+-- geram número são mais rápidas que isto: o bot age a cada 0,70s
+-- (BOT_ACTION_DELAY), o contra-ataque resolve em 0,40s (COUNTER_ATTACK_DELAY) e
+-- o passo de movimento leva 0,22s. Com o GAP acima dessas marcas a fila enche
+-- mais rápido do que esvazia, o número exibido atrasa em relação ao golpe que o
+-- causou e a partida inteira parece engasgada — foi o que aconteceu quando isto
+-- esteve em 0,75s. Quem resolve a legibilidade é o TAMANHO da fonte, ali
+-- embaixo, que não custa tempo nenhum.
+local BUBBLE_GAP = 0.4
+
+-- Teto da fila por herói. Numa rajada (dano + contra-ataque + veneno na mesma
+-- janela) as mensagens velhas são descartadas em vez de exibidas com atraso: o
+-- que importa é o que acabou de acontecer, não a fila de tudo que já passou.
+-- Sem este teto, o GAP sozinho não impede o acúmulo — só o torna mais lento.
+local BUBBLE_QUEUE_MAX = 2
 
 local DEFAULT_STYLE = { color = Color3.fromRGB(255, 250, 190), font = Enum.Font.GothamBold, size = 28, rise = 2.4 }
 
@@ -874,6 +897,12 @@ function HeroView.Say(hero, text, kind)
 	sayQueue[uid] = sayQueue[uid] or {}
 	table.insert(sayQueue[uid], { text = text, kind = kind or "info" })
 
+	-- descarta o que ficou pra trás: mensagem velha exibida fora de hora engana
+	-- mais do que informa, porque o jogador lê o número olhando pro golpe atual
+	while #sayQueue[uid] > BUBBLE_QUEUE_MAX do
+		table.remove(sayQueue[uid], 1)
+	end
+
 	if sayRunning[uid] then return end
 	sayRunning[uid] = true
 
@@ -1247,7 +1276,11 @@ end
 -- ===== ANIMAÇÃO =====
 -- Com sprites estáticos, feedback é feito por tween. Quando os modelos do
 -- Blender entrarem, é aqui que o Animator toca as animações de verdade.
-function HeroView.PlayAnimation(hero, animationName)
+-- `silent` corta só o SOM, nunca o desenho. Serve pro dano sem autor (veneno,
+-- morte súbita), que acontece em vários heróis ao mesmo tempo: o clarão vermelho
+-- é por herói e continua legível empilhado, mas seis "Hit" disparados no mesmo
+-- quadro viram um estouro só e fazem a virada de turno soar como engasgo.
+function HeroView.PlayAnimation(hero, animationName, silent)
 	if not hero.part or not hero.part.Parent then return end
 
 	local spriteGui = hero.part:FindFirstChild("Sprite")
@@ -1258,7 +1291,7 @@ function HeroView.PlayAnimation(hero, animationName)
 			image.ImageColor3 = Color3.fromRGB(255, 110, 110)
 			TweenService:Create(image, TweenInfo.new(0.35), { ImageColor3 = Color3.new(1, 1, 1) }):Play()
 		end
-		PlaySound("Hit", hero.view)
+		if not silent then PlaySound("Hit", hero.view) end
 
 	elseif animationName == "die" then
 		PlaySound("HeroDeath", hero.view)
@@ -1292,7 +1325,12 @@ function HeroView.CreateGrave(hero)
 	local stone = Instance.new("Part")
 	stone.Name = "Grave_" .. hero.uid
 	stone.Size = Vector3.new(2.6, 3, 0.7)
-	stone.CFrame = GroundCFrame(hero.position, hero.view.origin) * CFrame.new(0, 1.5, 0)
+	-- O giro entra ANTES de qualquer coisa presa à lápide: o topo arredondado e a
+	-- etiqueta do nome são montados a partir deste CFrame, então acompanham
+	-- sozinhos e continuam encaixados por mais que o ângulo mude.
+	stone.CFrame = GroundCFrame(hero.position, hero.view.origin)
+		* CFrame.new(0, 1.5, 0)
+		* CFrame.Angles(0, math.rad(GRAVE_YAW), 0)
 	stone.Color = Color3.fromRGB(105, 108, 118)
 	stone.Material = Enum.Material.Slate
 	stone.Anchored = true

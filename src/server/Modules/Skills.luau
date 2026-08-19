@@ -150,6 +150,12 @@ Skills.poisonAttack = {
 				type = "poison",
 				duration = GameConfig.POISON_DURATION,
 				damagePerTurn = 1,
+
+				-- Corrói a cada PASSAGEM de turno, dos dois lados, em vez de uma
+				-- vez por rodada. Ardendo só quando a vez volta pro envenenado, o
+				-- veneno sumia da mesa: o jogador atravessava o turno inteiro do
+				-- adversário sem ver nada e esquecia que estava sob efeito.
+				ticksEveryTurn = true,
 			})
 		end
 	end,

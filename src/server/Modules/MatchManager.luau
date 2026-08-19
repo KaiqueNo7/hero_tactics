@@ -28,7 +28,9 @@ local HeroView = require(ServerScriptService.Modules.HeroView)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local LeaderboardService = require(ServerScriptService.Modules.LeaderboardService)
 local ProgressionService = require(ServerScriptService.Modules.ProgressionService)
-local DevAccess = require(ServerScriptService.Modules.DevAccess)
+-- O DevAccess saiu daqui junto com a liberação por nível: quem sabe quais heróis
+-- o jogador pode levar (inclusive as exceções de testador) é o HeroUnlockService.
+local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 
 local MatchUpdate = ReplicatedStorage.Remotes.MatchUpdate
 local BoardReady = ReplicatedStorage.Remotes.BoardReady
@@ -148,18 +150,11 @@ end
 
 -- Conjunto de heróis que este jogador pode usar, pelo nível dele. Dono e
 -- testadores (DevAccess) recebem o catálogo inteiro sem olhar o nível.
+-- Nível não libera mais herói nenhum: quem decide é a posse (grátis de fábrica
+-- ou comprado com moeda). O DevAccess continua sendo a exceção, e ele já está
+-- embutido no GetPlayableIds.
 local function UnlockedIdsFor(player)
-	local userId = player and player.UserId or nil
-	local level = userId and ProgressionService.GetLevel(userId) or 1
-	local fullCatalog = DevAccess.HasFullCatalog(player)
-
-	local set = {}
-	for _, data in ipairs(HeroData.CATALOG) do
-		if fullCatalog or HeroData.IsUnlockedFor(data, level) then
-			set[data.id] = true
-		end
-	end
-	return set
+	return HeroUnlockService.GetPlayableIds(player)
 end
 
 local function LivingHeroesOf(match, ownerId)
@@ -257,7 +252,10 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 
 	hero.currentHp -= amount
 	HeroView.UpdateStats(hero)
-	HeroView.PlayAnimation(hero, "hit")
+	-- Sem autor = dano de ambiente (veneno, morte súbita), e esse é mudo: o som
+	-- de pancada é de golpe corpo a corpo, e o veneno tica em vários heróis na
+	-- mesma virada de turno. O clarão vermelho e o número continuam.
+	HeroView.PlayAnimation(hero, "hit", attacker == nil)
 	HeroView.Say(hero, "-" .. tostring(amount), "damage")
 
 	if hero.currentHp <= 0 then
@@ -328,7 +326,17 @@ local function MoveRangeOf(hero)
 	return math.max(1, range)
 end
 
--- Roda no fim do turno do próprio herói: aplica o efeito e decrementa.
+-- Roda no fim de CADA turno, pra todo herói vivo. Aplica o efeito e decrementa.
+--
+-- DUAS CADÊNCIAS. Por padrão um efeito só corre no fim do turno do DONO do
+-- herói — ou seja, uma vez por rodada. Quem marca `ticksEveryTurn` corre em toda
+-- passagem de turno, dos dois lados: é o caso do veneno, que precisa ser sentido
+-- enquanto a rodada acontece e não só quando a vez volta. `ownTurnEnding` diz
+-- qual das duas situações é esta chamada.
+--
+-- O gelo e o bônus do barril ficam de fora dessa pressa de propósito: o prazo
+-- deles foi calibrado em rodadas, e passar a decrementar duas vezes por rodada
+-- cortaria a duração pela metade sem ninguém pedir.
 --
 -- EFEITO NÃO É CONSUMIDO NO TURNO EM QUE ENTROU. O Kor congela contra-atacando,
 -- ou seja, no meio do turno do próprio inimigo — que a essa altura já andou as
@@ -336,10 +344,16 @@ end
 -- no fim desse mesmo turno: o jogador congelava o inimigo, via ele andar 3 e
 -- ainda descolava o efeito na metade do tempo. Vale pra todo efeito com prazo
 -- (o veneno pego em contra-ataque tinha exatamente o mesmo furo).
-local function ProcessStatusEffects(match, hero)
+local function ProcessStatusEffects(match, hero, ownTurnEnding)
 	local remaining = {}
 
 	for _, effect in ipairs(hero.statusEffects) do
+		-- não é a vez deste efeito: atravessa a passagem intacto
+		if not (ownTurnEnding or effect.ticksEveryTurn) then
+			table.insert(remaining, effect)
+			continue
+		end
+
 		if effect.appliedTurnToken == match.turnToken then
 			table.insert(remaining, effect)
 			continue
@@ -1202,12 +1216,20 @@ function MatchManager.EndTurn(player, match)
 	local currentSide = SideOf(match, match.turn.ownerId)
 	if player and currentSide.player ~= player then return end
 
-	-- fim de turno de quem está encerrando: veneno primeiro, depois skills
+	-- Fim de turno: efeitos primeiro, depois skills.
+	--
+	-- Varre o tabuleiro INTEIRO, não só o lado que está encerrando — é o que
+	-- permite o veneno ticar nos dois lados a cada passagem (ver
+	-- ProcessStatusEffects). Quem é do lado que encerra continua recebendo o
+	-- tratamento completo: os efeitos por rodada e o gatilho onTurnEnd.
 	local endingOwner = match.turn.ownerId
 	for _, hero in pairs(match.heroes) do
-		if hero.ownerId == endingOwner and hero.isAlive then
-			ProcessStatusEffects(match, hero)
-			if hero.isAlive then
+		if hero.isAlive then
+			local ownTurnEnding = hero.ownerId == endingOwner
+			ProcessStatusEffects(match, hero, ownTurnEnding)
+
+			-- releitura do isAlive: o efeito acima pode ter matado o herói
+			if ownTurnEnding and hero.isAlive then
 				TriggerSkills(match, hero, "onTurnEnd")
 			end
 		end

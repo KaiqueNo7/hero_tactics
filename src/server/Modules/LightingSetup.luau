@@ -38,8 +38,20 @@ local LightingSetup = {}
 LightingSetup.READY_ATTRIBUTE = "HeroTacticsLightingReady"
 
 -- ===== CÉU ABERTO / SOL =====
-local CLOCK_TIME = 14.2 -- meio da tarde: sol inclinado dá sombra longa e macia
-local GEOGRAPHIC_LATITUDE = 24 -- inclina o sol pro lado em vez de deixá-lo a pino
+-- ATENÇÃO: ajustar o ClockTime pelo Explorer NÃO se sustenta. O Apply() abaixo
+-- roda no servidor quando a partida começa e reescreve estas propriedades por
+-- cima do que estiver salvo no place — era isso que apagava o horário calibrado
+-- à mão em modo Edit assim que o jogo entrava em Play. Quem manda no sol é este
+-- arquivo; o Explorer serve só pra pré-visualizar antes de trazer o número pra cá.
+--
+-- 11.6 = 11:36. Sol quase a pino: a parede da taverna para de projetar sombra
+-- dentro da arena. Era 14.2 (meio da tarde), que dá sombra longa e bonita no
+-- lobby aberto, mas atravessa o tabuleiro inteiro — no diorama fechado a beleza
+-- custava legibilidade.
+local CLOCK_TIME = 11.6
+-- Anda junto com o horário: a latitude inclina o sol pro lado, então mexer em um
+-- sem olhar o outro devolve a sombra por um caminho diferente.
+local GEOGRAPHIC_LATITUDE = 24
 local BRIGHTNESS = 2.4
 
 -- ===== LUZ INDIRETA =====

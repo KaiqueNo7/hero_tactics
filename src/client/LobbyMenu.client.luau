@@ -31,6 +31,8 @@ local SafeArea = require(ReplicatedStorage.Modules.SafeArea)
 
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local WalletUpdate = ReplicatedStorage.Remotes:WaitForChild("WalletUpdate")
+local RosterUpdate = ReplicatedStorage.Remotes:WaitForChild("RosterUpdate")
+local BuyHero = ReplicatedStorage.Remotes:WaitForChild("BuyHero")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -242,6 +244,23 @@ coinGain.Parent = menuGui
 local myCoins = 0
 local coinGainToken = 0
 
+-- Elenco comprado e a vitrine que o desenha. Declarados AQUI, antes da carteira,
+-- porque tanto o saldo quanto a lista de heróis mandam redesenhar as linhas — e
+-- as duas coisas podem chegar do servidor antes do menu ser montado. Declarado
+-- depois, `refreshAllHeroRows` viraria uma global nil dentro do renderWallet.
+--
+-- `heroRefreshers` é [dataId] = função que redesenha aquela linha. O buildStore
+-- zera o registro a cada abertura: a vitrine é remontada, e os refreshers velhos
+-- apontariam pra Frames já destruídas.
+local myHeroes = {} -- [dataId] = true, só os COMPRADOS
+local heroRefreshers = {}
+
+local function refreshAllHeroRows()
+	for _, refresh in pairs(heroRefreshers) do
+		refresh()
+	end
+end
+
 -- A linha "Seu saldo" do painel de apoio. Ela é construída junto com o painel,
 -- e a compra acontece justamente com o painel ABERTO — sem esta referência o
 -- saldo de lá continuava marcando o valor de antes da compra.
@@ -259,6 +278,9 @@ local function renderWallet(payload)
 	if tipBalanceLabel and tipBalanceLabel.Parent then
 		tipBalanceLabel.Text = balanceText()
 	end
+
+	-- o preço não muda, mas o "Faltam X" e a cor do botão dependem do saldo
+	refreshAllHeroRows()
 
 	local gained = payload.gained
 	if not gained or gained <= 0 then return end
@@ -281,6 +303,23 @@ local function renderWallet(payload)
 end
 
 WalletUpdate.OnClientEvent:Connect(renderWallet)
+
+-- ===================== ELENCO COMPRADO =====================
+-- O servidor manda a lista de ids comprados; o catálogo (que o cliente já tem)
+-- diz o resto. `refreshRoster` é preenchido quando a vitrine é montada — se ela
+-- ainda não existe, o estado fica guardado aqui e é lido quando abrir.
+local function ownsHero(data)
+	return HeroData.IsStarter(data) or myHeroes[data.id] == true
+end
+
+RosterUpdate.OnClientEvent:Connect(function(payload)
+	local set = {}
+	for _, dataId in ipairs(payload.owned or {}) do
+		set[dataId] = true
+	end
+	myHeroes = set
+	refreshAllHeroRows()
+end)
 
 -- ===================== MODAL =====================
 local backdrop = Instance.new("TextButton")
@@ -561,14 +600,70 @@ local function buildHeroRow(data, order)
 	local nameLabel = paragraph(text, data.name, TEXT_MAIN, 17, 1)
 	nameLabel.Font = Enum.Font.GothamBlack
 
-	local unlockLevel = HeroData.GetUnlockLevel(data)
-	local unlockText = unlockLevel > 1
-		and ("   •   libera no nível %d"):format(unlockLevel)
-		or "   •   inicial"
+	local statsLabel = paragraph(text, "", Color3.fromRGB(200, 212, 232), 13, 2)
+	statsLabel.Font = Enum.Font.GothamBold
 
-	paragraph(text, ("%d ATK   •   %d HP   •   %s%s")
-		:format(data.attack, data.hp, data.ability or "sem passiva", unlockText),
-		Color3.fromRGB(200, 212, 232), 13, 2).Font = Enum.Font.GothamBold
+	-- Botão só existe pra quem é comprável. Herói inicial e já comprado não têm
+	-- o que clicar — a linha de status abaixo já diz que é seu.
+	local buyButton
+	if not HeroData.IsStarter(data) then
+		buyButton = Instance.new("TextButton")
+		buyButton.Name = "Buy"
+		buyButton.Size = UDim2.new(0, 150, 0, 30)
+		buyButton.BackgroundColor3 = Color3.fromRGB(56, 96, 62)
+		buyButton.TextColor3 = Color3.fromRGB(232, 245, 235)
+		buyButton.Font = Enum.Font.GothamBold
+		buyButton.TextSize = 14
+		buyButton.AutoButtonColor = true
+		buyButton.BorderSizePixel = 0
+		buyButton.LayoutOrder = 4
+		buyButton.Parent = text
+		corner(buyButton, 8)
+
+		buyButton.MouseButton1Click:Connect(function()
+			-- O cliente só diz QUEM ele quer. Preço, saldo e posse são conferidos
+			-- no servidor — daqui não sai número nenhum que ele possa forjar.
+			if ownsHero(data) then return end
+			BuyHero:FireServer(data.id)
+		end)
+	end
+
+	-- Redesenha a linha conforme a posse e o saldo mudam (compra, moeda nova,
+	-- login). Guardada na própria Frame pra vitrine inteira poder chamar todas.
+	local function refresh()
+		local owned = ownsHero(data)
+		local cost = HeroData.GetCost(data)
+
+		local status
+		if HeroData.IsStarter(data) then
+			status = "   •   inicial"
+		elseif owned then
+			status = "   •   seu"
+		else
+			status = ("   •   %s %s"):format(Monetization.FormatCoins(cost), Monetization.COIN_NAME:lower())
+		end
+
+		statsLabel.Text = ("%d ATK   •   %d HP   •   %s%s")
+			:format(data.attack, data.hp, data.ability or "sem passiva", status)
+
+		if not buyButton then return end
+
+		buyButton.Visible = not owned
+		if owned then return end
+
+		-- Sem saldo o botão continua clicável de propósito: o servidor recusa e
+		-- o texto já avisa. Um botão morto obriga o jogador a adivinhar por quê.
+		local canAfford = myCoins >= cost
+		buyButton.Text = canAfford
+			and ("Comprar por %s"):format(Monetization.FormatCoins(cost))
+			or ("Faltam %s"):format(Monetization.FormatCoins(cost - myCoins))
+		buyButton.BackgroundColor3 = canAfford
+			and Color3.fromRGB(56, 96, 62) or Color3.fromRGB(62, 62, 74)
+	end
+
+	refresh()
+	row:SetAttribute("HeroId", data.id)
+	heroRefreshers[data.id] = refresh
 
 	local lines = {}
 	if data.ability and HeroData.ABILITY_INFO[data.ability] then
@@ -584,17 +679,26 @@ local function buildHeroRow(data, order)
 end
 
 local function buildStore()
-	-- contado do catálogo em vez de escrito à mão: mexer no `unlock` de um herói
+	-- a vitrine é remontada a cada abertura: os refreshers antigos apontam pra
+	-- Frames que já foram destruídas
+	heroRefreshers = {}
+
+	-- contado do catálogo em vez de escrito à mão: marcar um herói como `starter`
 	-- não pode deixar este texto mentindo
 	local starters = 0
 	for _, data in ipairs(HeroData.CATALOG) do
-		if HeroData.GetUnlockLevel(data) == 1 then starters += 1 end
+		if HeroData.IsStarter(data) then starters += 1 end
 	end
 
-	paragraph(body, ("O catálogo tem %d heróis, todos de graça: você começa com %d e libera o " ..
-		"resto subindo de nível — cada um abaixo diz em qual. Cada partida usa %d deles, e o " ..
-		"adversário escolhe do mesmo catálogo, então quem escolhe primeiro decide o que sobra.")
-		:format(#HeroData.CATALOG, starters, GameConfig.HEROES_PER_PLAYER), TEXT_SOFT, 14, 0)
+	paragraph(body, ("O catálogo tem %d heróis e nenhum depende de nível: você começa com %d " ..
+		"de graça e compra os outros por %s %s cada. Ganhar uma partida paga %s, e cada nível " ..
+		"novo paga %s. Cada partida usa %d heróis, e o adversário escolhe do mesmo catálogo — " ..
+		"quem escolhe primeiro decide o que sobra.")
+		:format(#HeroData.CATALOG, starters,
+			Monetization.FormatCoins(Progression.HERO_COST), Monetization.COIN_NAME:lower(),
+			Monetization.FormatCoins(Progression.WIN_COINS),
+			Monetization.FormatCoins(Progression.LEVEL_UP_COINS),
+			GameConfig.HEROES_PER_PLAYER), TEXT_SOFT, 14, 0)
 
 	for index, data in ipairs(HeroData.CATALOG) do
 		buildHeroRow(data, index)

@@ -97,6 +97,43 @@ function CoinService.GetCoins(userId)
 	return coins[userId] or 0
 end
 
+-- Debita `amount` se houver saldo. Devolve (ok, novoSaldo).
+--
+-- A checagem do saldo mora DENTRO do transform, não antes dele: entre um
+-- GetAsync e um SetAsync cabem duas compras do mesmo jogador em servidores
+-- diferentes, e as duas passariam achando que o dinheiro estava lá. Quem decide
+-- é o UpdateAsync, que lê e escreve como uma operação só.
+--
+-- Devolver nil do transform ABORTA a gravação — é assim que a compra sem saldo
+-- termina sem encostar no valor guardado.
+function CoinService.Spend(userId, amount)
+	amount = math.floor(tonumber(amount) or 0)
+	if amount <= 0 then return false, nil end
+
+	local ok, newTotal = SafeStore.Update(coinStore, tostring(userId), function(oldValue)
+		local saldo = tonumber(oldValue) or 0
+		if saldo < amount then return nil end
+		return saldo - amount
+	end, ("débito de %d moedas em %s"):format(amount, tostring(userId)))
+
+	-- ok=true com newTotal nil é o transform tendo abortado: tinha conexão, mas
+	-- não tinha saldo. ok=false é o DataStore fora do ar. Pro chamador as duas
+	-- terminam igual (a compra não aconteceu), mas só a segunda merece log.
+	if not ok then
+		warn(("CoinService: débito de %d de %s não gravou — compra recusada.")
+			:format(amount, tostring(userId)))
+		return false, nil
+	end
+	if not newTotal then return false, nil end
+
+	coins[userId] = newTotal
+
+	local player = Players:GetPlayerByUserId(userId)
+	if player then Push(player) end
+
+	return true, newTotal
+end
+
 -- ===================== RECIBOS =====================
 -- O Roblox reentrega o mesmo recibo até receber PurchaseGranted. A trava do
 -- receiptStore existe pro caso do servidor cair DEPOIS de creditar e ANTES de

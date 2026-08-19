@@ -12,6 +12,7 @@
 -- calado se alguém clonar o HeroData pra outro lugar.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local Progression = require(ReplicatedStorage.Modules.Progression)
 
 local HeroData = {}
 
@@ -84,15 +85,15 @@ end
 
 -- ===== CATÁLOGO =====
 HeroData.CATALOG = {
-	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70) },
-	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 20, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90) },
-	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), unlock = 2 },
-	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165), unlock = 2 },
-	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200) },
-	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120) },
-	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110), unlock = 3 },
-	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 19, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), unlock = 3 },
-	{ id = 9, name = "Bramm",   frame = 6, attack = 2, hp = 26, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), unlock = 3 },
+	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true },
+	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 20, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90), starter = true },
+	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70) },
+	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165) },
+	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true },
+	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true },
+	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110) },
+	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 19, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200) },
+	{ id = 9, name = "Bramm",   frame = 6, attack = 2, hp = 26, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60) },
 
 	-- Kor não tem `frame`: veio depois da folha e mora no próprio asset.
 	{
@@ -101,7 +102,6 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(150, 210, 240),
 		sprite = "83205436087529",
 		spriteRect = { 210, 143, 562, 787 },
-		unlock = 4,
 	},
 
 	-- Merlin — o lobo. Também mora no próprio asset.
@@ -117,31 +117,35 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(150, 70, 60),
 		sprite = "128910559831968",
 		spriteRect = { 146, 0, 731, 1024 },
-		unlock = 5,
 	},
 }
 
--- ===== LIBERAÇÃO POR NÍVEL =====
--- `unlock` no catálogo é o nível mínimo pra usar o herói; ausente = 1, liberado
--- desde a primeira partida. A tabela fica aqui (ReplicatedStorage) porque os
--- dois lados precisam: o cliente pra escurecer a carta, o servidor pra recusar
--- a escolha. O servidor é a autoridade — o cliente só desenha o cadeado.
+-- ===== LIBERAÇÃO POR COMPRA =====
+-- Nível não tranca mais herói nenhum: o catálogo inteiro está disponível desde a
+-- primeira partida, e o que separa é a carteira. `starter = true` marca quem já
+-- vem no elenco de graça; todo o resto custa Progression.HERO_COST moedas.
 --
---   Nível 1  Ralph, Vic, Dante, Ceos
---   Nível 2  Mineiro, Blade
---   Nível 3  Noctin, Elaria, Bramm
---   Nível 4  Kor
---   Nível 5  Merlin
-
--- Aqui mora só a REGRA. Quem é exceção a ela (dono, testadores, amigos do dono)
--- é decidido no servidor, em ServerScriptService.Modules.DevAccess — não dá pra
--- confiar no cliente pra dizer quem é testador.
-function HeroData.GetUnlockLevel(data)
-	return (data and data.unlock) or 1
+--   De graça  Ralph, Vic, Dante, Ceos
+--   Comprável Mineiro, Blade, Noctin, Elaria, Bramm, Kor, Merlin
+--
+-- São 4 grátis de propósito: a partida usa 3 heróis, então quem chega agora
+-- monta um time completo (com uma troca de sobra) sem precisar de moeda alguma.
+-- Se um dia sobrar menos de HEROES_PER_PLAYER aqui, o jogador novo trava.
+--
+-- Isto é só a REGRA, e ela fica em ReplicatedStorage porque os dois lados
+-- precisam: o cliente pra desenhar o preço, o servidor pra recusar a escolha.
+-- QUEM já comprou o quê é outra coisa, mora no servidor
+-- (ServerScriptService.Modules.HeroUnlockService) e nunca vem do cliente.
+-- Exceções à regra (dono, testadores) continuam em Modules.DevAccess.
+function HeroData.IsStarter(data)
+	return data ~= nil and data.starter == true
 end
 
-function HeroData.IsUnlockedFor(data, level)
-	return (tonumber(level) or 1) >= HeroData.GetUnlockLevel(data)
+-- Todos os compráveis custam o mesmo hoje. A função existe pra que dar preço
+-- diferente a um herói seja mexer AQUI, e não caçar o número em cada tela.
+function HeroData.GetCost(data)
+	if HeroData.IsStarter(data) then return 0 end
+	return Progression.HERO_COST
 end
 
 -- ===== HABILIDADES (textos vindos de lang/pt.json) =====
