@@ -7,6 +7,12 @@
 	tanto o servidor (HeroView) quanto o client (seleção) precisam disso.
 ]]
 
+-- Caminho explícito, como todos os outros módulos do projeto fazem. `script.Parent`
+-- funcionaria, mas amarra o módulo a estar dentro da pasta Modules — e quebra
+-- calado se alguém clonar o HeroData pra outro lugar.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+
 local HeroData = {}
 
 -- ===== SPRITESHEET =====
@@ -91,7 +97,6 @@ HeroData.CATALOG = {
 	-- Kor não tem `frame`: veio depois da folha e mora no próprio asset.
 	{
 		id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged",
-		attackRange = 3, -- atira uma casa além do Ranged padrão
 		abilities = { "iceEffect", "iceStorm" },
 		color = Color3.fromRGB(150, 210, 240),
 		sprite = "83205436087529",
@@ -159,11 +164,14 @@ HeroData.SKILL_INFO = {
 	frenzy        = { name = "Frenesi",        desc = "Ao ficar como último herói vivo do time, cura 4 e ganha +2 de ataque e Sprint. Durante o Frenesi, recupera 2 de vida a cada inimigo abatido." },
 }
 
+-- Os números saem do GameConfig, não escritos à mão: este texto aparece na
+-- ficha do herói e no modal da batalha, e já ficou mentindo quando o alcance
+-- mudou de valor sem ninguém lembrar de reescrever a frase.
 HeroData.ABILITY_INFO = {
-	Sprint = "Move até 3 casas por turno em vez de 2.",
-	-- texto genérico da passiva; herói com `attackRange` próprio (o Kor atira a 3)
-	-- mostra o número dele na ficha, não aqui
-	Ranged = "Ataca a até 2 casas de distância.",
+	Sprint = ("Move até %d casas por turno em vez de %d.")
+		:format(GameConfig.SPRINT_MOVE_RANGE, GameConfig.BASE_MOVE_RANGE),
+	Ranged = ("Ataca a até %d casas de distância.")
+		:format(GameConfig.RANGED_ATTACK_RANGE),
 	Taunt  = "Inimigos adjacentes só podem atacar este herói.",
 }
 
@@ -174,18 +182,27 @@ function HeroData.GetById(id)
 	return nil
 end
 
--- Mesma regra do hero.js: attackRange = ability === 'Ranged' ? 2 : 1.
--- O campo `attackRange` na ficha vence a regra: é como um herói tem alcance
--- próprio (o Kor atira a 3) sem inventar uma passiva nova só pra isso, e sem
--- mexer no alcance de todos os outros que têm Ranged.
+-- A passiva decide o alcance, e os valores moram no GameConfig — nenhum número
+-- solto aqui. Mexer no alcance do Ranged é editar UMA linha lá, e a ficha do
+-- herói, o texto das regras no lobby e a IA do bot acompanham sozinhos.
+--
+-- O campo `attackRange` na ficha ainda vence a regra: é a saída pra um herói ter
+-- alcance próprio sem inventar uma passiva nova só pra isso. Hoje ninguém usa —
+-- o Kor usou enquanto atirava mais longe que os outros Ranged, e voltou pro
+-- padrão quando o padrão virou 3.
 function HeroData.GetAttackRange(data)
 	if data.attackRange then return data.attackRange end
-	return data.ability == "Ranged" and 2 or 1
+
+	return data.ability == GameConfig.ABILITIES.RANGED
+		and GameConfig.RANGED_ATTACK_RANGE
+		or GameConfig.BASE_ATTACK_RANGE
 end
 
--- Mesma regra do board.js: movimento = ability === 'Sprint' ? 3 : 2
+-- Mesma ideia do alcance de ataque: a passiva escolhe, o GameConfig guarda.
 function HeroData.GetMoveRange(data)
-	return data.ability == "Sprint" and 3 or 2
+	return data.ability == GameConfig.ABILITIES.SPRINT
+		and GameConfig.SPRINT_MOVE_RANGE
+		or GameConfig.BASE_MOVE_RANGE
 end
 
 return HeroData

@@ -202,19 +202,35 @@ function HexGrid.GetBoardCenter(offset)
 	return (minV + maxV) / 2
 end
 
--- Onde cada competidor fica de pé: os dois à esquerda do tabuleiro, lado a
--- lado. Slot 1 fica mais ao fundo (-Z), slot 2 à frente. Client e server
--- chamam a mesma função pra não haver divergência de posição.
-function HexGrid.GetStandPosition(slot, groundY, offset)
-	local minV = HexGrid.GetBoardBounds(offset)
-	local center = HexGrid.GetBoardCenter(offset)
-	local half = GameConfig.PLAYER_STAND_SPACING / 2
+-- Distância entre as LINHAS de hexágono no eixo Z. Um passo em `r` vale
+-- sqrt(3)*HEX_SIZE (ver GetWorldPosition), então esta é a medida de "uma casa"
+-- pra quem anda pra fora do tabuleiro.
+local function HexRowSpacing()
+	return HEX_SIZE * math.sqrt(3)
+end
 
-	return Vector3.new(
-		minV.X - GameConfig.PLAYER_SIDE_MARGIN,
-		groundY,
-		center.Z + ((slot == 2) and half or -half)
-	)
+-- Onde cada competidor fica de pé: lados opostos do tabuleiro, os dois no
+-- MESMO X (o centro do campo) e separados só no Z. Slot 1 fica na borda de +Z,
+-- slot 2 na de -Z. Client e server chamam esta mesma função pra não divergirem.
+--
+-- A folga sai da borda REAL (GetBoardBounds), não do centro de um hex-âncora:
+-- como B e D têm 7 linhas contra 6 de A/C/E, a borda não é reta, e medir por
+-- uma coluna só deixava o bonequim caindo meio em cima de uma casa.
+function HexGrid.GetStandPosition(slot, groundY, offset)
+	local minV, maxV = HexGrid.GetBoardBounds(offset)
+	local center = HexGrid.GetBoardCenter(offset)
+	local outset = HexRowSpacing() * GameConfig.PLAYER_STAND_OUTSET_HEXES
+
+	local z = (slot == 2) and (minV.Z - outset) or (maxV.Z + outset)
+	return Vector3.new(center.X, groundY, z)
+end
+
+-- Pra onde cada um olha. Como os dois estão no mesmo X e em bordas opostas do
+-- Z, andar reto no eixo Z já mira exatamente o adversário — slot 1 olha pra -Z,
+-- slot 2 pra +Z. Dois treinadores encarando um ao outro por cima do campo.
+function HexGrid.GetStandFacing(slot, standPos)
+	local forwardZ = (slot == 2) and 1 or -1
+	return standPos + Vector3.new(0, 0, forwardZ * 10)
 end
 
 -- BFS de alcance. Atravessa apenas casas livres, mas REGISTRA as ocupadas

@@ -77,13 +77,18 @@ local TEAM_COLOR_PLAYER_1 = Color3.fromRGB(70, 150, 255)
 local TEAM_COLOR_PLAYER_2 = Color3.fromRGB(230, 70, 70)
 
 -- ===== CRACHÁ DE STATUS (abaixo do herói) =====
--- Antes eram dois retângulos coloridos com um número dentro: azul era ataque,
--- verde era vida, e não tinha como saber disso sem alguém contar. Agora cada
--- valor tem ícone próprio, e a moldura dourada dá a leitura de "isto é um
--- painel" em vez de dois quadradinhos soltos.
+-- Cada valor tem ícone próprio (espada = ataque, coração = vida), e a moldura
+-- dourada dá a leitura de "isto é um painel" em vez de dois quadradinhos soltos.
 -- O ícone tem grade 7x7, então o slot mede 14: dois pixels de tela por pixel de
 -- desenho, em número inteiro. Com o slot em 11 (o primeiro palpite) cada célula
 -- caía em 1,57 px e as diagonais saíam com espessura irregular.
+--
+-- Passiva (Taunt/Sprint/Ranged), veneno e gelo ficam NESTA fileira, ao lado do
+-- ataque e da vida. Já tentei mandar esses três só pro retrato na coluna
+-- lateral pra desafogar o tabuleiro: é informação crucial pra decidir a jogada,
+-- e no canto da tela ela passa despercebida bem na hora em que importa. O lugar
+-- dela é junto do boneco. O modal (clique no retrato) segue existindo, mas como
+-- consulta detalhada, não como o único caminho.
 local ICON_SLOT = 14
 local BADGE_HEIGHT = 20
 local STAT_BADGE_WIDTH = 36
@@ -119,20 +124,53 @@ local ABILITY_BADGES = {
 local SPRITE_HEIGHT = SPRITE_WIDTH * (HeroData.FRAME_HEIGHT / HeroData.FRAME_WIDTH)
 local ANCHOR_LIFT = SPRITE_HEIGHT * 0.4
 
--- ===== ESTILOS DE TEXTO FLUTUANTE =====
-local BUBBLE_LIFETIME = 0.95
-local BUBBLE_GAP = 0.42 -- espaço entre mensagens seguidas do mesmo herói
+-- ===== ORDEM DE DESENHO ENTRE O HERÓI E O CRACHÁ DELE =====
+-- ZIndex NÃO resolve isto: ele só ordena filhos DENTRO de um mesmo BillboardGui,
+-- e o desenho do herói e o crachá são dois BillboardGuis irmãos. Entre eles quem
+-- manda é (1) AlwaysOnTop e (2) a distância até a câmera.
+--
+-- O crachá era AlwaysOnTop, então passava por cima de tudo: dos pés do próprio
+-- herói e — pior — dos OUTROS heróis e do cenário do tabuleiro. Desligando isso
+-- ele volta a disputar profundidade como qualquer coisa em cena, e a hierarquia
+-- pedida cai sozinha: herói da frente tapa crachá de quem está atrás, barril na
+-- frente tapa o crachá atrás dele.
+--
+-- Sobra o empate: herói e crachá saem da MESMA âncora, logo à mesma distância da
+-- câmera, e empate em profundidade é ordem indefinida (pode até piscar). O
+-- desempate é puxar o DESENHO meio dedo na direção da câmera. Mexe no herói, e
+-- não no crachá, de propósito: o crachá flutua a meio stud do tabuleiro, e
+-- empurrá-lo pra trás o afundaria na casa; o desenho está em pleno ar e sobe uns
+-- 1,5 px na tela, que ninguém vê.
+--
+-- StudsOffset é medido no eixo da CÂMERA, então isso vale de qualquer ângulo.
+-- Se algum dia o herói aparecer ATRÁS do próprio crachá, o sinal aqui está
+-- invertido nesta versão do engine — troque por -0.25.
+local SPRITE_DEPTH_BIAS = 0.25
 
-local DEFAULT_STYLE = { color = Color3.fromRGB(255, 250, 190), font = Enum.Font.GothamBold, size = 22, rise = 2.4 }
+-- ===== ESTILOS DE TEXTO FLUTUANTE =====
+local BUBBLE_LIFETIME = 1.5 -- quanto tempo uma mensagem sozinha fica na tela
+
+-- ESTE é o número que decide se dá pra ler o dano numa troca de golpes, não o
+-- LIFETIME. Cada herói tem UM balão, reaproveitado: quando várias mensagens
+-- entram na fila (dano + contra-ataque + veneno + cura na mesma ação), a
+-- seguinte SOBRESCREVE a anterior assim que o GAP vence. Com 0,42s a mensagem
+-- do meio aparecia e sumia antes de dar pra ler o número — era o caso mais
+-- comum justamente no momento mais importante.
+local BUBBLE_GAP = 0.75 -- espaço entre mensagens seguidas do mesmo herói
+
+local DEFAULT_STYLE = { color = Color3.fromRGB(255, 250, 190), font = Enum.Font.GothamBold, size = 28, rise = 2.4 }
 
 -- Só os números agora: o balão perdeu os gritos das habilidades ("Veneno!",
 -- "Esmaga!") pros efeitos de partícula, e ficou com o que ele fazia melhor —
 -- dizer quanto de vida entrou ou saiu.
+--
+-- Corpos grandes de propósito: a câmera fica a ~75 studs e o número disputa
+-- espaço com o sprite, o crachá e o tabuleiro pintado embaixo dele.
 local TEXT_STYLES = {
-	damage = { color = Color3.fromRGB(255, 85, 75),  font = Enum.Font.GothamBlack,   size = 30, rise = 3.0 },
-	heal   = { color = Color3.fromRGB(105, 240, 130), font = Enum.Font.GothamBlack,  size = 28, rise = 2.7 },
-	buff   = { color = Color3.fromRGB(120, 215, 255), font = Enum.Font.GothamBlack,  size = 25, rise = 2.5 },
-	debuff = { color = Color3.fromRGB(255, 175, 75),  font = Enum.Font.GothamBlack,  size = 25, rise = 2.5 },
+	damage = { color = Color3.fromRGB(255, 85, 75),  font = Enum.Font.GothamBlack,   size = 44, rise = 3.4 },
+	heal   = { color = Color3.fromRGB(105, 240, 130), font = Enum.Font.GothamBlack,  size = 40, rise = 3.1 },
+	buff   = { color = Color3.fromRGB(120, 215, 255), font = Enum.Font.GothamBlack,  size = 34, rise = 2.8 },
+	debuff = { color = Color3.fromRGB(255, 175, 75),  font = Enum.Font.GothamBlack,  size = 34, rise = 2.8 },
 	info   = DEFAULT_STYLE,
 }
 
@@ -704,7 +742,10 @@ function HeroView.BreakBarrel(barrel)
 	barrel.part = nil
 	if not (part and part.Parent) then return end
 
-	PlaySound("HeroDeath", barrel.view)
+	-- Som próprio, e não o HeroDeath: barril quebrando é madeira estourando, não
+	-- alguém morrendo. Emprestar o som de morte fazia o jogador olhar pro
+	-- tabuleiro procurando qual herói tinha caído.
+	PlaySound("BarrelBreak", barrel.view)
 	BarrelBurst(part, 30, 20)
 
 	-- o crachá some junto com o barril, não com o Part: ele ainda vive ~1s pra
@@ -880,6 +921,10 @@ function HeroView.Create(hero)
 		-- dali, então os pés ficam plantados seja qual for o tamanho desenhado
 		spriteGui.StudsOffsetWorldSpace = Vector3.new(0, -ANCHOR_LIFT, 0)
 		spriteGui.SizeOffset = Vector2.new(0, 0.5)
+		-- só profundidade, pra ganhar do próprio crachá no empate (ver
+		-- SPRITE_DEPTH_BIAS). O plantar dos pés continua a cargo das duas linhas
+		-- acima, que são world-space e não mudam.
+		spriteGui.StudsOffset = Vector3.new(0, 0, SPRITE_DEPTH_BIAS)
 		spriteGui.LightInfluence = 0
 		spriteGui.Parent = anchor
 
@@ -907,7 +952,10 @@ function HeroView.Create(hero)
 	-- (ver ShowBubble). Nasce desligado.
 	local bubble = Instance.new("BillboardGui")
 	bubble.Name = "FloatingText"
-	bubble.Size = UDim2.new(0, 180, 0, 38)
+	-- Precisa caber o MAIOR corpo de TEXT_STYLES com folga: o TextLabel ocupa a
+	-- caixa inteira e o Roblox recorta o que passar dela. Com os 38px antigos e
+	-- a fonte de dano em 44, o número sairia decapitado.
+	bubble.Size = UDim2.new(0, 240, 0, 58)
 	bubble.StudsOffset = Vector3.new(0, SPRITE_HEIGHT * 0.8, 0)
 	bubble.AlwaysOnTop = true
 	bubble.Enabled = false
@@ -930,7 +978,10 @@ function HeroView.Create(hero)
 	statsGui.Name = "HeroInfo"
 	statsGui.Size = UDim2.new(0, 148, 0, BADGE_HEIGHT + 2)
 	statsGui.StudsOffset = Vector3.new(0, -SPRITE_HEIGHT * 0.34, 0)
-	statsGui.AlwaysOnTop = true
+	-- SEM AlwaysOnTop: é o que tirava o crachá da fila de profundidade e o fazia
+	-- passar por cima do próprio herói, dos outros heróis e do cenário. Ver o
+	-- bloco SPRITE_DEPTH_BIAS lá em cima pra hierarquia completa.
+	statsGui.AlwaysOnTop = false
 	statsGui.Parent = anchor
 
 	local row = Instance.new("Frame")

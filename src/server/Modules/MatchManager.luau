@@ -452,6 +452,7 @@ local function Snapshot(match, viewerId)
 			currentHp = hero.currentHp,
 			maxHp = hero.maxHp,
 			attack = hero.attack,
+			baseAttack = hero.baseAttack,
 			ability = hero.ability,
 			attackRange = hero.attackRange,
 			moveRange = MoveRangeOf(hero), -- já descontado o gelo
@@ -460,6 +461,11 @@ local function Snapshot(match, viewerId)
 			-- o cliente precisa saber POR QUE o herói anda menos: sem isso o
 			-- congelado só parece ter perdido alcance sem explicação
 			frozen = FindStatusEffect(hero, "freeze") ~= nil,
+
+			-- turnos restantes de veneno, não só "está envenenado?": a coluna de
+			-- retratos mostra o mesmo selo em 3 estágios que o crachá do tabuleiro
+			-- mostrava, e sem o número não dá pra saber qual estágio é
+			poisonTurns = (FindStatusEffect(hero, "poison") or {}).duration or 0,
 			isMine = hero.ownerId == viewerId,
 			-- 1 = azul, 2 = vermelho. Vai junto pra UI pintar o retrato com a
 			-- MESMA cor do anel embaixo do herói no tabuleiro: em PvP quem joga
@@ -692,22 +698,16 @@ local function AttackBarrel(match, attacker, barrel)
 	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[barrel.position] then return end
 
-	-- Taunt vale aqui também: com um provocador colado, o herói não escolhe alvo
-	for _, neighbor in ipairs(HexGrid.GetNeighbors(attacker.position)) do
-		local occupant = GetHeroAt(match, neighbor.id)
-		if occupant and occupant.isAlive
-			and occupant.ownerId ~= attacker.ownerId
-			and occupant.ability == GameConfig.ABILITIES.TAUNT then
-			Broadcast(match, ("%s está bloqueado por Taunt de %s"):format(attacker.name, occupant.name))
-			return
-		end
-	end
+	-- Taunt NÃO vale aqui. Ele obriga a escolher o provocador em vez de outro
+	-- ALVO — e barril não é alvo: não revida, não tem dono, não decide nada. Um
+	-- provocador colado travar a quebra da caixa só tirava do jogador uma jogada
+	-- que não competia com ele.
 
 	match.turn.attacked[attacker.uid] = true
 
 	HeroView.PlayAnimation(attacker, "attack")
 	HeroView.PlayAttackSound(attacker)
-	if attacker.attackRange >= 2 then
+	if GameConfig.IsRangedAttack(attacker.attackRange) then
 		HeroView.ShowRangedAttack(attacker, barrel)
 	end
 
@@ -765,7 +765,7 @@ end
 local function PerformAttack(match, attacker, target, isCounterAttack)
 	HeroView.PlayAnimation(attacker, "attack")
 	HeroView.PlayAttackSound(attacker)
-	if attacker.attackRange >= 2 then
+	if GameConfig.IsRangedAttack(attacker.attackRange) then
 		HeroView.ShowRangedAttack(attacker, target)
 	end
 
@@ -810,7 +810,7 @@ end
 -- O quanto vale a pena derrubar este inimigo
 local function ThreatScore(hero)
 	local threat = hero.attack * 3
-	if hero.attackRange >= 2 then threat += 2 end
+	if GameConfig.IsRangedAttack(hero.attackRange) then threat += 2 end
 	if HasSkill(hero, "health") then threat += 8 end -- curandeira morre primeiro
 	if HasSkill(hero, "clean") then threat += 3 end
 	if HasSkill(hero, "poisonAttack") then threat += 4 end
@@ -953,7 +953,7 @@ end
 local function ScorePosition(match, hero, fromPos, enemies)
 	local score = 0
 	local isTank = hero.ability == TAUNT
-	local isRanged = hero.attackRange >= 2
+	local isRanged = GameConfig.IsRangedAttack(hero.attackRange)
 
 	local nearest = math.huge
 	for _, enemy in ipairs(enemies) do

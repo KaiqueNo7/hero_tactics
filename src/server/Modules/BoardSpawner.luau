@@ -365,17 +365,23 @@ local function SpawnBotDummy(boardFolder, origin)
 	local dummy = source:Clone()
 	dummy.Name = "BotDummy"
 
+	-- Mesma escala do jogador local (o CameraController aplica esta constante no
+	-- avatar dele): os dois ficam frente a frente, e um do tamanho do outro é o
+	-- mínimo pro duelo ler como duelo. Antes só o jogador crescia e o bot ficava
+	-- um boneco miúdo do outro lado do campo.
+	pcall(function()
+		dummy:ScaleTo(GameConfig.PLAYER_STAND_SCALE)
+	end)
+
 	-- A altura vem do MODELO, não de um número fixo. Antes o pivô ia pra
 	-- origin.Y + 3, uma conta feita pro boneco de 5 studs que estava ali: trocar
 	-- por um avatar mais alto ou mais baixo enterrava os pés no chão ou deixava
-	-- ele flutuando. Medindo a caixa, qualquer modelo que o dono colar no
-	-- template nasce plantado no piso.
+	-- ele flutuando. A caixa é medida DEPOIS do ScaleTo — medir antes plantaria
+	-- os pés na altura do tamanho velho e o boneco afundaria no piso.
 	local _, size = dummy:GetBoundingBox()
 	local floorY = origin.Y - 0.5 -- mesmo piso que o BuildTavern usa
 	local standPos = HexGrid.GetStandPosition(2, floorY + size.Y / 2, origin)
-
-	local boardCenter = HexGrid.GetBoardCenter(origin)
-	local lookAt = Vector3.new(boardCenter.X, standPos.Y, boardCenter.Z)
+	local lookAt = HexGrid.GetStandFacing(2, standPos)
 	dummy:PivotTo(CFrame.new(standPos, lookAt))
 
 	for _, part in ipairs(dummy:GetDescendants()) do

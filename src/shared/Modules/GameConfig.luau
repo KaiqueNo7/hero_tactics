@@ -14,7 +14,17 @@ GameConfig.BASE_MOVE_RANGE = 2
 GameConfig.SPRINT_MOVE_RANGE = 3
 
 GameConfig.BASE_ATTACK_RANGE = 1
-GameConfig.RANGED_ATTACK_RANGE = 2
+GameConfig.RANGED_ATTACK_RANGE = 3
+
+-- "Este herói ataca à distância?" = alcança além do corpo a corpo.
+--
+-- Existe porque o código perguntava isso com `attackRange >= 2` espalhado em
+-- meia dúzia de lugares — o 2 era o valor do Ranged na época, então a pergunta
+-- só acertava por coincidência. Comparar com BASE_ATTACK_RANGE diz o que a
+-- pergunta realmente é, e sobrevive a qualquer remexida nos números acima.
+function GameConfig.IsRangedAttack(attackRange)
+	return (attackRange or GameConfig.BASE_ATTACK_RANGE) > GameConfig.BASE_ATTACK_RANGE
+end
 
 GameConfig.SUDDEN_DEATH_WARNING_TURN = 15
 GameConfig.SUDDEN_DEATH_START_TURN = 20
@@ -86,18 +96,26 @@ GameConfig.ABILITIES = {
 	RANGED = "Ranged",
 }
 
-GameConfig.PLAYER_CORNER_HEX = "A1" -- hex mais próximo de onde o player fica parado / câmera se ancora
-
 GameConfig.TURN_TIME_LIMIT = 60 -- segundos por turno; 0 desliga o cronômetro
 GameConfig.BOT_PLACE_DELAY = 0.8 -- pausa antes do bot escolher, pra dar pra acompanhar
 
--- ===== POSICIONAMENTO AO LADO DO TABULEIRO =====
--- Os dois competidores ficam à esquerda do tabuleiro (-X), lado a lado no eixo
--- Z, olhando pra arena. Usado pelo CameraController (posiciona o jogador local)
--- e pelo BoardSpawner (posiciona o bonequin do bot). A conta em si mora no
--- HexGrid.GetStandPosition pra não divergir entre client e server.
-GameConfig.PLAYER_SIDE_MARGIN = 9 -- distância à esquerda da borda do tabuleiro
-GameConfig.PLAYER_STAND_SPACING = 7 -- distância entre os dois competidores
+-- ===== POSICIONAMENTO DOS COMPETIDORES (confronto estilo Pokémon) =====
+-- Os dois ficam em LADOS OPOSTOS do tabuleiro, ambos alinhados com o centro
+-- dele, olhando um pro outro por cima do campo.
+--
+-- Antes era diagonal: slot 1 ancorado em A6, slot 2 em E1 com um desvio lateral
+-- de 14 studs. Isso nasceu com a câmera de frente; depois que ela foi pro
+-- azimute 91° (olhando o tabuleiro de lado) os dois deixaram de se enxergar —
+-- um caía no fundo da cena e o outro na frente, cada um encarando o vazio.
+-- Alinhados no mesmo X e separados só no Z, a direção fixa de olhar (±Z) aponta
+-- exatamente pro adversário, sem precisar de conta de mira.
+--
+-- A distância é medida em CASAS a partir da borda do tabuleiro, e não em studs
+-- soltos: mudando o tamanho do hexágono, os dois continuam à mesma distância
+-- relativa do campo. A conta mora no HexGrid.GetStandPosition/GetStandFacing pra
+-- client (jogador local) e server (bonequin do bot) não divergirem.
+GameConfig.PLAYER_STAND_OUTSET_HEXES = 1 -- casas de folga entre a borda do tabuleiro e o competidor
+GameConfig.PLAYER_STAND_SCALE = 2.2 -- tamanho dos personagens nas posições de espera (1 = normal)
 
 -- ===== ARENAS SIMULTÂNEAS =====
 -- Cada partida ocupa uma arena própria, lado a lado no eixo X. A taverna mede

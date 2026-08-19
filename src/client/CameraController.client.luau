@@ -24,10 +24,17 @@ local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 -- ===== ENQUADRAMENTO (medido em jogo) =====
+-- Calibrado no voo livre (F) e copiado do HUD: o log de lá usa a MESMA origem
+-- (boardCenter) e a mesma convenção de ângulo do applyCamera, então os números
+-- passam direto pra cá, sem conversão.
+--
+-- O azimute saiu de 16° pra 91°: o tabuleiro passou a ser visto quase de lado,
+-- não mais de frente. Com a câmera um pouco mais alta e bem mais perto
+-- (95 -> 75) as casas pegam mais luz e o hexágono fica menos achatado.
 local FIELD_OF_VIEW = 38
-local ELEVATION = 35
-local AZIMUTH = 13
-local DEFAULT_DISTANCE = 89
+local ELEVATION = 44
+local AZIMUTH = 91
+local DEFAULT_DISTANCE = 75
 local FRAMING = 1.12
 
 -- ===== ZOOM =====
@@ -217,11 +224,37 @@ local function setDefaultControls(enabled)
 	end
 end
 
+-- Altura em que o HumanoidRootPart descansa com o boneco de pé no chão.
+-- Precisa ser medida DEPOIS do ScaleTo: as partes crescem junto, e um número
+-- fixo (era "+3.5", cravado pra escala 1.6) enfia o boneco no piso ou o deixa
+-- boiando assim que PLAYER_STAND_SCALE muda.
+local function standingRootHeight(character, humanoid, rootPart)
+	-- R15 declara a altura do quadril; R6 não usa HipHeight (fica 0) e apoia o
+	-- root no meio do torso, então a perna é quem dá a medida — e ela acompanha
+	-- a escala do mesmo jeito.
+	if humanoid.RigType == Enum.HumanoidRigType.R6 then
+		local leg = character:FindFirstChild("Left Leg")
+		return (leg and leg.Size.Y or 2) + rootPart.Size.Y / 2
+	end
+
+	return humanoid.HipHeight + rootPart.Size.Y / 2
+end
+
 local function placeCharacter(character, standPos, lookAt)
 	local humanoid = character:WaitForChild("Humanoid")
 	local rootPart = character:WaitForChild("HumanoidRootPart")
 
-	rootPart.CFrame = CFrame.new(standPos, lookAt)
+	pcall(function()
+		character:ScaleTo(GameConfig.PLAYER_STAND_SCALE)
+	end)
+
+	-- standPos vem no nível do CHÃO; a altura do boneco entra aqui. O alvo do
+	-- olhar sobe junto, senão o personagem encara o piso em vez do adversário.
+	local restY = standPos.Y + standingRootHeight(character, humanoid, rootPart)
+	rootPart.CFrame = CFrame.new(
+		Vector3.new(standPos.X, restY, standPos.Z),
+		Vector3.new(lookAt.X, restY, lookAt.Z)
+	)
 
 	humanoid.WalkSpeed = 0
 	humanoid.JumpPower = 0
@@ -282,6 +315,10 @@ local function returnToLobby()
 
 	local character = player.Character
 	if character then
+		pcall(function()
+			character:ScaleTo(1)
+		end)
+
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		local rootPart = character:FindFirstChild("HumanoidRootPart")
 
@@ -330,8 +367,8 @@ local function activateBoardCamera(hexSize, boardOffset, slot)
 	maxRadius = baseRadius * ZOOM_MAX_FACTOR
 
 	local groundY = boardOffset.Y
-	local standPos = HexGrid.GetStandPosition(slot or 1, groundY + 3.5)
-	local lookAt = Vector3.new(boardCenter.X, standPos.Y, boardCenter.Z)
+	local standPos = HexGrid.GetStandPosition(slot or 1, groundY)
+	local lookAt = HexGrid.GetStandFacing(slot or 1, standPos)
 
 	buildStandPlatform(standPos, groundY)
 	placeCharacter(player.Character or player.CharacterAdded:Wait(), standPos, lookAt)
