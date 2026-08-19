@@ -26,6 +26,7 @@ local SoundService = game:GetService("SoundService")
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local PixelIcons = require(ReplicatedStorage.Modules.PixelIcons)
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 
 local Sounds = ReplicatedStorage:WaitForChild("Sounds")
 
@@ -259,6 +260,7 @@ local SKILL_SOUNDS = {
 	goodLuck = "SkillGoodLuck",
 	aloneIsBetter = "SkillAlone",
 	brokenDefense = "SkillBrokenDefense",
+	clean = "SkillClean",
 }
 
 function HeroView.PlaySkillSound(key, view)
@@ -1319,6 +1321,94 @@ function HeroView.Destroy(hero)
 	end
 end
 
+-- Pura função de (herói morto) -> CFrame da lápide dele: nunca muda enquanto o
+-- herói não se move (e herói morto não se move), então recalcular aqui do zero
+-- a cada golpe/quebra é o que evita a lápide "derivar" de tremida em tremida —
+-- mesma lógica do BarrelCFrame pro barril.
+local function GraveCFrame(hero)
+	return GroundCFrame(hero.position, hero.view.origin)
+		* CFrame.new(0, 1.5, 0)
+		* CFrame.Angles(0, math.rad(GRAVE_YAW), 0)
+end
+
+-- ===== LÁPIDE DESTRUTÍVEL =====
+-- Só o time INIMIGO quebra (a checagem de dono mora no MatchManager). Mesma
+-- casca escura com moldura roxa dos outros crachás — roxo, e não o âmbar do
+-- barril, porque quebrar isto não é neutro: é profanar o túmulo de alguém, e
+-- carrega a maldição de 1 de dano em quem desfere o golpe final.
+local GRAVE_PIP_ON = Color3.fromRGB(186, 150, 220)
+local GRAVE_PIP_OFF = Color3.fromRGB(56, 52, 64)
+local GRAVE_PIP = 8
+
+local function BuildGraveBadge(part, hero)
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "GraveInfo"
+	gui.Size = UDim2.new(0, hero.graveHitsLeft * (GRAVE_PIP + 3) + 7, 0, GRAVE_PIP + 8)
+	-- acima da etiqueta do nome, que já ocupa o pé da lápide
+	gui.StudsOffset = Vector3.new(0, 3.3, 0)
+	gui.Parent = part
+
+	local shell = Instance.new("Frame")
+	shell.Name = "Shell"
+	shell.Size = UDim2.fromScale(1, 1)
+	shell.BackgroundColor3 = BADGE_BG
+	shell.BorderSizePixel = 0
+	shell.Parent = gui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 4)
+	corner.Parent = shell
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = GRAVE_PIP_ON
+	stroke.Thickness = 1.1
+	stroke.Transparency = 0.25
+	stroke.Parent = shell
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, 3)
+	layout.Parent = shell
+
+	for index = 1, hero.graveHitsLeft do
+		local pip = Instance.new("Frame")
+		pip.Name = "Pip" .. index
+		pip.LayoutOrder = index
+		pip.Size = UDim2.new(0, GRAVE_PIP, 0, GRAVE_PIP)
+		pip.BackgroundColor3 = GRAVE_PIP_ON
+		pip.BorderSizePixel = 0
+		pip.Parent = shell
+
+		local pipCorner = Instance.new("UICorner")
+		pipCorner.CornerRadius = UDim.new(0, 2)
+		pipCorner.Parent = pip
+	end
+
+	return gui
+end
+
+local function UpdateGraveBadge(hero)
+	local part = hero.part
+	if not (part and part.Parent) then return end
+
+	local gui = part:FindFirstChild("GraveInfo")
+	local shell = gui and gui:FindFirstChild("Shell")
+	if not shell then return end
+
+	for _, pip in ipairs(shell:GetChildren()) do
+		local index = tonumber(pip.Name:match("^Pip(%d+)$") or "")
+		if index then
+			local aceso = index <= hero.graveHitsLeft
+			TweenService:Create(pip, TweenInfo.new(0.2), {
+				BackgroundColor3 = aceso and GRAVE_PIP_ON or GRAVE_PIP_OFF,
+			}):Play()
+		end
+	end
+end
+
 function HeroView.CreateGrave(hero)
 	local folder = hero.view.gravesFolder
 
@@ -1328,15 +1418,21 @@ function HeroView.CreateGrave(hero)
 	-- O giro entra ANTES de qualquer coisa presa à lápide: o topo arredondado e a
 	-- etiqueta do nome são montados a partir deste CFrame, então acompanham
 	-- sozinhos e continuam encaixados por mais que o ângulo mude.
-	stone.CFrame = GroundCFrame(hero.position, hero.view.origin)
-		* CFrame.new(0, 1.5, 0)
-		* CFrame.Angles(0, math.rad(GRAVE_YAW), 0)
+	stone.CFrame = GraveCFrame(hero)
 	stone.Color = Color3.fromRGB(105, 108, 118)
 	stone.Material = Enum.Material.Slate
 	stone.Anchored = true
 	stone.CanCollide = false
-	stone.CanQuery = false
+	-- Clicável, ao contrário de antes: a lápide agora é um alvo de ataque como o
+	-- barril, e precisa aparecer no mouse.Target do cliente pra isso funcionar.
+	stone.CanQuery = true
 	stone.Transparency = 1
+	-- MESMO atributo que o anchor do herói vivo usa (ver HeroView.Create). É de
+	-- propósito: o cliente resolve clique/mira/seleção de herói por este
+	-- atributo, e herói morto continua na lista de heroes do snapshot — reusar o
+	-- nome faz a lápide entrar de graça em todo esse cano sem precisar de um
+	-- caminho de clique paralelo só pra ela.
+	stone:SetAttribute("HeroUid", hero.uid)
 	stone.Parent = folder
 
 	local top = Instance.new("Part")
@@ -1376,6 +1472,74 @@ function HeroView.CreateGrave(hero)
 	text.TextScaled = true
 	text.Font = Enum.Font.GothamBold
 	text.Parent = label
+
+	-- `hero.part` volta a apontar pra alguma coisa: era a âncora do sprite vivo,
+	-- HeroView.Destroy zerou, e agora é a pedra. Reusar o mesmo campo (em vez de
+	-- inventar `hero.gravePart`) é o que deixa PlayGraveHit/DestroyGrave lerem
+	-- "o Part atual deste herói" sem precisar saber se ele está vivo ou morto.
+	hero.part = stone
+	BuildGraveBadge(stone, hero)
+end
+
+-- Primeiro golpe (e os seguintes, até faltar um): sacode, solta poeira, apaga
+-- um quadradinho e inclina mais a cada pancada — no último golpe antes de
+-- quebrar, a lápide já está visivelmente caindo.
+function HeroView.PlayGraveHit(hero)
+	local part = hero.part
+	if not (part and part.Parent) then return end
+
+	PlaySound("Hit", hero.view)
+	BarrelBurst(part, 10, 7)
+	UpdateGraveBadge(hero)
+
+	local base = GraveCFrame(hero)
+	local lean = (hero.graveHitsLeft <= 1) and 14 or 6
+	local settled = base * CFrame.Angles(math.rad(lean), 0, 0)
+
+	TweenService:Create(part, TweenInfo.new(0.08, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		CFrame = base * CFrame.new(0, 0.3, 0) * CFrame.Angles(math.rad(-10), 0, 0),
+	}):Play()
+
+	task.delay(0.1, function()
+		if part.Parent then
+			TweenService:Create(part, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { CFrame = settled }):Play()
+		end
+	end)
+end
+
+-- Lápide destruída pelo inimigo: vira pó, e aquele herói nunca mais pode ser
+-- escolhido numa casa de promoção (a marca `graveDestroyed` mora no
+-- MatchManager). Nome próprio pra não confundir com HeroView.Destroy, que
+-- limpa o SPRITE do herói vivo — aqui quem some é a pedra.
+function HeroView.DestroyGrave(hero)
+	local part = hero.part
+	hero.part = nil
+	if not (part and part.Parent) then return end
+
+	PlaySound("GraveBreak", hero.view)
+	BarrelBurst(part, 30, 16)
+
+	local badge = part:FindFirstChild("GraveInfo")
+	if badge then badge.Enabled = false end
+	local label = part:FindFirstChild("GraveLabel")
+	if label then label.Enabled = false end
+
+	local top = part:FindFirstChild("Top")
+	part.CanQuery = false
+	TweenService:Create(part, TweenInfo.new(0.5), { Transparency = 1 }):Play()
+	if top then
+		TweenService:Create(top, TweenInfo.new(0.5), { Transparency = 1 }):Play()
+	end
+	Debris:AddItem(part, 1.2)
+end
+
+-- Lápide consumida por RESSURREIÇÃO (não por ataque): some na hora, sem
+-- pancada nem poeira — o efeito visual da volta é o próprio herói renascendo,
+-- a lápide só precisa desocupar a casa.
+function HeroView.ClearGrave(hero)
+	local part = hero.part
+	hero.part = nil
+	if part and part.Parent then part:Destroy() end
 end
 
 -- Limpa só o que é daquela partida: as outras continuam rodando ao lado.

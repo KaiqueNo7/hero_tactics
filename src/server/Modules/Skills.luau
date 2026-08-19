@@ -214,11 +214,27 @@ Skills.health = {
 Skills.clean = {
 	triggers = { "onAttack" },
 	apply = function(ctx)
+		local limpou = false
+
 		for _, ally in ipairs(ctx.api.GetAlliesInRange(ctx.hero, 1)) do
 			if #ally.statusEffects > 0 then
 				ctx.api.ClearStatusEffects(ally)
 				ctx.api.Effect(ally)
+				limpou = true
 			end
+		end
+
+		-- Uma vez so, e nao por aliado: a Elaria pode limpar tres vizinhos no
+		-- mesmo golpe, e tres disparos do mesmo som no mesmo quadro viram um
+		-- estalo distorcido em vez de tres sons. O efeito VISUAL continua sendo
+		-- por aliado, porque ali a repeticao e justamente o que mostra quantos
+		-- foram limpos.
+		--
+		-- A guarda existe pelo mesmo motivo do goodLuck: a skill dispara em todo
+		-- ataque da Elaria, mas na maioria deles nao ha nada pra limpar — sem ela
+		-- o som viraria parte do som de ataque dela.
+		if limpou then
+			ctx.api.PlaySkillSound("clean")
 		end
 	end,
 }

@@ -91,6 +91,42 @@ function HexGrid.Generate()
 		end
 	end
 
+	-- ===== CASAS DE PROMOÇÃO =====
+	-- Duas casas a mais, na ponta da coluna central (C, que tem 6 linhas contra 7
+	-- de B/D — por isso ela é o "meio" de verdade do tabuleiro). C0 estende antes
+	-- de C1, C7 estende depois de C6.
+	--
+	-- Entram como hexágonos NORMAIS, não um sistema à parte: mesma tabela, mesmo
+	-- axial, mesma fórmula de vizinho. Isso é o que faz Distance/GetNeighbors/
+	-- ComputeReach/FindPath tratá-las como qualquer casa sem precisar de nenhuma
+	-- linha extra de código — C1 ganha C0 como vizinha, C6 ganha C7, automático.
+	-- GetBoardBounds também passa a incluir as duas sozinho, o que é o efeito
+	-- desejado: câmera e posição dos competidores (GetStandPosition) se ajustam
+	-- pra fora, dando espaço pras novas casas sem sobrepor nada — checado em jogo
+	-- antes desta implementação.
+	local CENTER_COLUMN = 2 -- índice de "C" em COLUMN_LETTERS (0-based)
+	local CENTER_LETTER = COLUMN_LETTERS[CENTER_COLUMN + 1]
+	local CENTER_ROWS = COLUMN_COUNTS[CENTER_COLUMN + 1]
+
+	for _, row0 in ipairs({ -1, CENTER_ROWS }) do -- antes da linha 1, depois da última
+		local id = CENTER_LETTER .. tostring(row0 + 1) -- row0=-1 -> "C0", row0=6 -> "C7"
+		local q, r = offsetToAxial(CENTER_COLUMN, row0)
+
+		local hex = {
+			id = id,
+			col = CENTER_COLUMN,
+			row = row0 + 1,
+			letter = CENTER_LETTER,
+			q = q,
+			r = r,
+			s = -q - r,
+		}
+
+		hexes[id] = hex
+		table.insert(hexList, hex)
+		axialToId[q .. "," .. r] = id
+	end
+
 	return hexList
 end
 

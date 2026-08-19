@@ -280,6 +280,8 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 		MatchManager.EndTurn(player)
 	elseif action == "replay" then
 		MatchManager.Replay(player)
+	elseif action == "resurrect" then
+		MatchManager.Resurrect(player, arg1)
 	elseif action == "leaveMatch" then
 		MatchManager.LeaveMatch(player)
 	elseif action == "cancelQueue" then

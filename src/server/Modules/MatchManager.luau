@@ -50,6 +50,7 @@ local nextMatchId = 0
 
 -- declaradas cedo porque se chamam entre si
 local BeginTurn, BotPlayTurn, BotPlaceOne, AdvancePlacement, CheckGameOver
+local TryTriggerPromotion, AttackGrave, FindNearestFreeHex
 
 -- ===================== ZONAS =====================
 -- Casas de largada fixas, uma por coluna, na primeira fileira de cada lado.
@@ -112,8 +113,30 @@ local function GetHeroAt(match, hexId)
 	return occupant
 end
 
+-- Conjunto das duas casas de promoção, montado uma vez a partir do GameConfig.
+local PROMOTION_HEXES = {}
+for _, hexId in pairs(GameConfig.PROMOTION_HEX_FOR_SLOT) do
+	PROMOTION_HEXES[hexId] = true
+end
+
+-- Casa de promoção trancada não faz parte do tabuleiro: ninguém pisa nela nem
+-- atravessa ela. Vale do posicionamento (match.turn ainda nil) até o turno de
+-- liberação.
+--
+-- A trava mora AQUI, no IsFree, e não só no MoveHero, de propósito: assim o
+-- destino do movimento, o caminho até ele (FindPath) e a linha de tiro
+-- (ComputeReach) respeitam todos a mesma regra sem cada um precisar lembrar
+-- dela por conta própria. Uma casa trancada se comporta como parede.
+local function PromotionLocked(match, hexId)
+	if not PROMOTION_HEXES[hexId] then return false end
+	local number = match.turn and match.turn.number or 0
+	return number < GameConfig.PROMOTION_UNLOCK_TURN
+end
+
 local function IsFree(match, hexId)
-	return HexGrid.Exists(hexId) and match.occupied[hexId] == nil
+	return HexGrid.Exists(hexId)
+		and match.occupied[hexId] == nil
+		and not PromotionLocked(match, hexId)
 end
 
 -- fecha sobre a partida: é o que vai pro ComputeReach/FindPath do HexGrid
@@ -225,6 +248,35 @@ function KillHero(match, hero, attacker)
 	-- TriggerSkills barra, porque só o onDie roda em herói morto.
 	if attacker and attacker ~= hero then
 		TriggerSkills(match, attacker, "onKill", hero)
+	end
+
+	-- A lápide nasce com vida própria (ver AttackGrave): o inimigo pode gastar
+	-- GRAVE_HITS golpes pra apagá-la e negar a ressurreição deste herói
+	-- específico. `graveDestroyed` é o que trava isso pra sempre nesta partida,
+	-- mesmo depois dos golpes acabarem — ver TryTriggerPromotion.
+	--
+	-- ANTES do CreateGrave, não depois: o crachá de golpes restantes é montado
+	-- dentro dele (BuildGraveBadge) e LÊ estes campos. Com a ordem invertida, o
+	-- primeiro herói a morrer estourava com "arithmetic on nil", matando a
+	-- corrotina do bot no meio do turno — e a partida congelava, porque o turno
+	-- nunca voltava pro jogador.
+	hero.graveHitsLeft = GameConfig.GRAVE_HITS
+	hero.graveDestroyed = false
+
+	-- Lápide NUNCA fica em cima de uma casa de promoção: ela ocupa o hex para
+	-- sempre e selaria a casa pelo resto da partida — inclusive contra o próprio
+	-- dono, que perderia a jogada sem entender por quê. Aconteceu em teste: um
+	-- herói morreu na casa e ninguém mais conseguiu usá-la.
+	--
+	-- A lápide escorrega para a casa livre mais próxima em vez de sumir: ela é
+	-- o recurso da ressurreição, e apagá-la puniria quem morreu ali.
+	if PROMOTION_HEXES[hero.position] then
+		local destino = FindNearestFreeHex(match, hero.position)
+		if destino then
+			match.occupied[hero.position] = nil
+			hero.position = destino
+			match.occupied[destino] = hero
+		end
 	end
 
 	HeroView.PlayAnimation(hero, "die")
@@ -487,6 +539,13 @@ local function Snapshot(match, viewerId)
 			sideIndex = hero.sideIndex,
 			hasMoved = match.turn and match.turn.moved[hero.uid] or false,
 			hasAttacked = match.turn and match.turn.attacked[hero.uid] or false,
+
+			-- Só importa quando isAlive=false: quantos golpes a lápide ainda
+			-- aguenta, e se ela já foi destruída (nesse caso não é mais alvo de
+			-- ataque nem opção de ressurreição — ver AttackHero/TryTriggerPromotion).
+			-- nil pra herói vivo, de propósito: não é "0 hits", é "não se aplica".
+			graveHitsLeft = (not hero.isAlive) and hero.graveHitsLeft or nil,
+			graveDestroyed = (not hero.isAlive) and hero.graveDestroyed or nil,
 		})
 	end
 
@@ -551,6 +610,34 @@ local function Snapshot(match, viewerId)
 		}
 	end
 
+	-- Estado das duas casas de promoção — igual pros dois espectadores, não
+	-- muda por ponto de vista. "used" vence "active" (uma vez gasta, fica gasta
+	-- mesmo depois do turno de liberação); antes do turno de liberação é sempre
+	-- "inactive", mesmo que por algum motivo já estivesse marcada como usada.
+	local promotionSquares = {}
+	for slotIndex, hexId in pairs(GameConfig.PROMOTION_HEX_FOR_SLOT) do
+		local side = match.sides[slotIndex]
+		local squareState
+		if side and side.promotionUsed then
+			squareState = "used"
+		elseif match.turn and match.turn.number >= GameConfig.PROMOTION_UNLOCK_TURN then
+			squareState = "active"
+		else
+			squareState = "inactive"
+		end
+		table.insert(promotionSquares, { hex = hexId, ownerSideIndex = slotIndex, state = squareState })
+	end
+	table.sort(promotionSquares, function(a, b) return a.hex < b.hex end)
+
+	-- Só o dono da escolha a recebe — o adversário não vê "fulano está
+	-- escolhendo", só o resultado quando sair (a mensagem do Broadcast já cobre
+	-- isso). `options` são uids que já estão em `heroes` acima; o cliente cruza
+	-- os dois pra montar os cartões da escolha.
+	local pendingPromotion = nil
+	if match.pendingPromotion and match.pendingPromotion.ownerId == viewerId then
+		pendingPromotion = { options = match.pendingPromotion.options }
+	end
+
 	return {
 		phase = match.phase,
 		deployZone = viewerSide.zone,
@@ -562,6 +649,8 @@ local function Snapshot(match, viewerId)
 		lockedHeroIds = lockedHeroIds,
 		heroes = heroes,
 		barrels = barrels,
+		promotionSquares = promotionSquares,
+		pendingPromotion = pendingPromotion,
 		turnNumber = match.turn and match.turn.number or 0,
 		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,
 		turnSecondsLeft = TurnSecondsLeft(match),
@@ -730,6 +819,56 @@ local function AttackBarrel(match, attacker, barrel)
 
 	if barrel.hitsLeft <= 0 then
 		BreakBarrel(match, barrel, attacker)
+	end
+
+	Broadcast(match)
+end
+
+-- ===================== LÁPIDES =====================
+-- Lápide de herói morto: recurso disputado, não decoração bloqueando casa. Só o
+-- time INIMIGO destrói (checado em MatchManager.AttackHero, antes de chegar
+-- aqui), em GameConfig.GRAVE_HITS golpes — mesma contagem do barril, dano não
+-- importa. A diferença é o preço: quebrar uma lápide praga quem desfere o golpe
+-- final com GRAVE_CURSE_DAMAGE, e destrói pra sempre a chance daquele herói
+-- específico voltar por uma casa de promoção (ver TryTriggerPromotion).
+--
+-- NÃO existe uma tabela `match.graves` separada: a lápide É o próprio herói
+-- morto, ainda em `match.heroes[uid]`, com isAlive=false e os campos
+-- graveHitsLeft/graveDestroyed que KillHero inicializa. Reaproveitar o mesmo
+-- objeto (e o mesmo uid) é o que deixa a lápide entrar de graça em todo o cano
+-- de clique/mira/snapshot que já existe pros heróis — sem isso seria um
+-- segundo sistema de targeting só pra ela.
+function AttackGrave(match, attacker, grave)
+	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	if not reach[grave.position] then return end
+
+	-- Taunt NÃO vale aqui, pelo mesmo motivo do barril: lápide é objeto, não
+	-- combatente — "Taunt só protege aliados, não objetos no mapa".
+
+	match.turn.attacked[attacker.uid] = true
+
+	HeroView.PlayAnimation(attacker, "attack")
+	HeroView.PlayAttackSound(attacker)
+	if GameConfig.IsRangedAttack(attacker.attackRange) then
+		HeroView.ShowRangedAttack(attacker, grave)
+	end
+
+	grave.graveHitsLeft -= 1
+	HeroView.PlayGraveHit(grave)
+
+	if grave.graveHitsLeft <= 0 then
+		grave.graveDestroyed = true
+		if match.occupied[grave.position] == grave then
+			match.occupied[grave.position] = nil
+		end
+		HeroView.DestroyGrave(grave)
+
+		-- A maldição: dano SEM autor (nil), igual veneno/Morte Súbita — mudo (sem
+		-- o "Hit" de golpe corpo a corpo empilhando em cima do som da quebra) e
+		-- sem contar como ataque de habilidade nenhuma. Se isso matar quem
+		-- profanou o túmulo, ApplyDamage/KillHero cuidam disso normalmente — a
+		-- própria lápide virando outra lápide é o preço fazendo sentido até o fim.
+		ApplyDamage(match, attacker, GameConfig.GRAVE_CURSE_DAMAGE, nil, false)
 	end
 
 	Broadcast(match)
@@ -1084,6 +1223,26 @@ local function MatchIsLive(match)
 	return matches[match.id] ~= nil
 end
 
+-- O bot não vê modal nenhum, então escolhe sozinho quando MoveHero abre uma
+-- escolha pendente (ver o uso logo abaixo). Mesmo peso do ThreatScore — HP +
+-- ATK*3 — pra dizer "quem faz mais falta de volta", sem inventar uma segunda
+-- métrica só pra isto.
+local function BotPickResurrection(options)
+	local best, bestScore = options[1], -math.huge
+	for _, uid in ipairs(options) do
+		-- uid = matchId_dono_dataId; o dataId é o último pedaço
+		local dataId = tonumber(uid:match("_(%d+)$"))
+		local data = dataId and HeroData.GetById(dataId)
+		if data then
+			local score = data.hp + data.attack * 3
+			if score > bestScore then
+				best, bestScore = uid, score
+			end
+		end
+	end
+	return best
+end
+
 function BotPlayTurn(match, botId)
 	task.spawn(function()
 		task.wait(BOT_ACTION_DELAY)
@@ -1113,6 +1272,16 @@ function BotPlayTurn(match, botId)
 			if best.position ~= best.hero.position then
 				MatchManager.MoveHero(nil, best.hero.uid, best.position, match)
 				task.wait(BOT_ACTION_DELAY)
+
+				-- Pisou na própria casa de promoção: TryTriggerPromotion (chamado
+				-- dentro de MoveHero) já deixou a escolha pendurada em
+				-- match.pendingPromotion. Sem resolver isto agora, AuthorizeAction
+				-- bloqueia TODO o resto do turno do bot — inclusive o EndTurn.
+				if MatchIsLive(match) and match.pendingPromotion
+					and match.pendingPromotion.ownerId == botId then
+					MatchManager.Resurrect(nil, BotPickResurrection(match.pendingPromotion.options), match)
+					task.wait(BOT_ACTION_DELAY)
+				end
 			end
 
 			if not MatchIsLive(match) or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
@@ -1212,6 +1381,9 @@ function MatchManager.EndTurn(player, match)
 	match = match or MatchOfPlayer(player)
 	if not match or match.phase ~= "battle" then return end
 	if match.busy then return end
+	-- "Entrou na casa, tem que escolher": nada mais acontece até a ressurreição
+	-- pendente ser resolvida — nem passar o turno.
+	if match.pendingPromotion then return end
 
 	local currentSide = SideOf(match, match.turn.ownerId)
 	if player and currentSide.player ~= player then return end
@@ -1252,6 +1424,9 @@ end
 local function AuthorizeAction(match, player, hero)
 	if not match or match.phase ~= "battle" then return false end
 	if match.busy then return false end
+	-- Escolha de ressurreição pendente bloqueia QUALQUER outra ação — mover,
+	-- atacar, o que for — até ser resolvida via MatchManager.Resurrect.
+	if match.pendingPromotion then return false end
 	if not hero or not hero.isAlive then return false end
 	if hero.ownerId ~= match.turn.ownerId then return false end
 
@@ -1294,6 +1469,11 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	match.busy = false
 
 	Broadcast(match)
+
+	-- DEPOIS do Broadcast: se isto abrir uma escolha pendente, o snapshot que
+	-- acabou de sair já reflete a posição nova, e o próximo (dentro de
+	-- TryTriggerPromotion) só acrescenta o pedido de escolha em cima dela.
+	TryTriggerPromotion(match, hero)
 end
 
 function MatchManager.AttackHero(player, attackerUid, targetUid, match)
@@ -1311,6 +1491,17 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	end
 
 	local target = match.heroes[targetUid]
+
+	-- Lápide inimiga: mesmo remote, mesmo botão, de novo. `target` aqui é o
+	-- PRÓPRIO herói morto (ver comentário em AttackGrave) — só entra por este
+	-- caminho se ainda não foi destruída, senão cai no "not target.isAlive"
+	-- comum logo abaixo e o clique não faz nada.
+	if target and not target.isAlive and not target.graveDestroyed
+		and target.ownerId ~= attacker.ownerId then
+		AttackGrave(match, attacker, target)
+		return
+	end
+
 	if not target or not target.isAlive then return end
 	if target.ownerId == attacker.ownerId then return end
 
@@ -1353,6 +1544,140 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	end
 
 	Broadcast(match)
+end
+
+-- ===================== CASAS DE PROMOÇÃO =====================
+-- Duas casas fixas (GameConfig.PROMOTION_HEX_FOR_SLOT), uma por lado, na ponta
+-- da coluna central. Cada jogador só ativa a que fica no lado OPOSTO de onde
+-- começou — a largada original do adversário — e só depois do turno
+-- PROMOTION_UNLOCK_TURN. Ativar é instantâneo: o herói pisa lá, e se existir
+-- pelo menos uma lápide aliada ainda não destruída, a partida trava numa
+-- escolha obrigatória (ver match.pendingPromotion, checado em AuthorizeAction e
+-- em EndTurn) até o jogador decidir quem ressuscita. Uso único por jogador na
+-- partida inteira (side.promotionUsed).
+
+-- Casa livre mais próxima de `fromHex`, expandindo em anéis (BFS). O herói que
+-- promoveu já ocupa a própria casa de promoção, então o ressuscitado nasce do
+-- lado dele — mais perto, e não em cima do herói que morreu (que pode estar em
+-- qualquer canto do tabuleiro).
+function FindNearestFreeHex(match, fromHex)
+	if IsFree(match, fromHex) then return fromHex end
+
+	local seen = { [fromHex] = true }
+	local queue = { fromHex }
+	local head = 1
+
+	while head <= #queue do
+		local id = queue[head]
+		head += 1
+		for _, neighbor in ipairs(HexGrid.GetNeighbors(id)) do
+			if not seen[neighbor.id] then
+				seen[neighbor.id] = true
+				if IsFree(match, neighbor.id) then return neighbor.id end
+				table.insert(queue, neighbor.id)
+			end
+		end
+	end
+
+	return nil -- tabuleiro cheio ao redor: praticamente impossível num 3v3
+end
+
+-- Executa a ressurreição já validada. Devolve o herói novo, ou nil se não
+-- coube em lugar nenhum perto da casa de promoção (falha silenciosa e rara).
+local function PerformResurrection(match, pending, grave)
+	local spawnHex = FindNearestFreeHex(match, pending.promotionHex)
+	if not spawnHex then return nil end
+
+	-- A lápide se apaga ANTES do herói novo nascer: CreateHero usa o MESMO uid
+	-- (matchId_dono_dataId) que ela tinha, então o slot em match.heroes já vai
+	-- ser sobrescrito na linha seguinte — limpar antes só evita um quadro com os
+	-- dois "existindo" ao mesmo tempo.
+	HeroView.ClearGrave(grave)
+	if match.occupied[grave.position] == grave then
+		match.occupied[grave.position] = nil
+	end
+
+	local newHero = CreateHero(match, grave.dataId, pending.ownerId, spawnHex)
+	if not newHero then return nil end
+
+	-- Vida fixa de "segunda chance", não a vida máxima da ficha — CreateHero
+	-- deixa currentHp = maxHp, isto sobrescreve por cima de propósito.
+	newHero.currentHp = math.min(GameConfig.RESURRECT_HP, newHero.maxHp)
+	HeroView.UpdateStats(newHero)
+	HeroView.PlayMatchSound(match.view, "Resurrect")
+
+	-- De propósito SEM marcar moved/attacked: o ressuscitado é uma unidade nova
+	-- que ainda não agiu neste turno, igual qualquer herói que estivesse em
+	-- campo a partida inteira. O time já podia agir com até HEROES_PER_PLAYER
+	-- heróis por turno — isto não é uma ação extra "de graça", é o efetivo
+	-- voltando ao tamanho normal.
+	return newHero
+end
+
+-- Chamada no fim de MoveHero. Só abre a escolha se: é a casa certa PRA ESTE
+-- lado, já passou do turno de liberação, este lado ainda não gastou o próprio
+-- uso, e sobra pelo menos uma lápide aliada de pé.
+function TryTriggerPromotion(match, hero)
+	if match.phase ~= "battle" or not match.turn then return end
+	if match.turn.number < GameConfig.PROMOTION_UNLOCK_TURN then return end
+
+	local side = SideOf(match, hero.ownerId)
+	if not side or side.promotionUsed then return end
+	if GameConfig.PROMOTION_HEX_FOR_SLOT[side.index] ~= hero.position then return end
+
+	local options = {}
+	for _, other in pairs(match.heroes) do
+		if other.ownerId == hero.ownerId and not other.isAlive and not other.graveDestroyed then
+			table.insert(options, other.uid)
+		end
+	end
+	-- chegou, mas não tem ninguém pra trazer de volta: nenhum efeito, e o uso
+	-- da casa NÃO é gasto — continua disponível se uma lápide aparecer depois
+	if #options == 0 then return end
+
+	table.sort(options)
+	match.pendingPromotion = {
+		ownerId = hero.ownerId,
+		promotionHex = hero.position,
+		options = options,
+	}
+	Broadcast(match)
+end
+
+-- player == nil é o bot resolvendo a própria escolha pendente (ver
+-- BotPickResurrection, em BotPlayTurn).
+function MatchManager.Resurrect(player, heroUid, match)
+	match = match or MatchOfPlayer(player)
+	local pending = match and match.pendingPromotion
+	if not pending then return end
+
+	if player then
+		local side = SideOfPlayer(match, player)
+		if not side or side.id ~= pending.ownerId then return end
+	end
+
+	local valid = false
+	for _, uid in ipairs(pending.options) do
+		if uid == heroUid then valid = true break end
+	end
+
+	local grave = match.heroes[heroUid]
+	local message = nil
+
+	-- A lápide escolhida pode ter sido destruída pelo inimigo ENTRE o pedido de
+	-- escolha e a resposta do jogador (corrida rara, mas possível). Nesse caso a
+	-- promoção é cancelada em silêncio, em vez de travar a partida numa escolha
+	-- que não existe mais.
+	if valid and grave and not grave.isAlive and not grave.graveDestroyed then
+		local newHero = PerformResurrection(match, pending, grave)
+		if newHero then
+			message = ("%s voltou pela Casa de Promoção!"):format(newHero.name)
+			SideOf(match, pending.ownerId).promotionUsed = true
+		end
+	end
+
+	match.pendingPromotion = nil
+	Broadcast(match, message)
 end
 
 -- ===================== DRAFT ALTERNADO (1,2,1,2) =====================
@@ -1613,6 +1938,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 			isBot = false,
 			zone = BuildDeployZone(DEPLOY_ZONES[1]),
 			placedCount = 0,
+			promotionUsed = false, -- Casa de Promoção: um uso por jogador na partida inteira
 		},
 		{
 			index = 2,
@@ -1621,6 +1947,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 			isBot = playerTwo == nil,
 			zone = BuildDeployZone(DEPLOY_ZONES[2]),
 			placedCount = 0,
+			promotionUsed = false,
 		},
 	}
 
@@ -1659,6 +1986,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 		winner = nil,
 		finisher = nil,
 		busy = false,
+		pendingPromotion = nil, -- ver TryTriggerPromotion/MatchManager.Resurrect
 	}
 
 	match.skillApi = BuildSkillApi(match)

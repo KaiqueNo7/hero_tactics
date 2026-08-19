@@ -99,6 +99,31 @@ GameConfig.ABILITIES = {
 GameConfig.TURN_TIME_LIMIT = 60 -- segundos por turno; 0 desliga o cronômetro
 GameConfig.BOT_PLACE_DELAY = 0.8 -- pausa antes do bot escolher, pra dar pra acompanhar
 
+-- ===== CASAS DE PROMOÇÃO =====
+-- Duas casas extras na ponta da coluna central (C), além da grade normal de
+-- C1..C6 — ver HexGrid.Generate. Ficam trancadas até o turno (rodada)
+-- PROMOTION_UNLOCK_TURN, mesma unidade que SUDDEN_DEATH_START_TURN usa: sobe
+-- uma vez por RODADA completa (os dois lados jogaram), não por turno individual.
+GameConfig.PROMOTION_UNLOCK_TURN = 10
+
+-- Slot 1 larga perto de C7 (linhas altas, ver DEPLOY_ZONES) e slot 2 larga perto
+-- de C0 (linhas baixas) — por isso cada um só ativa a casa DISTANTE da própria
+-- largada, a "original do oponente". Índice = hero.sideIndex.
+GameConfig.PROMOTION_HEX_FOR_SLOT = { [1] = "C0", [2] = "C7" }
+
+-- Golpes do INIMIGO até destruir a lápide de um herói caído. Igual ao barril:
+-- conta de golpes, não de dano — um golpe de 1 vale o mesmo que um de 5.
+GameConfig.GRAVE_HITS = 3
+
+-- A maldição: quem desfere o golpe que destrói a lápide sofre este dano. É o
+-- preço de negar a ressurreição — se fosse de graça, destruir lápide seria a
+-- jogada óbvia sempre, sem escolha nenhuma envolvida.
+GameConfig.GRAVE_CURSE_DAMAGE = 1
+
+-- Vida fixa do herói que volta pela casa de promoção — não é a vida máxima da
+-- ficha dele. Ressuscita frágil: um "segunda chance" de verdade, não um reset.
+GameConfig.RESURRECT_HP = 5
+
 -- ===== POSICIONAMENTO DOS COMPETIDORES (confronto estilo Pokémon) =====
 -- Os dois ficam em LADOS OPOSTOS do tabuleiro, ambos alinhados com o centro
 -- dele, olhando um pro outro por cima do campo.
