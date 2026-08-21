@@ -2,7 +2,12 @@
 	LobbyMenu.client.lua
 	LocalScript — StarterPlayer/StarterPlayerScripts
 
-	Os três painéis do lobby: mural de regras, vitrine de heróis e apoio.
+	Os painéis do lobby: mural de regras, campanha, elenco e apoio.
+
+	A CAMPANHA é a progressão inteira do jogo: um quadrado por confronto contra
+	bot, e vencer entrega o herói daquele quadrado. Ela é GUI e não pad físico
+	porque o estado (aberto/trancado/concluído) é POR JOGADOR — uma Part no
+	cenário tem uma cor só, igual pra todo mundo que passa por ela.
 
 	Tudo aqui é GUI de tela, e não placa física no cenário, por um motivo prático:
 	texto de regra é longo e precisa rolar. Numa SurfaceGui o jogador teria que
@@ -18,11 +23,13 @@
 	Só aparece no lobby: durante draft e batalha o MatchUpdate apaga os dois.
 ]]
 
+local CollectionService = game:GetService("CollectionService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
+local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local Monetization = require(ReplicatedStorage.Modules.Monetization)
@@ -32,7 +39,7 @@ local SafeArea = require(ReplicatedStorage.Modules.SafeArea)
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local WalletUpdate = ReplicatedStorage.Remotes:WaitForChild("WalletUpdate")
 local RosterUpdate = ReplicatedStorage.Remotes:WaitForChild("RosterUpdate")
-local BuyHero = ReplicatedStorage.Remotes:WaitForChild("BuyHero")
+local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -304,13 +311,117 @@ end
 
 WalletUpdate.OnClientEvent:Connect(renderWallet)
 
--- ===================== ELENCO COMPRADO =====================
--- O servidor manda a lista de ids comprados; o catálogo (que o cliente já tem)
--- diz o resto. `refreshRoster` é preenchido quando a vitrine é montada — se ela
--- ainda não existe, o estado fica guardado aqui e é lido quando abrir.
+-- ===================== ELENCO =====================
+-- O servidor manda a lista de ids conquistados; o catálogo (que o cliente já
+-- tem) diz quem é inicial. A soma dos dois é o conjunto que o Campaign lê pra
+-- dizer o estado de cada quadrado — a MESMA conta que o servidor faz com o
+-- GetPlayableIds antes de aceitar a entrada no confronto.
 local function ownsHero(data)
 	return HeroData.IsStarter(data) or myHeroes[data.id] == true
 end
+
+local function ownedSet()
+	local set = {}
+	for _, data in ipairs(HeroData.CATALOG) do
+		if ownsHero(data) then set[data.id] = true end
+	end
+	return set
+end
+
+-- ===================== QUADRADOS NO CENÁRIO =====================
+-- Os pads de confronto existem pra todo mundo (o servidor cria e marca com a
+-- tag), mas o ESTADO é de cada um. Pintar aqui, no cliente, é o que deixa o
+-- mesmo pad estar verde pra quem já pode entrar e cinza com cadeado pra quem
+-- ainda não — mexer em cor/transparência no cliente não volta pro servidor nem
+-- vaza pro outro jogador (mesma ideia do vulto do Nash).
+local PAD_COLOR = {
+	open = Color3.fromRGB(60, 170, 130),
+	done = Color3.fromRGB(64, 72, 92),
+	locked = Color3.fromRGB(92, 94, 104),
+}
+
+-- Cadeado desenhado com duas Frames (corpo + arco), pelo mesmo motivo do X do
+-- botão de fechar: o glifo 🔒 não existe nas fontes do Roblox e sai quadradinho.
+local function buildPadLock(parent)
+	local holder = Instance.new("Frame")
+	holder.Name = "Lock"
+	holder.AnchorPoint = Vector2.new(0.5, 0.5)
+	holder.Position = UDim2.new(0.5, 0, 0, 55)
+	holder.Size = UDim2.new(0, 34, 0, 40)
+	holder.BackgroundTransparency = 1
+	holder.Visible = false
+	holder.Parent = parent
+
+	local shackle = Instance.new("Frame")
+	shackle.Name = "Shackle"
+	shackle.AnchorPoint = Vector2.new(0.5, 0)
+	shackle.Position = UDim2.new(0.5, 0, 0, 0)
+	shackle.Size = UDim2.new(0, 20, 0, 22)
+	shackle.BackgroundTransparency = 1
+	shackle.Parent = holder
+	corner(shackle, 10)
+	stroke(shackle, Color3.fromRGB(226, 232, 245), 4, 0)
+
+	local body = Instance.new("Frame")
+	body.Name = "Body"
+	body.AnchorPoint = Vector2.new(0.5, 1)
+	body.Position = UDim2.new(0.5, 0, 1, 0)
+	body.Size = UDim2.new(0, 34, 0, 26)
+	body.BackgroundColor3 = Color3.fromRGB(226, 232, 245)
+	body.BorderSizePixel = 0
+	body.Parent = holder
+	corner(body, 6)
+
+	return holder
+end
+
+local function paintFightPad(pad, owned)
+	local fight = Campaign.GetFight(pad:GetAttribute("FightHero"))
+	if not fight then return end
+
+	local state = Campaign.StateOf(owned, fight)
+	pad.Color = PAD_COLOR[state]
+
+	local label = pad:FindFirstChild("FightLabel")
+	if not label then return end
+
+	local portrait = label:FindFirstChild("Portrait")
+	local nameLabel = label:FindFirstChild("HeroName")
+	local lock = label:FindFirstChild("Lock") or buildPadLock(label)
+
+	if portrait then
+		-- trancado vira silhueta; concluído fica desbotado, mas reconhecível
+		portrait.ImageColor3 = state == "locked" and Color3.fromRGB(46, 50, 62)
+			or (state == "done" and Color3.fromRGB(170, 178, 195) or Color3.new(1, 1, 1))
+	end
+
+	if nameLabel then
+		-- sem glifo de "check" nem cadeado em texto: as fontes do Roblox não têm
+		-- esses símbolos e eles saem como quadradinho. Quem conta o estado é a
+		-- cor do nome, a cor do pad e o cadeado desenhado ali em cima.
+		nameLabel.TextColor3 = state == "open" and Color3.new(1, 1, 1)
+			or (state == "done" and Color3.fromRGB(150, 200, 175) or Color3.fromRGB(150, 156, 172))
+	end
+
+	lock.Visible = state == "locked"
+end
+
+local function paintAllFightPads()
+	local owned = ownedSet()
+	for _, pad in ipairs(CollectionService:GetTagged(Campaign.PAD_TAG)) do
+		paintFightPad(pad, owned)
+	end
+end
+
+-- Pad que chega depois (streaming, ou o servidor criando na entrada) nasce
+-- pintado: sem isto o jogador que anda até lá encontra a cor de fábrica.
+CollectionService:GetInstanceAddedSignal(Campaign.PAD_TAG):Connect(function(pad)
+	paintFightPad(pad, ownedSet())
+end)
+
+-- Preenchido lá embaixo (o painel aberto se redesenha quando chega elenco
+-- novo). Declarado aqui porque o RosterUpdate pode chegar antes do menu montar.
+local rebuildBody
 
 RosterUpdate.OnClientEvent:Connect(function(payload)
 	local set = {}
@@ -319,7 +430,14 @@ RosterUpdate.OnClientEvent:Connect(function(payload)
 	end
 	myHeroes = set
 	refreshAllHeroRows()
+	paintAllFightPads()
+
+	-- herói novo muda o estado dos quadrados (o grupo seguinte pode ter aberto)
+	-- e a lista de heróis: redesenha o painel que estiver na tela
+	if rebuildBody then rebuildBody() end
 end)
+
+paintAllFightPads()
 
 -- ===================== MODAL =====================
 local backdrop = Instance.new("TextButton")
@@ -441,8 +559,9 @@ local function refreshTabs(activeKey)
 end
 
 buildTab("REGRAS", "rules", 1)
-buildTab("HERÓIS", "store", 2)
-buildTab("APOIAR", "tips", 3, GOLD)
+buildTab("CAMPANHA", "campaign", 2)
+buildTab("HERÓIS", "store", 3)
+buildTab("APOIAR", "tips", 4, GOLD)
 
 local body = Instance.new("ScrollingFrame")
 body.Name = "Body"
@@ -561,7 +680,127 @@ local function buildRules()
 			Progression.LOSS_XP, Progression.BOT_WIN_XP), TEXT_SOFT, 14, next())
 end
 
--- ===================== CONTEÚDO: VITRINE DE HERÓIS =====================
+-- ===================== CONTEÚDO: CAMPANHA =====================
+-- Um quadrado por confronto, na ordem da escada. O estado sai do Campaign, que
+-- é a mesma função que o servidor chama pra aceitar ou recusar a entrada — a
+-- cor aqui nunca promete o que o servidor vai negar.
+local FIGHT_STYLE = {
+	open   = { edge = Color3.fromRGB(90, 200, 140), tag = "DISPONÍVEL",  tagColor = Color3.fromRGB(150, 240, 180) },
+	done   = { edge = Color3.fromRGB(120, 130, 155), tag = "CONCLUÍDO",  tagColor = Color3.fromRGB(180, 190, 210) },
+	locked = { edge = Color3.fromRGB(70, 74, 90),    tag = "BLOQUEADO",  tagColor = Color3.fromRGB(150, 156, 172) },
+}
+
+local function teamNames(fight)
+	local names = {}
+	for _, dataId in ipairs(fight.team) do
+		table.insert(names, HeroData.GetById(dataId).name)
+	end
+	return table.concat(names, ", ")
+end
+
+local function buildFightSquare(grid, fight, state, order)
+	local style = FIGHT_STYLE[state]
+	local data = HeroData.GetById(fight.hero)
+
+	local card = Instance.new("TextButton")
+	card.Name = data.name
+	card.BackgroundColor3 = state == "locked" and Color3.fromRGB(20, 22, 30) or CARD_BG
+	card.Text = ""
+	card.AutoButtonColor = state ~= "locked"
+	card.BorderSizePixel = 0
+	card.LayoutOrder = order
+	card.Parent = grid
+	corner(card, 10)
+	padding(card, 8)
+	stroke(card, style.edge, state == "open" and 2 or 1, state == "open" and 0 or 0.5)
+
+	local portraitHolder = Instance.new("Frame")
+	portraitHolder.Size = UDim2.new(1, 0, 0, 74)
+	portraitHolder.BackgroundColor3 = Color3.fromRGB(18, 21, 30)
+	portraitHolder.BorderSizePixel = 0
+	portraitHolder.Parent = card
+	corner(portraitHolder, 8)
+
+	local portrait = buildHeroImage(portraitHolder, data)
+	portrait.Size = UDim2.new(1, -8, 1, -8)
+	portrait.Position = UDim2.new(0, 4, 0, 4)
+	-- trancado fica em silhueta: dá pra ver que existe alguém ali, não quem é
+	portrait.ImageColor3 = state == "locked" and Color3.fromRGB(40, 44, 58) or Color3.new(1, 1, 1)
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Position = UDim2.new(0, 0, 0, 78)
+	nameLabel.Size = UDim2.new(1, 0, 0, 18)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = data.name
+	nameLabel.TextColor3 = state == "locked" and TEXT_SOFT or TEXT_MAIN
+	nameLabel.TextSize = 15
+	nameLabel.Font = Enum.Font.GothamBlack
+	nameLabel.Parent = card
+
+	local tag = Instance.new("TextLabel")
+	tag.Position = UDim2.new(0, 0, 0, 96)
+	tag.Size = UDim2.new(1, 0, 0, 13)
+	tag.BackgroundTransparency = 1
+	tag.Text = style.tag
+	tag.TextColor3 = style.tagColor
+	tag.TextSize = 10
+	tag.Font = Enum.Font.GothamBold
+	tag.Parent = card
+
+	local teamLabel = Instance.new("TextLabel")
+	teamLabel.Position = UDim2.new(0, 0, 0, 111)
+	teamLabel.Size = UDim2.new(1, 0, 0, 26)
+	teamLabel.BackgroundTransparency = 1
+	teamLabel.Text = state == "locked" and "?" or teamNames(fight)
+	teamLabel.TextColor3 = Color3.fromRGB(160, 172, 196)
+	teamLabel.TextSize = 11
+	teamLabel.TextWrapped = true
+	teamLabel.Font = Enum.Font.Gotham
+	teamLabel.Parent = card
+
+	if state == "locked" then return end
+
+	card.MouseButton1Click:Connect(function()
+		-- O cliente só diz QUAL confronto. Quem confere a escada e monta o time
+		-- do bot é o servidor (GameStartTrigger/Campaign).
+		GameAction:FireServer("fight", fight.hero)
+		closeModal()
+	end)
+end
+
+local function buildCampaign()
+	local owned = ownedSet()
+	local total = Campaign.CountOwned(owned)
+
+	local pvpLine = Campaign.PvpUnlocked(owned)
+		and "O modo online já está liberado — o pad vermelho do lobby entra na fila."
+		or ("Faltam %d heróis para liberar o modo online.")
+			:format(Campaign.PVP_MIN_HEROES - total)
+
+	paragraph(body, ("Cada quadrado é um confronto contra um time fixo. Vencer entrega o herói " ..
+		"daquele quadrado, de uma vez por todas. Você tem %d de %d heróis. %s")
+		:format(total, #HeroData.CATALOG, pvpLine), TEXT_SOFT, 14, 0)
+
+	local grid = Instance.new("Frame")
+	grid.Name = "Fights"
+	grid.Size = UDim2.new(1, 0, 0, 0)
+	grid.AutomaticSize = Enum.AutomaticSize.Y
+	grid.BackgroundTransparency = 1
+	grid.LayoutOrder = 1
+	grid.Parent = body
+
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.CellSize = UDim2.new(0, 118, 0, 158)
+	gridLayout.CellPadding = UDim2.new(0, 8, 0, 8)
+	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	gridLayout.Parent = grid
+
+	for index, fight in ipairs(Campaign.FIGHTS) do
+		buildFightSquare(grid, fight, Campaign.StateOf(owned, fight), index)
+	end
+end
+
+-- ===================== CONTEÚDO: ELENCO =====================
 local function buildHeroRow(data, order)
 	local row = Instance.new("Frame")
 	row.Name = data.name
@@ -603,62 +842,21 @@ local function buildHeroRow(data, order)
 	local statsLabel = paragraph(text, "", Color3.fromRGB(200, 212, 232), 13, 2)
 	statsLabel.Font = Enum.Font.GothamBold
 
-	-- Botão só existe pra quem é comprável. Herói inicial e já comprado não têm
-	-- o que clicar — a linha de status abaixo já diz que é seu.
-	local buyButton
-	if not HeroData.IsStarter(data) then
-		buyButton = Instance.new("TextButton")
-		buyButton.Name = "Buy"
-		buyButton.Size = UDim2.new(0, 150, 0, 30)
-		buyButton.BackgroundColor3 = Color3.fromRGB(56, 96, 62)
-		buyButton.TextColor3 = Color3.fromRGB(232, 245, 235)
-		buyButton.Font = Enum.Font.GothamBold
-		buyButton.TextSize = 14
-		buyButton.AutoButtonColor = true
-		buyButton.BorderSizePixel = 0
-		buyButton.LayoutOrder = 4
-		buyButton.Parent = text
-		corner(buyButton, 8)
-
-		buyButton.MouseButton1Click:Connect(function()
-			-- O cliente só diz QUEM ele quer. Preço, saldo e posse são conferidos
-			-- no servidor — daqui não sai número nenhum que ele possa forjar.
-			if ownsHero(data) then return end
-			BuyHero:FireServer(data.id)
-		end)
-	end
-
-	-- Redesenha a linha conforme a posse e o saldo mudam (compra, moeda nova,
-	-- login). Guardada na própria Frame pra vitrine inteira poder chamar todas.
+	-- Sem botão: herói não se compra mais. A linha de status diz de onde ele vem
+	-- (inicial, seu, ou o confronto que ainda falta vencer) e o quadrado da
+	-- campanha é quem leva o jogador até lá.
 	local function refresh()
-		local owned = ownsHero(data)
-		local cost = HeroData.GetCost(data)
-
 		local status
 		if HeroData.IsStarter(data) then
 			status = "   •   inicial"
-		elseif owned then
+		elseif ownsHero(data) then
 			status = "   •   seu"
 		else
-			status = ("   •   %s %s"):format(Monetization.FormatCoins(cost), Monetization.COIN_NAME:lower())
+			status = "   •   prêmio do confronto " .. data.name
 		end
 
 		statsLabel.Text = ("%d ATK   •   %d HP   •   %s%s")
 			:format(data.attack, data.hp, data.ability or "sem passiva", status)
-
-		if not buyButton then return end
-
-		buyButton.Visible = not owned
-		if owned then return end
-
-		-- Sem saldo o botão continua clicável de propósito: o servidor recusa e
-		-- o texto já avisa. Um botão morto obriga o jogador a adivinhar por quê.
-		local canAfford = myCoins >= cost
-		buyButton.Text = canAfford
-			and ("Comprar por %s"):format(Monetization.FormatCoins(cost))
-			or ("Faltam %s"):format(Monetization.FormatCoins(cost - myCoins))
-		buyButton.BackgroundColor3 = canAfford
-			and Color3.fromRGB(56, 96, 62) or Color3.fromRGB(62, 62, 74)
 	end
 
 	refresh()
@@ -679,7 +877,7 @@ local function buildHeroRow(data, order)
 end
 
 local function buildStore()
-	-- a vitrine é remontada a cada abertura: os refreshers antigos apontam pra
+	-- a lista é remontada a cada abertura: os refreshers antigos apontam pra
 	-- Frames que já foram destruídas
 	heroRefreshers = {}
 
@@ -690,15 +888,11 @@ local function buildStore()
 		if HeroData.IsStarter(data) then starters += 1 end
 	end
 
-	paragraph(body, ("O catálogo tem %d heróis e nenhum depende de nível: você começa com %d " ..
-		"de graça e compra os outros por %s %s cada. Ganhar uma partida paga %s, e cada nível " ..
-		"novo paga %s. Cada partida usa %d heróis, e o adversário escolhe do mesmo catálogo — " ..
-		"quem escolhe primeiro decide o que sobra.")
-		:format(#HeroData.CATALOG, starters,
-			Monetization.FormatCoins(Progression.HERO_COST), Monetization.COIN_NAME:lower(),
-			Monetization.FormatCoins(Progression.WIN_COINS),
-			Monetization.FormatCoins(Progression.LEVEL_UP_COINS),
-			GameConfig.HEROES_PER_PLAYER), TEXT_SOFT, 14, 0)
+	paragraph(body, ("O catálogo tem %d heróis: você começa com %d e conquista os outros " ..
+		"vencendo os confrontos da CAMPANHA — um herói por confronto, nenhum se compra. " ..
+		"Cada partida usa %d heróis, e no online o adversário escolhe do mesmo catálogo, " ..
+		"então quem escolhe primeiro decide o que sobra.")
+		:format(#HeroData.CATALOG, starters, GameConfig.HEROES_PER_PLAYER), TEXT_SOFT, 14, 0)
 
 	for index, data in ipairs(HeroData.CATALOG) do
 		buildHeroRow(data, index)
@@ -833,9 +1027,20 @@ end
 -- ===================== ABERTURA =====================
 local PANELS = {
 	rules = { title = "MURAL DE REGRAS", build = buildRules },
+	campaign = { title = "CAMPANHA", build = buildCampaign },
 	store = { title = "HERÓIS", build = buildStore },
 	tips = { title = "SEJA UM APOIADOR", build = buildTips },
 }
+
+-- Redesenha o painel ABERTO sem fechar nem reabrir o modal: é o que o
+-- RosterUpdate chama quando um herói novo chega, pra o quadrado recém-vencido
+-- virar "concluído" (e o grupo seguinte abrir) na mesma hora.
+function rebuildBody()
+	local entry = currentPanel and PANELS[currentPanel]
+	if not entry then return end
+	clearBody()
+	entry.build()
+end
 
 -- atribui ao local declarado lá em cima (as abas do modal já apontam pra ele)
 function openModal(key)
@@ -866,7 +1071,7 @@ end
 local buttonBar = Instance.new("Frame")
 buttonBar.Name = "MenuBar"
 buttonBar.Position = UDim2.new(0, 12, 0, 8)
-buttonBar.Size = UDim2.new(0, 300, 0, 34)
+buttonBar.Size = UDim2.new(0, 400, 0, 34)
 buttonBar.BackgroundTransparency = 1
 buttonBar.Parent = menuGui
 
@@ -898,8 +1103,9 @@ local function buildMenuButton(text, key, order, accent)
 end
 
 buildMenuButton("REGRAS", "rules", 1)
-buildMenuButton("HERÓIS", "store", 2)
-buildMenuButton("APOIAR", "tips", 3, GOLD)
+buildMenuButton("CAMPANHA", "campaign", 2, Color3.fromRGB(120, 220, 170))
+buildMenuButton("HERÓIS", "store", 3)
+buildMenuButton("APOIAR", "tips", 4, GOLD)
 
 -- ===================== VISIBILIDADE =====================
 -- Mesma regra do crachá de nível: fora do lobby isso tudo sai da frente.

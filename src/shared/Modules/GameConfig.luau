@@ -65,6 +65,94 @@ GameConfig.MERLIN_FRENZY_ATTACK = 2    -- ataque extra enquanto for o último vi
 GameConfig.MERLIN_FRENZY_HEAL = 4      -- cura ao entrar em Frenesi, uma vez por partida
 GameConfig.MERLIN_FRENZY_KILL_HEAL = 2 -- cura por inimigo abatido durante o Frenesi
 
+-- ===== FOGO (Karo) =====
+-- O fogo do Caminho de Chamas é o primeiro efeito do jogo preso a uma CASA, e
+-- não a um herói: ele continua queimando depois que o Karo saiu de cima. Por
+-- isso não mora em hero.statusEffects como o veneno e o gelo.
+--
+-- Duração 2 é o que faz o rastro valer alguma coisa. O Karo anda 2 casas por
+-- turno (BASE_MOVE_RANGE, ele não tem Sprint), então acende no máximo 2 casas
+-- por vez; com duração 1 a primeira já teria apagado quando o inimigo chegasse
+-- na segunda, e o "caminho" nunca seria um caminho.
+GameConfig.FLAME_DURATION = 2
+GameConfig.FLAME_DAMAGE = 2
+
+-- Furor das Chamas: pisar numa casa que JÁ estava em chamas (do próprio Karo,
+-- de um passo anterior) dá +1 de ATAQUE por casa. É EMPRÉSTIMO, não ficha
+-- nova — mesmo padrão do bônus do barril (attackBonus num status effect,
+-- devolvido sozinho pelo ProcessStatusEffects): dura 1 turno de uso e depois
+-- volta pro normal, não empilha partida afora.
+GameConfig.FLAME_FURY_ATTACK = 1
+GameConfig.FLAME_FURY_DURATION = 1
+
+-- Teto do ATAQUE do Karo com o empréstimo somado. Base 2 + no máximo +2 de
+-- Furor: dois passos em fogo aceso já enchem o teto, um terceiro não soma mais
+-- nada. Sem isso, um caminho comprido cruzando várias chamas antigas vira
+-- dano absurdo numa figura de ATK 2.
+GameConfig.FLAME_FURY_MAX_ATTACK = 4
+
+-- ===== FURTIVIDADE (Shadow) =====
+-- Inimigo A ESTA DISTÂNCIA OU MENOS revela o Shadow; a partir de 2 casas ele
+-- some. Igual ao alcance de ataque dele (1, corpo a corpo): só quem está
+-- literalmente colado enxerga o vulto — de 2 casas pra longe ele já sumiu.
+GameConfig.STEALTH_RANGE = 1
+GameConfig.STEALTH_HEAL = 1 -- cura por turno enquanto invisível
+
+-- Só o movimento do INIMIGO tira o Shadow da sombra. O movimento dele próprio
+-- não conta contra si mesmo, senão a Emboscada nunca aconteceria: ele precisa
+-- ficar adjacente pra bater (alcance 1), e um movimento seu terminando
+-- adjacente não deve se contar como revelação — a invisibilidade cairia no
+-- passo de andar, antes do golpe. Quem quebra a furtividade dele é o ATAQUE
+-- ou o DANO RECEBIDO (de qualquer fonte, com autor ou sem), não a aproximação.
+--
+-- A conta do Nash é só o estado da sombra, sem olhar posição nenhuma (a regra
+-- antiga de "pelas costas" não existe mais em lugar nenhum do jogo):
+--
+--   invisível  ->  2 de ficha + 4 daqui = 6
+--   visível    ->  2
+--
+-- O ataque de ficha dele é 2 (HeroData) justamente porque o número que importa
+-- é o de dentro da sombra. Como é o próprio golpe que revela o Nash, o ataque
+-- seguinte já sai por 2 — e se ele for revelado ANTES de bater (levou dano, ou
+-- o inimigo colou), esse ataque também sai por 2.
+GameConfig.AMBUSH_BONUS_DAMAGE = 4
+
+-- O ataque que o herói causa AGORA, com a sombra já contada — mesmo papel que
+-- o MoveRangeOf tem pro alcance depois do gelo. O +4 da Emboscada não mora na
+-- ficha (quem aplica o golpe é a própria skill, pelo carimbo que o
+-- PerformAttack tira ANTES de a sombra cair), mas o jogador precisa VER o
+-- número que vai sair: o crachá do Nash invisível marca 6 e volta pra 2 no
+-- instante em que ele é revelado.
+--
+-- Mora aqui, e não no servidor, porque duas telas leem o mesmo número: o
+-- crachá em cima do boneco (HeroView) e a coluna de retratos (via Snapshot).
+-- Bônus emprestados por fora (barril, por exemplo) já estão dentro de
+-- `hero.attack`, então entram na soma sozinhos.
+function GameConfig.EffectiveAttack(hero)
+	if hero.stealth and table.find(hero.abilities or {}, "ambush") then
+		return hero.attack + GameConfig.AMBUSH_BONUS_DAMAGE
+	end
+	return hero.attack
+end
+
+-- Opacidade com que o DONO enxerga o próprio Shadow invisível. O adversário não
+-- vê nada. 0 = sólido, 1 = sumido: 0.65 deixa o vulto legível pra planejar a
+-- jogada sem parecer um herói normal.
+GameConfig.STEALTH_OWNER_TRANSPARENCY = 0.65
+
+-- ===== GOLEM =====
+-- Ao perder a primeira vida, vira DOIS golens novos: um na casa dele, outro na
+-- primeira casa adjacente livre. Os ids saem de HeroData.SUMMONS, que fica
+-- FORA do catálogo — não são escolhíveis no draft nem vendidos na loja, e os
+-- dois exibem `name = "Golem"` (o dataId diferente é só pra não colidirem no
+-- mesmo uid).
+--
+-- 40 de vida num herói de 1 de ataque é o dobro do Ceos, e é o preço de o time
+-- inimigo precisar derrubar TRÊS corpos em vez de um. Os golens menores
+-- invertem a ficha (2 de ataque, 5 de vida cada): quem quebrou o corpo grande
+-- passa a levar pancada dos dois lados, então isso não é alívio nenhum.
+GameConfig.GOLEM_SUMMON_IDS = { 15, 16 }
+
 -- ===== BARRIL (objeto neutro) =====
 -- Ocupa uma casa como um herói, mas não é de ninguém e não tem vida: quebra por
 -- CONTAGEM DE GOLPES, então um ataque de 1 vale o mesmo que um de 5. É o que

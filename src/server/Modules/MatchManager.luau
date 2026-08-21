@@ -52,6 +52,10 @@ local nextMatchId = 0
 local BeginTurn, BotPlayTurn, BotPlaceOne, AdvancePlacement, CheckGameOver
 local TryTriggerPromotion, AttackGrave, FindNearestFreeHex
 
+-- O Estilhaçar do Golem invoca pela API das skills (BuildSkillApi), que é
+-- montada bem antes do CreateHero existir no arquivo.
+local CreateHero
+
 -- ===================== ZONAS =====================
 -- Casas de largada fixas, uma por coluna, na primeira fileira de cada lado.
 local DEPLOY_ZONES = {
@@ -98,35 +102,18 @@ local function MatchOfPlayer(player)
 	return nil
 end
 
--- ===================== OCUPAÇÃO =====================
--- Mora na partida, não no HexGrid: duas partidas usam as MESMAS casas (A1, B2...)
--- e com ocupação global uma bloquearia a outra.
---
--- `occupied` guarda TUDO que ocupa casa — heróis, túmulos e barris. É de
--- propósito: quem pergunta "dá pra andar/atirar através daqui?" (IsFree,
--- FindPath, ComputeReach) quer saber se tem algo no caminho, não o quê. Já quem
--- pergunta por HERÓI usa o GetHeroAt abaixo, que filtra o barril fora — assim
--- nenhuma skill escrita antes do barril precisa saber que ele existe.
 local function GetHeroAt(match, hexId)
 	local occupant = match.occupied[hexId]
 	if occupant and occupant.isBarrel then return nil end
 	return occupant
 end
 
--- Conjunto das duas casas de promoção, montado uma vez a partir do GameConfig.
+
 local PROMOTION_HEXES = {}
 for _, hexId in pairs(GameConfig.PROMOTION_HEX_FOR_SLOT) do
 	PROMOTION_HEXES[hexId] = true
 end
 
--- Casa de promoção trancada não faz parte do tabuleiro: ninguém pisa nela nem
--- atravessa ela. Vale do posicionamento (match.turn ainda nil) até o turno de
--- liberação.
---
--- A trava mora AQUI, no IsFree, e não só no MoveHero, de propósito: assim o
--- destino do movimento, o caminho até ele (FindPath) e a linha de tiro
--- (ComputeReach) respeitam todos a mesma regra sem cada um precisar lembrar
--- dela por conta própria. Uma casa trancada se comporta como parede.
 local function PromotionLocked(match, hexId)
 	if not PROMOTION_HEXES[hexId] then return false end
 	local number = match.turn and match.turn.number or 0
@@ -139,7 +126,6 @@ local function IsFree(match, hexId)
 		and not PromotionLocked(match, hexId)
 end
 
--- fecha sobre a partida: é o que vai pro ComputeReach/FindPath do HexGrid
 local function FreeChecker(match)
 	return function(hexId)
 		return IsFree(match, hexId)
@@ -171,11 +157,6 @@ local function GetEnemiesInRange(match, hero, range)
 	return enemies
 end
 
--- Conjunto de heróis que este jogador pode usar, pelo nível dele. Dono e
--- testadores (DevAccess) recebem o catálogo inteiro sem olhar o nível.
--- Nível não libera mais herói nenhum: quem decide é a posse (grátis de fábrica
--- ou comprado com moeda). O DevAccess continua sendo a exceção, e ele já está
--- embutido no GetPlayableIds.
 local function UnlockedIdsFor(player)
 	return HeroUnlockService.GetPlayableIds(player)
 end
@@ -201,6 +182,11 @@ local function TriggerSkills(match, hero, triggerName, target, isCounterAttack, 
 			scope.hero = hero
 			scope.target = target
 			scope.isCounterAttack = isCounterAttack or false
+			-- QUAL gatilho está correndo. A mesma skill pode estar em vários
+			-- (a Furtividade escuta cinco), e deduzir isso de `target` já era
+			-- frágil: no onDamage o `target` é o ATACANTE, e no dano sem autor
+			-- (veneno, fogo, maldição) ele chega nil como num turno qualquer.
+			scope.trigger = triggerName
 			-- o efeito visual sai com a assinatura da skill que está disparando,
 			-- então a skill só diz EM QUEM ele acontece (e, se precisar, qual
 			-- variante — o goodLuck tem uma pro sucesso e outra pro fracasso)
@@ -222,66 +208,197 @@ end
 -- ===================== DANO / CURA =====================
 local ApplyDamage, KillHero
 
+-- ===================== TÚMULO PENDENTE (Golem) =====================
+-- Todo herói é enterrado na hora em que morre, menos o Golem: ele estilhaça, e
+-- o corpo grande só vira lápide quando o ÚLTIMO pedaço cair (ver
+-- Skills.shatter e a api DeferGrave). Enquanto isso ele fica morto, SEM túmulo
+-- no tabuleiro e sem valer como opção de ressurreição — `graveDestroyed = true`
+-- é o que segura as duas coisas (é o campo que o AttackGrave, o
+-- TryTriggerPromotion e o cliente já leem).
+local function RaisePendingGrave(match, hero)
+	-- ONDE O ÚLTIMO PEDAÇO CAIU, não onde o corpo grande rachou. É lá que o
+	-- Golem terminou de morrer, e é a casa que o jogador está olhando quando a
+	-- lápide sobe — o lugar do estilhaçar já ficou pra trás muitos turnos antes.
+	-- `graveHex` é carimbado pelo KillHero a cada pedaço que cai, então ele
+	-- sempre guarda o último. Se nenhum pedaço chegou a nascer, sobra a casa do
+	-- próprio corpo.
+	--
+	-- Aquela casa acabou de ser liberada pela morte do pedaço, então o
+	-- FindNearestFreeHex devolve ela mesma no caso normal; só expande em anéis
+	-- se alguma coisa tiver ocupado, e nunca numa casa de promoção (mesma regra
+	-- do enterro comum, mais abaixo).
+	local hexId = FindNearestFreeHex(match, hero.graveHex or hero.position, PROMOTION_HEXES)
+	-- tabuleiro cheio ao redor: sai sem enterrar e sem apagar a pendência, que
+	-- é retentada na próxima baixa
+	if not hexId then return end
+
+	-- Baixa a bandeira ANTES de levantar a pedra: é o que garante que dois
+	-- eventos de morte no mesmo lance (ou uma segunda passada do resolvedor)
+	-- não empilhem dois túmulos do mesmo Golem. Um túmulo por ciclo de morte.
+	hero.gravePending = false
+
+	hero.graveHitsLeft = GameConfig.GRAVE_HITS
+	hero.graveDestroyed = false
+	hero.position = hexId
+	match.occupied[hexId] = hero
+
+	-- Sem som próprio: o túmulo sobe no mesmo instante em que o último pedaço
+	-- cai, e a morte dele já traz o áudio. O CreateGrave entra desbotando, o
+	-- que dá leitura visual suficiente pra pedra que apareceu.
+	HeroView.CreateGrave(hero)
+end
+
+-- Roda no fim de CADA morte, e varre o tabuleiro em vez de olhar só o morto da
+-- vez: quem decide o enterro do Golem é a soma dos pedaços, não este cadáver
+-- específico. Barato (no máximo 6 heróis por partida) e imune à ordem em que os
+-- eventos chegam — se dois pedaços caírem no mesmo lance, a última passada
+-- encontra o tabuleiro já quieto e o túmulo sobe uma vez só.
+--
+-- A pergunta é sempre "sobrou algum pedaço DESTE Golem de pé?", lida do
+-- tabuleiro de agora (`graveOwner`), e não de uma lista tirada no momento do
+-- estilhaçar. Vale pra 2 pedaços ou pra 10.
+local function ResolvePendingGraves(match)
+	for _, hero in pairs(match.heroes) do
+		if hero.gravePending then
+			local sobrouPedaco = false
+			for _, other in pairs(match.heroes) do
+				if other.isAlive and other.graveOwner == hero then
+					sobrouPedaco = true
+					break
+				end
+			end
+
+			if not sobrouPedaco then
+				RaisePendingGrave(match, hero)
+			end
+		end
+	end
+end
+
 function KillHero(match, hero, attacker)
 	hero.isAlive = false
 
-	-- Destaque do finalizador: fica guardado até o próximo Broadcast e vai UMA
-	-- vez só. Morte sem autor (veneno, Morte Súbita) chega aqui com attacker nil
-	-- e não gera destaque — não teria de quem mostrar o retrato.
-	if attacker and attacker ~= hero then
-		match.finisher = {
-			dataId = attacker.dataId,
-			name = attacker.name,
-			ownerId = attacker.ownerId,
-			sideIndex = attacker.sideIndex,
-			victim = hero.name,
-		}
-	end
-
-	-- a casa NÃO é liberada: o túmulo continua ocupando o hex
+	-- a casa NÃO é liberada: o túmulo continua ocupando o hex (Golem é a
+	-- exceção — ver noGrave abaixo, que libera a própria antes das invocações)
 	TriggerSkills(match, hero, "onDie")
 
 	-- Quem abateu também é avisado, com o morto chegando em ctx.target. Vem
 	-- DEPOIS do onDie de propósito: aí o tabuleiro que o finalizador enxerga já
-	-- contabiliza a baixa (é disso que o Faro de Sangue do Merlin depende).
+	-- contabiliza a baixa.
 	-- Se o autor morreu no mesmo lance — troca por contra-ataque —, o próprio
 	-- TriggerSkills barra, porque só o onDie roda em herói morto.
 	if attacker and attacker ~= hero then
 		TriggerSkills(match, attacker, "onKill", hero)
 	end
 
-	-- A lápide nasce com vida própria (ver AttackGrave): o inimigo pode gastar
-	-- GRAVE_HITS golpes pra apagá-la e negar a ressurreição deste herói
-	-- específico. `graveDestroyed` é o que trava isso pra sempre nesta partida,
-	-- mesmo depois dos golpes acabarem — ver TryTriggerPromotion.
-	--
-	-- ANTES do CreateGrave, não depois: o crachá de golpes restantes é montado
-	-- dentro dele (BuildGraveBadge) e LÊ estes campos. Com a ordem invertida, o
-	-- primeiro herói a morrer estourava com "arithmetic on nil", matando a
-	-- corrotina do bot no meio do turno — e a partida congelava, porque o turno
-	-- nunca voltava pro jogador.
-	hero.graveHitsLeft = GameConfig.GRAVE_HITS
-	hero.graveDestroyed = false
-
-	-- Lápide NUNCA fica em cima de uma casa de promoção: ela ocupa o hex para
-	-- sempre e selaria a casa pelo resto da partida — inclusive contra o próprio
-	-- dono, que perderia a jogada sem entender por quê. Aconteceu em teste: um
-	-- herói morreu na casa e ninguém mais conseguiu usá-la.
-	--
-	-- A lápide escorrega para a casa livre mais próxima em vez de sumir: ela é
-	-- o recurso da ressurreição, e apagá-la puniria quem morreu ali.
-	if PROMOTION_HEXES[hero.position] then
-		local destino = FindNearestFreeHex(match, hero.position)
-		if destino then
-			match.occupied[hero.position] = nil
-			hero.position = destino
-			match.occupied[destino] = hero
+	-- A BAIXA É ANUNCIADA AO TABULEIRO INTEIRO. `onDie` só avisa quem morreu e
+	-- `onKill` só quem matou — uma habilidade que reage à morte dos OUTROS não
+	-- tinha por onde saber. É o caso do Faro de Sangue do Merlin: sem este
+	-- laço, o lobo só engordava no próximo turno ou no próximo passo dele, e o
+	-- jogador via o aliado cair sem nada acontecer na ficha. Vem depois do
+	-- onKill pra que o abate e a baixa cheguem na mesma ordem de sempre.
+	for _, other in pairs(match.heroes) do
+		if other.isAlive then
+			TriggerSkills(match, other, "onAnyDeath", nil, false, { deadHero = hero })
 		end
 	end
 
-	HeroView.PlayAnimation(hero, "die")
-	HeroView.Destroy(hero)
-	HeroView.CreateGrave(hero)
+	-- Golem: perder a PRIMEIRA vida não é uma derrota de verdade — ele quebra
+	-- em golens menores (Skills.shatter, disparado pelo onDie acima, que já
+	-- marcou hero.noGrave = true, liberou a casa e marcou os pedaços). Sem
+	-- lápide, sem animação de morte, sem destaque de finalização: pro jogador,
+	-- nada "morreu" ainda — só rachou. O túmulo dele fica PENDENTE e sobe
+	-- quando o último pedaço cair (ver ResolvePendingGraves, no fim desta
+	-- função). O contador de baixas (Faro de Sangue do Merlin) segue vendo
+	-- isAlive=false normalmente, porque em número de corpos isso já é uma
+	-- baixa; só a APRESENTAÇÃO some.
+	--
+	-- São TRÊS caminhos aqui embaixo, e vale ler os três juntos: o corpo que
+	-- estilhaçou (nada acontece), o PEDAÇO que cai (morre de verdade, mas sem
+	-- pedra própria — o enterro do Golem é um só) e todo o resto do elenco
+	-- (morte e lápide, como sempre foi).
+	if hero.noGrave then
+		hero.graveDestroyed = true
+		hero.graveHitsLeft = 0
+		HeroView.Destroy(hero)
+	else
+		-- Destaque do finalizador: fica guardado até o próximo Broadcast e vai UMA
+		-- vez só. Morte sem autor (veneno, Morte Súbita) chega aqui com attacker nil
+		-- e não gera destaque — não teria de quem mostrar o retrato.
+		if attacker and attacker ~= hero then
+			match.finisher = {
+				dataId = attacker.dataId,
+				name = attacker.name,
+				ownerId = attacker.ownerId,
+				sideIndex = attacker.sideIndex,
+				victim = hero.name,
+			}
+		end
+
+		-- PEDAÇO DE GOLEM NÃO TEM LÁPIDE PRÓPRIA. Os três corpos são o MESMO
+		-- personagem, e ele é enterrado UMA vez: no túmulo do corpo grande, que
+		-- sobe quando o último pedaço cai. A morte do pedaço é normal em tudo
+		-- mais (animação, som, destaque de quem finalizou) — o que não existe é
+		-- a pedra.
+		--
+		-- Sem isto, a queda de cada pedaço levantava um túmulo "Golem", e a
+		-- Casa de Promoção passava a oferecer TRÊS opções com o mesmo nome:
+		-- quem escolhesse errado trazia de volta um mini-golem de 5 de vida no
+		-- lugar do corpo grande. A casa é liberada porque não fica nada nela.
+		if hero.graveOwner then
+			hero.graveDestroyed = true
+			hero.graveHitsLeft = 0
+
+			-- carimba a casa: se este for o ÚLTIMO pedaço, é aqui que a lápide
+			-- do corpo grande vai nascer (ver RaisePendingGrave)
+			hero.graveOwner.graveHex = hero.position
+
+			if match.occupied[hero.position] == hero then
+				match.occupied[hero.position] = nil
+			end
+			HeroView.PlayAnimation(hero, "die")
+			HeroView.Destroy(hero)
+		else
+			-- A lápide nasce com vida própria (ver AttackGrave): o inimigo pode gastar
+			-- GRAVE_HITS golpes pra apagá-la e negar a ressurreição deste herói
+			-- específico. `graveDestroyed` é o que trava isso pra sempre nesta partida,
+			-- mesmo depois dos golpes acabarem — ver TryTriggerPromotion.
+			--
+			-- ANTES do CreateGrave, não depois: o crachá de golpes restantes é montado
+			-- dentro dele (BuildGraveBadge) e LÊ estes campos. Com a ordem invertida, o
+			-- primeiro herói a morrer estourava com "arithmetic on nil", matando a
+			-- corrotina do bot no meio do turno — e a partida congelava, porque o turno
+			-- nunca voltava pro jogador.
+			hero.graveHitsLeft = GameConfig.GRAVE_HITS
+			hero.graveDestroyed = false
+
+			-- Lápide NUNCA fica em cima de uma casa de promoção: ela ocupa o hex para
+			-- sempre e selaria a casa pelo resto da partida — inclusive contra o próprio
+			-- dono, que perderia a jogada sem entender por quê. Aconteceu em teste: um
+			-- herói morreu na casa e ninguém mais conseguiu usá-la.
+			--
+			-- A lápide escorrega para a casa livre mais próxima em vez de sumir: ela é
+			-- o recurso da ressurreição, e apagá-la puniria quem morreu ali.
+			if PROMOTION_HEXES[hero.position] then
+				local destino = FindNearestFreeHex(match, hero.position)
+				if destino then
+					match.occupied[hero.position] = nil
+					hero.position = destino
+					match.occupied[destino] = hero
+				end
+			end
+
+			HeroView.PlayAnimation(hero, "die")
+			HeroView.Destroy(hero)
+			HeroView.CreateGrave(hero)
+		end
+	end
+
+	-- DEPOIS de resolver a apresentação deste morto, sempre: se ele era o último
+	-- pedaço de um Golem, o túmulo do corpo grande sobe agora — e a casa que o
+	-- pedaço acabou de liberar já entra na busca por casa livre, então o mais
+	-- comum é a pedra nascer exatamente onde o último caiu.
+	ResolvePendingGraves(match)
 end
 
 function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
@@ -339,10 +456,6 @@ local function FindStatusEffect(hero, effectType)
 	return nil
 end
 
--- Aplicar SUBSTITUI o efeito do mesmo tipo que já estiver lá, em vez de empilhar
--- um segundo. Renovar veneno ou gelo passa por aqui, e é isso que garante que o
--- carimbo de turno (ver BuildSkillApi) seja refeito na renovação — antes as
--- skills mexiam na duração do efeito antigo na mão e o carimbo ficava velho.
 local function ApplyStatusEffect(hero, effect)
 	for index = #hero.statusEffects, 1, -1 do
 		if hero.statusEffects[index].type == effect.type then
@@ -428,6 +541,52 @@ local function ProcessStatusEffects(match, hero, ownTurnEnding)
 	HeroView.UpdateStats(hero)
 end
 
+-- ===================== FOGO NO CHÃO (Karo) =====================
+-- Todo o resto do jogo guarda efeito DENTRO do herói (hero.statusEffects). O
+-- fogo do Caminho de Chamas não cabe lá: ele fica na CASA e continua queimando
+-- depois que o Karo saiu de cima. Por isso mora numa tabela por partida.
+--
+--   match.flames[hexId] = { ownerId, duration, appliedTurnToken }
+--
+-- Fogo NÃO ocupa a casa: não entra em match.occupied, não bloqueia passagem e
+-- não é alvo de nada. Ele só cobra pedágio de quem atravessa — que é o que o
+-- torna zona de controle e não parede.
+local function LightFlame(match, hexId, hero)
+	if not HexGrid.Exists(hexId) then return end
+
+	match.flames[hexId] = {
+		ownerId = hero.ownerId,
+		duration = GameConfig.FLAME_DURATION,
+		-- mesmo carimbo dos status de herói: um prazo nunca é consumido no turno
+		-- em que começou, senão o rastro aceso agora venceria no fim deste mesmo
+		-- turno e o inimigo nunca chegaria a pisar nele
+		appliedTurnToken = match.turnToken,
+	}
+	HeroView.CreateFlame(match.view, hexId)
+end
+
+local function ClearFlame(match, hexId)
+	if not match.flames[hexId] then return end
+	match.flames[hexId] = nil
+	HeroView.DestroyFlame(match.view, hexId)
+end
+
+-- Uma vez por RODADA, no fim do turno de quem acendeu. A cadência é a mesma do
+-- gelo e do bônus do barril, e não a do veneno: FLAME_DURATION foi calibrado em
+-- turnos do Karo, e decrementar nas duas passagens cortaria o rastro pela
+-- metade sem ninguém pedir.
+local function TickFlames(match, endingOwner)
+	for hexId, flame in pairs(match.flames) do
+		if flame.ownerId == endingOwner and flame.appliedTurnToken ~= match.turnToken then
+			if flame.duration > 1 then
+				flame.duration -= 1
+			else
+				ClearFlame(match, hexId)
+			end
+		end
+	end
+end
+
 -- ===================== MOVIMENTO =====================
 -- Reposiciona sem bookkeeping de turno — usado pelo empurrão do rage
 local function ForceMove(match, hero, hexId)
@@ -492,6 +651,52 @@ local function BuildSkillApi(match)
 			return dead
 		end,
 		PlaySkillSound = function(key) HeroView.PlaySkillSound(key, match.view) end,
+
+		-- Karo: acende uma casa. Fogo não ocupa hex nem bloqueia passagem —
+		-- só cobra pedágio de quem atravessa (ver o loop de caminhada no
+		-- MatchManager.MoveHero, que cobra casa por casa em sincronia com o
+		-- passo visual).
+		LightFlame = function(hexId, hero) LightFlame(match, hexId, hero) end,
+
+		-- Golem: nasce um herói no meio da partida. O primeiro chamado cai na
+		-- própria casa de quem invocou (livre desde o SuppressGrave), e o
+		-- seguinte na primeira casa livre ao lado — o FindNearestFreeHex devolve
+		-- a casa de origem quando ela está vazia e vai expandindo em anéis
+		-- conforme elas são ocupadas.
+		Summon = function(origin, dataId)
+			local hexId = FindNearestFreeHex(match, origin.position)
+			if not hexId then return nil end
+			return CreateHero(match, dataId, origin.ownerId, hexId)
+		end,
+
+		-- Golem: a PRIMEIRA vida cai sem lápide NA HORA. Libera a casa JÁ,
+		-- porque o primeiro golem invocado logo em seguida vai querer nascer
+		-- exatamente nela — e marca noGrave, que o KillHero usa pra pular
+		-- animação de morte, destaque de finalização e o enterro imediato (ver
+		-- o comentário lá).
+		SuppressGrave = function(hero)
+			hero.noGrave = true
+			if match.occupied[hero.position] == hero then
+				match.occupied[hero.position] = nil
+			end
+		end,
+
+		-- Golem: o túmulo fica PENDENTE até os pedaços caírem. A ligação é
+		-- marcada NOS PEDAÇOS (`graveOwner` aponta pro registro do corpo
+		-- grande), não numa lista de uids guardada no Golem: uid é reusado a
+		-- cada geração nova (matchId_dono_dataId), então uma lista velha podia
+		-- acabar apontando pros pedaços da geração seguinte. Com a marca no
+		-- pedaço, "sobrou alguém deste Golem?" é uma pergunta feita ao
+		-- tabuleiro de agora.
+		--
+		-- Nenhum pedaço nascido (tabuleiro sem casa livre) = nada marcado, e o
+		-- ResolvePendingGraves levanta a lápide ainda nesta mesma morte.
+		DeferGrave = function(hero, minions)
+			hero.gravePending = true
+			for _, minion in ipairs(minions or {}) do
+				minion.graveOwner = hero
+			end
+		end,
 	}
 end
 
@@ -510,14 +715,45 @@ local function Snapshot(match, viewerId)
 
 	local heroes = {}
 	for _, hero in pairs(match.heroes) do
+		-- ===== O QUE ESTE ESPECTADOR NÃO PODE VER =====
+		-- Primeiro caso do jogo em que o mesmo herói vai diferente pros dois
+		-- lados. O Shadow invisível chega ao adversário como um registro OCO: a
+		-- casa e o uid, nada mais. Nome, ficha, vida e dono ficam de fora de
+		-- propósito — o cliente é do jogador, e o que sai daqui é o que um
+		-- exploit consegue ler. Esconder só no desenho seria esconder nada.
+		--
+		-- A CASA continua indo. É a decisão de projeto: o adversário percebe que
+		-- não dá pra passar ali, sem saber por quê. Como STEALTH_RANGE e
+		-- BASE_MOVE_RANGE são ambos 2, pra quase todo o elenco o passo que
+		-- revelaria o bloqueio é o mesmo que revela o Shadow.
+		if hero.isAlive and hero.stealth and hero.ownerId ~= viewerId then
+			table.insert(heroes, {
+				uid = hero.uid,
+				position = hero.position,
+				isAlive = true,
+				isMine = false,
+				hidden = true,
+			})
+			continue
+		end
+
 		table.insert(heroes, {
 			uid = hero.uid,
 			dataId = hero.dataId,
+
+			-- Só pro DONO, e só quando ele está escondido: é o que faz o cliente
+			-- desenhar o próprio vulto translúcido em vez de sólido. Pro
+			-- adversário este herói nem chegou até aqui (ver o desvio acima).
+			stealth = hero.stealth or nil,
 			name = hero.name,
 			position = hero.position,
 			currentHp = hero.currentHp,
 			maxHp = hero.maxHp,
-			attack = hero.attack,
+			-- já somado o bônus da sombra (Nash), do mesmo jeito que o moveRange
+			-- abaixo já vem descontado o gelo: o número que a UI mostra é o que o
+			-- golpe vai causar. Só o DONO chega a ver isso — o Nash invisível nem
+			-- entra no snapshot do adversário (ver o desvio lá em cima).
+			attack = GameConfig.EffectiveAttack(hero),
 			baseAttack = hero.baseAttack,
 			ability = hero.ability,
 			attackRange = hero.attackRange,
@@ -671,6 +907,13 @@ local function Snapshot(match, viewerId)
 		-- o cliente pinta as casas por aqui: procurar "Board" pelo nome no
 		-- Workspace acharia o tabuleiro da partida errada
 		boardFolder = match.boardFolder,
+
+		-- Pela mesma razão do boardFolder: o cliente precisa alcançar os bonecos
+		-- pra aplicar a transparência da furtividade, e "Heroes_" pelo nome no
+		-- Workspace acharia a arena da dupla ao lado. Só a PASTA vai — quem está
+		-- dentro dela o Roblox replica sozinho, e o que o espectador pode saber
+		-- sobre cada um continua sendo decidido na lista `heroes` acima.
+		heroesFolder = match.view.heroesFolder,
 	}
 end
 
@@ -689,7 +932,7 @@ local function Broadcast(match, message)
 end
 
 -- ===================== HERÓIS =====================
-local function CreateHero(match, dataId, ownerId, hexId)
+function CreateHero(match, dataId, ownerId, hexId)
 	local data = HeroData.GetById(dataId)
 	if not data then return nil end
 
@@ -716,8 +959,49 @@ local function CreateHero(match, dataId, ownerId, hexId)
 		firstPunchApplied = false,
 		frenzyActive = false, -- Merlin: Frenesi ligado agora
 		frenzyHealed = false, -- Merlin: a cura de entrada do Frenesi já saiu
+
+		-- Shadow: invisível agora. Nasce FALSO mesmo pro Shadow — o primeiro
+		-- onTurnStart resolve. Nascer verdadeiro esconderia qualquer herói cujo
+		-- adversário ainda não tivesse sido posicionado.
+		stealth = false,
+
+		-- Golem: true só depois do Estilhaçar (Skills.shatter/SuppressGrave).
+		-- Nasce false pra todo mundo — herói normal morre com lápide, do jeito
+		-- de sempre.
+		noGrave = false,
+
+		-- Golem: enterro adiado. `gravePending` fica true no corpo grande, entre
+		-- o estilhaçar e a queda do último pedaço; `graveOwner` é a marca que
+		-- cada PEDAÇO carrega apontando pro corpo dele (ver
+		-- DeferGrave/ResolvePendingGraves), e é ela que diz "este morto não tem
+		-- lápide própria". Herói normal nunca liga nenhum dos dois — nasce
+		-- inteiro e é enterrado na hora em que morre.
+		--
+		-- Nascem sempre limpos, inclusive no Golem que volta pela Casa de
+		-- Promoção: o corpo que ressuscita é um registro NOVO, sem pendência
+		-- nem marca da vida anterior, e por isso pode estilhaçar de novo e
+		-- rodar o ciclo inteiro outra vez.
+		gravePending = false,
+		graveOwner = nil,
+		graveHex = nil, -- casa do último pedaço que caiu; é onde a lápide sobe
+
 		view = match.view,
 	}
+
+	-- O uid é matchId_dono_dataId, então um herói NOVO com o mesmo dataId
+	-- sobrescreve o registro antigo em match.heroes — e a lápide daquele
+	-- registro ficaria órfã: visível no tabuleiro, ocupando o hex e sem dono
+	-- pra ser atacada ou consumida. Só acontece com invocação repetida (o Golem
+	-- ressuscitado estilhaçando de novo), mas o preço de limpar aqui é zero.
+	-- A ressurreição comum já faz a própria limpeza antes de chegar aqui
+	-- (PerformResurrection), e passar duas vezes não muda nada.
+	local previous = match.heroes[hero.uid]
+	if previous and not previous.isAlive then
+		if match.occupied[previous.position] == previous then
+			match.occupied[previous.position] = nil
+		end
+		HeroView.ClearGrave(previous)
+	end
 
 	match.heroes[hero.uid] = hero
 	match.occupied[hexId] = hero
@@ -882,6 +1166,16 @@ local function AwardXp(match, side, result, survivors)
 	task.spawn(ProgressionService.AwardMatchXp, side.player, result, survivors, match.vsBot)
 end
 
+-- ===================== PRÊMIO DA CAMPANHA =====================
+-- Vencer o confronto ENTREGA o herói. Um lugar só, no mesmo ponto em que o XP
+-- é pago: quem decide isso é o fim de partida, não a UI que abriu o confronto.
+-- O Unlock é idempotente (já possui = recusa muda), então revanche e evento de
+-- fim repetido não desbloqueiam duas vezes.
+local function AwardFightHero(match, side)
+	if not match.fight or not side or side.isBot or not side.player then return end
+	task.spawn(HeroUnlockService.Unlock, side.player, match.fight.hero)
+end
+
 -- ===================== FIM DE JOGO =====================
 function CheckGameOver(match)
 	local aliveOne = #LivingHeroesOf(match, match.sides[1].id)
@@ -910,6 +1204,9 @@ function CheckGameOver(match)
 		-- a vitória paga pela margem (heróis vivos), a derrota paga fixo
 		AwardXp(match, winningSide, "win", survivors)
 		AwardXp(match, losingSide, "loss")
+
+		-- e, se era confronto da campanha, entrega o herói do quadrado
+		AwardFightHero(match, winningSide)
 	end
 	return true
 end
@@ -922,7 +1219,16 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 		HeroView.ShowRangedAttack(attacker, target)
 	end
 
-	local ctx = { damageApplied = false }
+	-- O carimbo de furtividade sai ANTES das skills correrem. A Emboscada e a
+	-- quebra da invisibilidade moram em skills diferentes do MESMO herói e
+	-- disparam no mesmo gatilho: lendo `attacker.stealth` direto, qual das duas
+	-- corre primeiro passaria a depender da ordem do array de habilidades do
+	-- Shadow. É o mesmo cuidado que o gelo do Kor toma ao valer pelo estado de
+	-- antes do golpe.
+	local ctx = {
+		damageApplied = false,
+		attackerWasStealthed = attacker.stealth == true,
+	}
 	TriggerSkills(match, attacker, isCounterAttack and "onCounterAttack" or "onAttack",
 		target, isCounterAttack, ctx)
 
@@ -932,14 +1238,31 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 
 	attacker.firstAttack = true
 	HeroView.UpdateStats(attacker)
+
+	-- Devolve o ctx pra quem chamou saber se este golpe específico não pode
+	-- ser revidado (ver Skills.ambush, que marca suppressCounter).
+	return ctx
 end
 
 -- ===================== IA DO BOT =====================
 -- Pontua cada combinação (herói, casa de destino, alvo) e executa a melhor,
--- recalculando após cada ação. As habilidades entram na conta: Noctin caça
--- alvo isolado, Blade busca alinhamento, Elaria cola em aliado ferido, os
--- ranged mantêm distância pra não levar contra-ataque, e ninguém tenta bater
--- através de um Taunt.
+-- recalculando TUDO após cada ação. Não existe sequência fixa de if/else: as
+-- prioridades — abater, proteger o carry, perseguir o Nash, andar em grupo,
+-- buscar a Casa de Promoção — são parcelas de uma nota só, e a maior ganha. É
+-- por isso que a mesma peça joga diferente conforme o tabuleiro, sem ninguém
+-- escrever "se A e B então C".
+--
+-- TRÊS CAMADAS, e cada regra nova entra em uma delas:
+--   BuildBoardContext  lê a partida agora (quem é o carry, que ameaças estão
+--                      em campo, se a promoção virou objetivo)
+--   ScorePosition      quanto vale ESTAR numa casa (proteção, formação, sombra)
+--   ScoreAttack        quanto vale BATER dali (dano, abate, efeitos, revide)
+--
+-- Habilidade nova não precisa de sistema novo: é uma linha de `HasSkill` na
+-- camada certa. Hoje o Noctin caça alvo isolado, o Blade busca alinhamento, a
+-- Elaria cola em ferido, o Karo procura a casa que pega três, o Nash guarda a
+-- sombra, os Taunt se metem na frente do carry, os ranged mantêm distância — e
+-- ninguém tenta bater através de um Taunt.
 
 local TAUNT = GameConfig.ABILITIES.TAUNT
 local RANGED = GameConfig.ABILITIES.RANGED
@@ -960,17 +1283,130 @@ local function AlliesAdjacentTo(match, hero, position)
 	return list
 end
 
--- O quanto vale a pena derrubar este inimigo
+-- O quanto vale a pena derrubar este inimigo.
+--
+-- É por HABILIDADE, não por nome de herói: um personagem novo entra na conta da
+-- IA no dia em que ganhar uma skill conhecida, e a peculiaridade dele vira uma
+-- linha aqui em vez de um caso especial espalhado pelo código. Vale pro resto
+-- desta seção inteira.
 local function ThreatScore(hero)
 	local threat = hero.attack * 3
 	if GameConfig.IsRangedAttack(hero.attackRange) then threat += 2 end
-	if HasSkill(hero, "health") then threat += 8 end -- curandeira morre primeiro
-	if HasSkill(hero, "clean") then threat += 3 end
+
+	-- Elaria acima de todos: enquanto ela estiver de pé, o dano que a IA gasta
+	-- no time inimigo volta como cura. Ela vale mais que o inimigo com menos HP.
+	if HasSkill(hero, "health") then threat += 14 end
+	if HasSkill(hero, "clean") then threat += 4 end
+
+	-- Nash À VISTA é oportunidade com prazo: ele bate por AMBUSH_BONUS_DAMAGE a
+	-- mais saindo da sombra, e some de novo assim que ninguém estiver perto.
+	-- Quem chega aqui já está visível (o invisível nem entra na lista de alvos).
+	if HasSkill(hero, "ambush") then threat += 12 end
+
 	if HasSkill(hero, "poisonAttack") then threat += 4 end
 	if HasSkill(hero, "beyondFront") then threat += 3 end
 	if HasSkill(hero, "aloneIsBetter") then threat += 3 end
 	if HasSkill(hero, "iceEffect") then threat += 5 end -- controle: rouba turno inteiro
 	return threat
+end
+
+-- ===== QUEM É O CARRY =====
+-- O carry é quem CONVERTE turno em dano — e, de quebra, quem menos aguenta
+-- apanhar. Vida alta desconta de propósito: um Ceos de 33 não precisa de babá,
+-- e um Taunt nunca é carry (a função dele é o contrário).
+local function CarryValue(hero)
+	local value = hero.attack * 4
+
+	if GameConfig.IsRangedAttack(hero.attackRange) then value += 3 end
+	if HasSkill(hero, "beyondFront") then value += 4 end
+	if HasSkill(hero, "aloneIsBetter") then value += 4 end
+	if HasSkill(hero, "ambush") then value += 5 end
+	if HasSkill(hero, "flameStrike") then value += 3 end
+	if HasSkill(hero, "health") then value += 6 end -- cura é dano que não se perde
+	if hero.ability == TAUNT then value -= 8 end
+
+	return value - math.floor(hero.maxHp / 6)
+end
+
+-- Este inimigo alcança aquele herói AGORA ou no próximo passo dele? É a
+-- pergunta que separa "carry exposto" de "carry longe do perigo", e a mesma que
+-- diz se vale a pena um Taunt se meter no caminho.
+local function Threatens(enemy, hero)
+	return HexGrid.Distance(enemy.position, hero.position)
+		<= MoveRangeOf(enemy) + enemy.attackRange
+end
+
+-- ===================== LEITURA DO TABULEIRO =====================
+-- Tudo que a IA precisa saber sobre a partida AGORA, resolvido uma vez por
+-- decisão e passado pronto pras funções de pontuação. Existe por dois motivos:
+-- as mesmas perguntas (quem é o carry? tem Noctin do outro lado? a Casa de
+-- Promoção vale alguma coisa?) seriam refeitas pra cada casa candidata de cada
+-- herói, e — mais importante — é isto que dá CONTEXTO à pontuação, em vez de
+-- cada regra olhar só o próprio herói.
+--
+-- É reconstruído a cada ação do bot (ver BotPlayTurn): matou alguém, andou,
+-- perdeu um aliado — o tabuleiro é outro, e a leitura também.
+local function BuildBoardContext(match, botId, enemies)
+	local allies = LivingHeroesOf(match, botId)
+	local side = SideOf(match, botId)
+
+	local ctx = {
+		enemies = enemies,
+		allies = allies,
+		turn = match.turn and match.turn.number or 0,
+	}
+
+	-- O carry do PRÓPRIO time: quem os Taunt vão cobrir e quem não pode ficar
+	-- sozinho perto de um Noctin.
+	local bestCarry = -math.huge
+	for _, ally in ipairs(allies) do
+		local value = CarryValue(ally)
+		if value > bestCarry then
+			ctx.carry, bestCarry = ally, value
+		end
+	end
+
+	-- Ameaças do outro lado que mudam o POSICIONAMENTO (as que só mudam a
+	-- escolha de alvo já vivem no ThreatScore).
+	for _, enemy in ipairs(enemies) do
+		-- Nash à vista: colar nele nega a sombra (ele só some sem inimigo a
+		-- STEALTH_RANGE), então perseguir é uma jogada de verdade, não teimosia.
+		if HasSkill(enemy, "ambush") then ctx.stalker = enemy end
+		-- Noctin: enquanto ele estiver vivo, aliado sozinho é dano dobrado
+		if HasSkill(enemy, "aloneIsBetter") then ctx.hunter = enemy end
+	end
+
+	-- ===== CASA DE PROMOÇÃO =====
+	-- Só vira objetivo se a jogada existir de verdade: o lado ainda não gastou o
+	-- uso, tem lápide de pé pra trazer alguém de volta, e o turno já está perto
+	-- da liberação (começa a andar pra lá ANTES, senão chega tarde).
+	local hexId = side and GameConfig.PROMOTION_HEX_FOR_SLOT[side.index]
+	if hexId and side and not side.promotionUsed
+		and ctx.turn >= GameConfig.PROMOTION_UNLOCK_TURN - 2 then
+		local hasGrave = false
+		for _, other in pairs(match.heroes) do
+			if other.ownerId == botId and not other.isAlive and not other.graveDestroyed then
+				hasGrave = true
+				break
+			end
+		end
+
+		if hasGrave then
+			-- UM herói vai buscar, e é o mais perto. Sem esta escolha o bônus
+			-- valeria pra todo mundo e o time inteiro largaria a briga pra
+			-- caminhar até o mesmo canto do mapa.
+			local bestDistance = math.huge
+			for _, ally in ipairs(allies) do
+				local distance = HexGrid.Distance(ally.position, hexId)
+				if distance < bestDistance then
+					ctx.promotionRunner, bestDistance = ally, distance
+				end
+			end
+			ctx.promotionHex = hexId
+		end
+	end
+
+	return ctx
 end
 
 -- Alcance a partir de uma casa hipotética, já contando que o herói saiu da atual
@@ -1030,6 +1466,13 @@ local function EstimateDamage(match, attacker, target, fromPos)
 		if not (behind and IsFree(match, behind)) then damage += 1 end
 	end
 
+	-- Emboscada: o golpe que SAI da sombra leva o bônus. Sem isto a IA achava
+	-- que o Nash bate por 2 e nunca via o bote — ele vale 6 justamente no
+	-- turno em que está invisível, e só naquele.
+	if HasSkill(attacker, "ambush") and attacker.stealth then
+		damage += GameConfig.AMBUSH_BONUS_DAMAGE
+	end
+
 	return damage
 end
 
@@ -1053,6 +1496,9 @@ end
 local function CounterDamage(attacker, target, fromPos, damage)
 	if damage >= target.currentHp then return 0 end
 	if HexGrid.Distance(target.position, fromPos) > target.attackRange then return 0 end
+	-- golpe vindo da sombra não dá tempo de revidar (Skills.ambush marca
+	-- suppressCounter): pro Nash invisível, bater é de graça
+	if HasSkill(attacker, "ambush") and attacker.stealth then return 0 end
 
 	local incoming = target.attack
 	if HasSkill(attacker, "autoDefense") then incoming = math.max(0, incoming - 1) end
@@ -1073,6 +1519,26 @@ local function ScoreAttack(match, attacker, target, fromPos)
 	end
 
 	score += LineHits(match, attacker, target, fromPos) * 30
+
+	-- Karo: o soco gira. Cada inimigo EXTRA colado na casa de onde ele vai bater
+	-- leva o ataque cheio, então "de onde eu bato" importa tanto quanto "em
+	-- quem". Como o PlanFor pontua cada casa candidata, é isto que faz ele
+	-- escolher a posição que pega três em vez do golpe fácil que pega um.
+	if HasSkill(attacker, "flameStrike") then
+		local extra = 0
+		for _, neighbor in ipairs(HexGrid.GetNeighbors(fromPos)) do
+			local other = GetHeroAt(match, neighbor.id)
+			if other and other.isAlive and other ~= target
+				and other.ownerId ~= attacker.ownerId then
+				extra += 1
+				-- inimigo extra que MORRE no giro vale como abate
+				if attacker.attack >= other.currentHp then
+					score += 90 + ThreatScore(other) * 3
+				end
+			end
+		end
+		score += extra * attacker.attack * 9
+	end
 
 	-- veneno novo rende dano ao longo dos turnos seguintes
 	if HasSkill(attacker, "poisonAttack") and not FindStatusEffect(target, "poison") then
@@ -1103,7 +1569,8 @@ local function ScoreAttack(match, attacker, target, fromPos)
 end
 
 -- Valor de ocupar uma casa, mesmo sem atacar neste turno
-local function ScorePosition(match, hero, fromPos, enemies)
+local function ScorePosition(match, hero, fromPos, ctx)
+	local enemies = ctx.enemies
 	local score = 0
 	local isTank = hero.ability == TAUNT
 	local isRanged = GameConfig.IsRangedAttack(hero.attackRange)
@@ -1154,6 +1621,76 @@ local function ScorePosition(match, hero, fromPos, enemies)
 		end
 	end
 
+	-- ===== TAUNT PROTEGE MAIS DO QUE ATACA =====
+	-- Vale pra QUALQUER portador de Taunt, não só o Golem. A regra do jogo é que
+	-- um Taunt inimigo adjacente trava o ataque em qualquer outro alvo — então
+	-- "proteger" aqui é literalmente colar no inimigo que ameaça o carry: ele
+	-- passa a só poder bater no tanque. Trabalho PREVENTIVO: a conta usa quem
+	-- ALCANÇA o carry no próximo passo, não quem já está batendo nele.
+	if isTank and ctx.carry and ctx.carry ~= hero then
+		local carryPos = ctx.carry.position
+
+		for _, enemy in ipairs(enemies) do
+			if Threatens(enemy, ctx.carry) then
+				if HexGrid.Distance(fromPos, enemy.position) <= 1 then
+					score += 34 -- Taunt ligado: este inimigo não alcança mais o carry
+				end
+
+				-- corpo no caminho: na contagem de casas do hexágono, estar "em
+				-- cima da linha" entre os dois é a soma das distâncias bater com
+				-- a distância direta
+				if HexGrid.Distance(enemy.position, fromPos) + HexGrid.Distance(fromPos, carryPos)
+					== HexGrid.Distance(enemy.position, carryPos) then
+					score += 12
+				end
+			end
+		end
+
+		-- guarda-costas: não adianta travar um inimigo e deixar o carry sozinho
+		-- do outro lado do mapa
+		score += math.max(0, 3 - HexGrid.Distance(fromPos, carryPos)) * 6
+	end
+
+	-- ===== EU SOU O NASH =====
+	-- A sombra é a ficha dele: invisível ele bate por muito mais e não pode ser
+	-- alvo. Terminar o passo longe de todo mundo VALE, mesmo sem bater neste
+	-- turno — e quando houver um bote bom, o ScoreAttack (que já conta o bônus
+	-- e a ausência de contra-ataque) passa por cima deste bônus sozinho.
+	if HasSkill(hero, "stealth") and nearest > GameConfig.STEALTH_RANGE then
+		score += 26
+	end
+
+	-- ===== ENFRENTANDO O NASH =====
+	-- Ele só volta pra sombra se ninguém estiver a STEALTH_RANGE. Ficar colado é
+	-- o contra-jogo: nega a invisibilidade sem precisar acertar um golpe. Só que
+	-- o tanque é quem faz isso de bom grado — mandar o carry perseguir seria
+	-- entregar exatamente o alvo que o Nash quer.
+	if ctx.stalker and ctx.stalker.isAlive then
+		local distance = HexGrid.Distance(fromPos, ctx.stalker.position)
+		if distance <= GameConfig.STEALTH_RANGE then
+			score += (hero == ctx.carry) and 10 or 24
+		end
+	end
+
+	-- ===== ENFRENTANDO O NOCTIN =====
+	-- Aliado sozinho é dano dobrado pra ele. Andar em grupo é a resposta, e o
+	-- carry é quem mais paga por passear sozinho.
+	if ctx.hunter and ctx.hunter.isAlive and #AlliesAdjacentTo(match, hero, fromPos) == 0 then
+		score -= (hero == ctx.carry) and 22 or 10
+	end
+
+	-- ===== CASA DE PROMOÇÃO =====
+	-- Só o corredor escolhido no BuildBoardContext puxa por isto, e o valor
+	-- cresce conforme ele chega perto: é objetivo estratégico, não corrida cega
+	-- — qualquer abate ou proteção urgente continua pontuando mais alto.
+	if ctx.promotionHex and hero == ctx.promotionRunner then
+		if fromPos == ctx.promotionHex then
+			score += 85
+		else
+			score += math.max(0, 24 - HexGrid.Distance(fromPos, ctx.promotionHex) * 4)
+		end
+	end
+
 	return score
 end
 
@@ -1174,7 +1711,7 @@ local function BarrelInReach(match, hero)
 end
 
 -- Melhor jogada de um herói: para onde ir e quem bater
-local function PlanFor(match, hero, enemies)
+local function PlanFor(match, hero, ctx)
 	local canMove = not match.turn.moved[hero.uid] and not match.turn.attacked[hero.uid]
 	local canAttack = not match.turn.attacked[hero.uid]
 	if not canMove and not canAttack then return nil end
@@ -1189,12 +1726,12 @@ local function PlanFor(match, hero, enemies)
 	local best = nil
 	for fromPos in pairs(positions) do
 		local stayBonus = (fromPos == hero.position) and 2 or 0 -- desempata a favor de ficar
-		local positional = ScorePosition(match, hero, fromPos, enemies) + stayBonus
+		local positional = ScorePosition(match, hero, fromPos, ctx) + stayBonus
 
 		local bestTarget, bestAttackScore = nil, nil
 		if canAttack then
 			local reach = ReachFrom(match, hero, fromPos, hero.attackRange)
-			for _, enemy in ipairs(enemies) do
+			for _, enemy in ipairs(ctx.enemies) do
 				if reach[enemy.position] then
 					local attackScore = ScoreAttack(match, hero, enemy, fromPos)
 					if attackScore and (not bestAttackScore or attackScore > bestAttackScore) then
@@ -1205,6 +1742,15 @@ local function PlanFor(match, hero, enemies)
 		end
 
 		local total = positional + (bestAttackScore or 0)
+
+		-- QUEM ABRE A TROCA É QUEM AGUENTA APANHAR. Entre dois ataques de valor
+		-- parecido, o de mais vida sai primeiro: ele absorve o contra-ataque, e
+		-- o frágil bate depois, num inimigo já gasto (ou já morto). Peso
+		-- pequeno de propósito — é preferência de ORDEM, não regra: um abate ou
+		-- uma proteção urgente continua ganhando de qualquer diferença de HP.
+		if bestTarget then
+			total += hero.currentHp * 0.4
+		end
 		if not best or total > best.score then
 			best = {
 				hero = hero,
@@ -1224,17 +1770,33 @@ local function MatchIsLive(match)
 end
 
 -- O bot não vê modal nenhum, então escolhe sozinho quando MoveHero abre uma
--- escolha pendente (ver o uso logo abaixo). Mesmo peso do ThreatScore — HP +
--- ATK*3 — pra dizer "quem faz mais falta de volta", sem inventar uma segunda
--- métrica só pra isto.
-local function BotPickResurrection(options)
+-- escolha pendente (ver o uso logo abaixo).
+--
+-- Não é "quem morreu primeiro" nem "quem tem mais vida na ficha": volta quem
+-- MUDA a partida agora. O ThreatScore já mede exatamente isso — é a mesma
+-- pergunta que a IA faz sobre um inimigo ("o quanto este herói pesa no jogo?"),
+-- só que virada pro próprio time, com as habilidades dele na conta.
+--
+-- Duas correções em cima disso, ambas pelo estado ATUAL do tabuleiro: se o time
+-- ficou sem ninguém pra segurar a linha, um Taunt de volta vale mais do que
+-- mais um atacante; e vida de ficha entra com peso pequeno, como desempate
+-- (o ressuscitado nasce com RESURRECT_HP, então a vida máxima dele só diz
+-- quanto ele aguenta DEPOIS de se curar).
+local function BotPickResurrection(match, botId, options)
+	local hasTank = false
+	for _, ally in ipairs(LivingHeroesOf(match, botId)) do
+		if ally.ability == TAUNT then hasTank = true break end
+	end
+
 	local best, bestScore = options[1], -math.huge
 	for _, uid in ipairs(options) do
-		-- uid = matchId_dono_dataId; o dataId é o último pedaço
-		local dataId = tonumber(uid:match("_(%d+)$"))
-		local data = dataId and HeroData.GetById(dataId)
-		if data then
-			local score = data.hp + data.attack * 3
+		local hero = match.heroes[uid]
+		local data = hero and HeroData.GetById(hero.dataId)
+
+		if hero and data then
+			local score = ThreatScore(hero) * 2 + data.hp / 3
+			if not hasTank and data.ability == TAUNT then score += 25 end
+
 			if score > bestScore then
 				best, bestScore = uid, score
 			end
@@ -1254,13 +1816,28 @@ function BotPlayTurn(match, botId)
 		for _ = 1, GameConfig.HEROES_PER_PLAYER * 2 do
 			if not MatchIsLive(match) or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
 
-			local enemies = LivingHeroesOf(match, OpponentSide(match, botId).id)
+			-- O bot enxerga a partida pelo estado do servidor, onde o Shadow
+			-- invisível está à vista como qualquer um. Filtrar aqui é o que o
+			-- impede de mirar num herói que o JOGADOR humano não conseguiria
+			-- mirar — sem isto a furtividade valeria só contra gente.
+			local enemies = {}
+			for _, enemy in ipairs(LivingHeroesOf(match, OpponentSide(match, botId).id)) do
+				if not enemy.stealth then
+					table.insert(enemies, enemy)
+				end
+			end
 			if #enemies == 0 then break end
 
+			-- Releitura completa do tabuleiro a cada ação: quem é o carry, se o
+			-- Nash está à vista, se a Casa de Promoção virou objetivo. Um abate
+			-- ou um passo muda tudo isso, e planejar o turno inteiro de uma vez
+			-- seria decidir com um tabuleiro que já não existe.
+			local ctx = BuildBoardContext(match, botId, enemies)
+
 			local best = nil
-			for _, hero in ipairs(LivingHeroesOf(match, botId)) do
+			for _, hero in ipairs(ctx.allies) do
 				if not resolved[hero.uid] then
-					local plan = PlanFor(match, hero, enemies)
+					local plan = PlanFor(match, hero, ctx)
 					if plan and (not best or plan.score > best.score) then
 						best = plan
 					end
@@ -1279,7 +1856,8 @@ function BotPlayTurn(match, botId)
 				-- bloqueia TODO o resto do turno do bot — inclusive o EndTurn.
 				if MatchIsLive(match) and match.pendingPromotion
 					and match.pendingPromotion.ownerId == botId then
-					MatchManager.Resurrect(nil, BotPickResurrection(match.pendingPromotion.options), match)
+					MatchManager.Resurrect(nil,
+						BotPickResurrection(match, botId, match.pendingPromotion.options), match)
 					task.wait(BOT_ACTION_DELAY)
 				end
 			end
@@ -1407,6 +1985,10 @@ function MatchManager.EndTurn(player, match)
 		end
 	end
 
+	-- O fogo envelhece junto com os efeitos de herói, e na mesma cadência do
+	-- gelo: uma vez por RODADA, no fim do turno de quem acendeu.
+	TickFlames(match, endingOwner)
+
 	if CheckGameOver(match) then
 		Broadcast(match)
 		return
@@ -1448,32 +2030,107 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	local path = HexGrid.FindPath(hero.position, hexId, MoveRangeOf(hero), FreeChecker(match))
 	if not path then return end
 
-	-- o estado lógico muda na hora; a caminhada é só visual
-	match.occupied[hero.position] = nil
-	hero.position = hexId
-	match.occupied[hexId] = hero
 	match.turn.moved[heroUid] = true
 
-	-- onMove dispara pros heróis dos dois lados (igual ao Phaser)
-	for _, other in pairs(match.heroes) do
-		if other.isAlive then
-			TriggerSkills(match, other, "onMove")
+	-- Furor das Chamas (Karo): quantas casas do CAMINHO já estavam em chamas
+	-- DELE antes deste passo. Tem que ler match.flames AGORA — o acender de
+	-- fogo novo só acontece lá embaixo, no despacho do onMove, depois da
+	-- caminhada. Calcular depois veria o próprio fogo que ele acabou de
+	-- acender, e todo passo daria bônus (não é a regra: só o rastro ANTIGO).
+	local enteredFlameCount = 0
+	for _, stepHex in ipairs(path) do
+		local flame = match.flames[stepHex]
+		if flame and flame.ownerId == hero.ownerId then
+			enteredFlameCount += 1
 		end
 	end
 
+	-- Avisa cedo que a jogada travou (moved=true) — a posição só se confirma
+	-- de verdade no fim da caminhada, casa por casa, logo abaixo.
 	Broadcast(match)
 
-	-- caminha casa por casa; busy trava ações concorrentes durante o passeio
+	-- A posição LÓGICA anda EM SINCRONIA com o passo VISUAL, casa por casa —
+	-- não tudo de uma vez no início. É o que garante que, se uma chama matar no
+	-- meio do caminho, a morte (e a lápide) aconteçam NAQUELA casa, e não na
+	-- casa final pra onde o corpo "chegaria" depois de já estar morto. `busy`
+	-- trava ações concorrentes durante todo o trecho.
+	-- Casas que o PRÓPRIO Karo consumiu nesta caminhada (fogo dele, apagado ao
+	-- passar por cima). O flamePath, mais abaixo, acende de novo as casas
+	-- ATRAVESSADAS — sem esta lista ele reacenderia a MESMA casa que acabou
+	-- de apagar, no mesmo movimento: o fogo sumia e voltava no mesmo instante,
+	-- e visualmente nunca desaparecia de verdade (o som tocava, a chama
+	-- continuava lá).
+	local consumedOwnTiles = {}
+
 	match.busy = true
-	HeroView.WalkPath(hero, path)
+	for _, stepHex in ipairs(path) do
+		match.occupied[hero.position] = nil
+		hero.position = stepHex
+		match.occupied[stepHex] = hero
+
+		HeroView.WalkStep(hero, stepHex)
+
+		-- Qualquer travessia CONSOME a chama — não é uma zona que fica
+		-- cobrando de todo mundo até o prazo natural acabar, é pedágio de UMA
+		-- passagem só. A chama some (efeito + som) IMEDIATAMENTE depois,
+		-- sempre — o que muda entre dono e inimigo é só se rola DANO junto.
+		local flame = match.flames[stepHex]
+		if flame then
+			if flame.ownerId ~= hero.ownerId then
+				-- inimigo cruzando o rastro: leva dano além de apagar
+				HeroView.PlayFlameHit(match.view, stepHex)
+				ApplyDamage(match, hero, GameConfig.FLAME_DAMAGE, nil, false)
+				ClearFlame(match, stepHex)
+				if not hero.isAlive then break end
+			else
+				-- o próprio Karo cruzando o rastro dele: sem dano (o bônus de
+				-- ataque do Furor já foi contado ANTES deste loop, em
+				-- enteredFlameCount) — só apaga com o mesmo efeito e som
+				HeroView.PlayFlameHit(match.view, stepHex)
+				ClearFlame(match, stepHex)
+				consumedOwnTiles[stepHex] = true
+			end
+		end
+	end
 	match.busy = false
+
+	-- onMove só dispara se o herói SOBREVIVEU à própria caminhada — morto não
+	-- acende rastro novo (Caminho de Chamas) nem quebra a furtividade de
+	-- ninguém por proximidade; a morte em si já saiu tratada via onDie, dentro
+	-- do ApplyDamage/KillHero ali em cima. O ctx diz QUEM andou e por onde: o
+	-- Caminho de Chamas precisa saber que o passo foi dele (senão o Karo
+	-- acenderia o rastro do inimigo do outro lado do mapa) e a Furtividade
+	-- precisa do contrário — que o passo NÃO foi dela, porque o movimento do
+	-- próprio Shadow não o tira da sombra.
+	if hero.isAlive then
+		for _, other in pairs(match.heroes) do
+			if other.isAlive then
+				TriggerSkills(match, other, "onMove", nil, false, {
+					movedHero = hero,
+					path = path,
+					enteredFlameCount = enteredFlameCount,
+					consumedOwnTiles = consumedOwnTiles,
+				})
+			end
+		end
+	end
+
+	if CheckGameOver(match) then
+		Broadcast(match)
+		return
+	end
 
 	Broadcast(match)
 
 	-- DEPOIS do Broadcast: se isto abrir uma escolha pendente, o snapshot que
 	-- acabou de sair já reflete a posição nova, e o próximo (dentro de
 	-- TryTriggerPromotion) só acrescenta o pedido de escolha em cima dela.
-	TryTriggerPromotion(match, hero)
+	--
+	-- Herói derrubado pelo próprio rastro não promove nada: o TryTriggerPromotion
+	-- lê a casa dele, e a essa altura ela já virou lápide.
+	if hero.isAlive then
+		TryTriggerPromotion(match, hero)
+	end
 end
 
 function MatchManager.AttackHero(player, attackerUid, targetUid, match)
@@ -1505,6 +2162,11 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	if not target or not target.isAlive then return end
 	if target.ownerId == attacker.ownerId then return end
 
+	-- Invisível não é alvo. O snapshot já não conta ao adversário que este herói
+	-- existe, mas o uid é adivinhável (matchId_dono_dataId) — sem esta linha, um
+	-- cliente adulterado acertaria o Shadow escondido chutando o nome.
+	if target.stealth then return end
+
 	-- alcance + caminho livre até o alvo
 	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[target.position] then return end
@@ -1522,11 +2184,15 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 		end
 	end
 
-	PerformAttack(match, attacker, target, false)
+	local attackCtx = PerformAttack(match, attacker, target, false)
 	match.turn.attacked[attackerUid] = true
 
-	-- contra-ataque: uma vez por turno, se o alvo sobreviveu e alcança o atacante
-	if not match.turn.counterAttack and target.isAlive and attacker.isAlive then
+	-- contra-ataque: uma vez por turno, se o alvo sobreviveu e alcança o
+	-- atacante. Emboscada do Nash (attackCtx.suppressCounter) pula este golpe
+	-- SEM marcar match.turn.counterAttack — o alvo perde a chance de revidar
+	-- ESTE golpe, mas o "ativo" do turno continua de pé pra outro herói.
+	if not attackCtx.suppressCounter and not match.turn.counterAttack
+		and target.isAlive and attacker.isAlive then
 		if HexGrid.Distance(target.position, attacker.position) <= target.attackRange then
 			match.turn.counterAttack = true
 
@@ -1560,8 +2226,18 @@ end
 -- promoveu já ocupa a própria casa de promoção, então o ressuscitado nasce do
 -- lado dele — mais perto, e não em cima do herói que morreu (que pode estar em
 -- qualquer canto do tabuleiro).
-function FindNearestFreeHex(match, fromHex)
-	if IsFree(match, fromHex) then return fromHex end
+--
+-- `avoid` é um conjunto opcional de hexIds que a busca pula mesmo estando
+-- livres, sem parar de atravessá-los: é como o túmulo pendente do Golem se
+-- recusa a nascer numa casa de promoção (o IsFree só recusa casa de promoção
+-- enquanto ela está TRAVADA pelo turno, e depois disso deixaria a lápide selar
+-- a casa pro resto da partida).
+function FindNearestFreeHex(match, fromHex, avoid)
+	local function Serve(hexId)
+		return IsFree(match, hexId) and not (avoid and avoid[hexId])
+	end
+
+	if Serve(fromHex) then return fromHex end
 
 	local seen = { [fromHex] = true }
 	local queue = { fromHex }
@@ -1573,7 +2249,7 @@ function FindNearestFreeHex(match, fromHex)
 		for _, neighbor in ipairs(HexGrid.GetNeighbors(id)) do
 			if not seen[neighbor.id] then
 				seen[neighbor.id] = true
-				if IsFree(match, neighbor.id) then return neighbor.id end
+				if Serve(neighbor.id) then return neighbor.id end
 				table.insert(queue, neighbor.id)
 			end
 		end
@@ -1585,17 +2261,23 @@ end
 -- Executa a ressurreição já validada. Devolve o herói novo, ou nil se não
 -- coube em lugar nenhum perto da casa de promoção (falha silenciosa e rara).
 local function PerformResurrection(match, pending, grave)
-	local spawnHex = FindNearestFreeHex(match, pending.promotionHex)
-	if not spawnHex then return nil end
-
 	-- A lápide se apaga ANTES do herói novo nascer: CreateHero usa o MESMO uid
 	-- (matchId_dono_dataId) que ela tinha, então o slot em match.heroes já vai
 	-- ser sobrescrito na linha seguinte — limpar antes só evita um quadro com os
-	-- dois "existindo" ao mesmo tempo.
+	-- dois "existindo" ao mesmo tempo. E precisa vir ANTES do FindNearestFreeHex
+	-- agora: o destino é a PRÓPRIA casa do túmulo, e ela só está livre depois
+	-- desta limpeza.
 	HeroView.ClearGrave(grave)
 	if match.occupied[grave.position] == grave then
 		match.occupied[grave.position] = nil
 	end
+
+	-- Nasce na casa do túmulo que o jogador clicou, não perto da casa de
+	-- promoção. FindNearestFreeHex devolve a própria casa quando ela já está
+	-- livre (o caso comum, já que acabamos de esvaziá-la) — só expande em anéis
+	-- no caso raro de alguém ter ocupado o hex entre o clique e esta resolução.
+	local spawnHex = FindNearestFreeHex(match, grave.position)
+	if not spawnHex then return nil end
 
 	local newHero = CreateHero(match, grave.dataId, pending.ownerId, spawnHex)
 	if not newHero then return nil end
@@ -1813,14 +2495,21 @@ function BotPlaceOne(match)
 	local side = match.sides[match.placementSide]
 	if not side.isBot then return end
 
-	local available = AvailableHeroIds(match, side)
 	local free = FreeHexesIn(match, side.zone)
 
-	if #available > 0 and #free > 0 then
-		local dataId = BotPickHeroId(available)
+	-- Campanha: o time já vem escrito, e sai na ordem em que foi escrito. Não
+	-- passa pelo sorteio nem carimba `usedHeroIds` — o cenário é fixo, e o que
+	-- o bot leva não pode tirar herói nenhum da mão do jogador.
+	local dataId = side.roster and side.roster[side.placedCount + 1]
+	if not dataId then
+		local available = AvailableHeroIds(match, side)
+		dataId = #available > 0 and BotPickHeroId(available) or nil
+	end
+
+	if dataId and #free > 0 then
 		local hexId = BotPickHex(HeroData.GetById(dataId), side.zone, free)
 		CreateHero(match, dataId, side.id, hexId)
-		match.usedHeroIds[dataId] = true
+		if not side.roster then match.usedHeroIds[dataId] = true end
 		side.placedCount += 1
 	end
 
@@ -1915,7 +2604,10 @@ end
 -- playerTwo == nil monta uma partida contra o bot.
 -- `slot` só vem preenchido na revanche, pra reaproveitar a mesma arena e não
 -- teletransportar a câmera de quem já está sentado ali.
-function MatchManager.StartMatch(playerOne, playerTwo, slot)
+-- `fight` é a entrada do Campaign quando a partida é um confronto da campanha:
+-- ela fixa o time do bot e diz qual herói a vitória paga. Sem ela o bot volta a
+-- sortear o time e a partida não vale desbloqueio (treino livre pelo pad).
+function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
 	if not playerOne then return false end
 
 	slot = slot or AllocateSlot()
@@ -1928,7 +2620,9 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 	local players = { playerOne }
 	if playerTwo then table.insert(players, playerTwo) end
 
-	local boardFolder = BoardSpawner.SpawnBoard(slot, playerTwo == nil)
+	-- num confronto da campanha, quem fica de pé do outro lado é o herói do
+	-- confronto (o mesmo do quadrado do lobby), e não o boneco genérico
+	local boardFolder = BoardSpawner.SpawnBoard(slot, playerTwo == nil, fight and fight.hero)
 
 	local sides = {
 		{
@@ -1951,13 +2645,20 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 		},
 	}
 
-	-- Resolvido UMA vez, na criação da partida: o nível não muda no meio do
-	-- draft, e consultar a cada escolha seria uma ida ao cache de XP por clique.
+	-- Resolvido UMA vez, na criação da partida: a posse não muda no meio do
+	-- draft, e consultar a cada escolha seria uma ida ao cache por clique.
 	-- O bot herda o conjunto do humano (mesma tabela, só leitura) pra partida
-	-- sair simétrica — senão um jogador de nível 1 encararia um bot com Kor e
-	-- Merlin, heróis que ele ainda nem viu.
+	-- sair simétrica quando ele SORTEIA o time — num confronto da campanha isso
+	-- não vale nada, porque lá o time dele já vem escrito.
 	sides[1].unlockedIds = UnlockedIdsFor(playerOne)
 	sides[2].unlockedIds = playerTwo and UnlockedIdsFor(playerTwo) or sides[1].unlockedIds
+
+	-- Time PRÉ-SELECIONADO do bot, na ordem em que ele põe em campo. Enquanto
+	-- ele existe, o bot não sorteia nada e não marca `usedHeroIds`: o confronto
+	-- da campanha é um cenário fixo, e o jogador precisa poder levar os próprios
+	-- heróis mesmo que o bot use os mesmos (Bot Elaria leva Ceos e Ralph, que
+	-- são dois dos três iniciais — reservar entregaria o jogador sem time).
+	sides[2].roster = fight and fight.team or nil
 
 	local sideIndexById = {}
 	for index, side in ipairs(sides) do
@@ -1973,11 +2674,21 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot)
 		sides = sides,
 		sideIndexById = sideIndexById,
 		vsBot = playerTwo == nil,
+
+		-- Confronto da campanha (ver Campaign). Segura o desbloqueio no fim da
+		-- partida e sobrevive à revanche, pra quem perdeu poder tentar de novo
+		-- contra o MESMO time.
+		fight = fight,
 		phase = "placement",
 		heroes = {},
 		barrels = {},
 		nextBarrelId = 0,
 		occupied = {},
+
+		-- Fogo do Karo, por CASA e não por herói: [hexId] = { ownerId, duration,
+		-- appliedTurnToken }. Fora de `occupied` de propósito — chama não bloqueia
+		-- passagem, só cobra pedágio de quem atravessa.
+		flames = {},
 		usedHeroIds = {},
 		placementSide = 1, -- lado 1 escolhe primeiro: 1,2,1,2...
 		starterId = sides[1].id,
@@ -2055,7 +2766,9 @@ function MatchManager.Replay(player)
 	matches[match.id] = nil
 	matchBySlot[slot] = nil
 
-	MatchManager.StartMatch(playerOne, playerTwo, slot)
+	-- a revanche de um confronto da campanha é contra o MESMO time do bot: quem
+	-- perdeu tenta de novo o mesmo cenário, e vencer ainda paga o herói
+	MatchManager.StartMatch(playerOne, playerTwo, slot, match.fight)
 end
 
 -- Abandono: quem sai não leva XP; quem ficou recebe como vitória. Só vale pra

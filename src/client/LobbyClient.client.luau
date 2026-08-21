@@ -131,6 +131,42 @@ cancelButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("cancelQueue")
 end)
 
+-- ===== CONFIRMAÇÃO DE CONFRONTO =====
+-- Pisar no quadrado da campanha NÃO entra na partida: o servidor manda a
+-- pergunta e espera. Só o "Sim" volta como pedido de entrada — e lá o servidor
+-- confere a escada de novo antes de montar a arena.
+--
+-- Mora aqui, e não no LobbyMenu, porque é o mesmo painel que já cobre fila e
+-- carregamento: a pergunta herda o fade, o fundo escurecido e o sumiço
+-- automático quando a partida começa, sem UI nova nenhuma.
+local pendingFight = nil
+
+local function buildChoiceButton(text, offsetX, color)
+	local button = Instance.new("TextButton")
+	button.AnchorPoint = Vector2.new(0.5, 0)
+	button.Position = UDim2.new(0.5, offsetX, 0, 138)
+	button.Size = UDim2.new(0, 128, 0, 40)
+	button.BackgroundColor3 = color
+	button.BackgroundTransparency = 1
+	button.Text = text
+	button.TextColor3 = Color3.new(1, 1, 1)
+	button.TextTransparency = 1
+	button.TextSize = 17
+	button.Font = Enum.Font.GothamBold
+	button.BorderSizePixel = 0
+	button.Visible = false
+	button.Parent = panel
+
+	local choiceCorner = Instance.new("UICorner")
+	choiceCorner.CornerRadius = UDim.new(0, 8)
+	choiceCorner.Parent = button
+
+	return button
+end
+
+local yesButton = buildChoiceButton("Sim", -68, Color3.fromRGB(56, 128, 88))
+local noButton = buildChoiceButton("Não", 68, Color3.fromRGB(70, 74, 92))
+
 -- ===== CRACHÁ DE NÍVEL (canto superior direito do lobby) =====
 -- ScreenGui própria, e não dentro da LobbyGui: aquela vive apagada e só acende
 -- na fila/carregamento, enquanto o crachá tem que ficar visível o lobby inteiro.
@@ -300,11 +336,13 @@ local function fade(targetVisible)
 	TweenService:Create(track, info, { BackgroundTransparency = targetVisible and 0 or 1 }):Play()
 	TweenService:Create(bar, info, { BackgroundTransparency = targetVisible and 0 or 1 }):Play()
 
-	if cancelButton.Visible then
-		TweenService:Create(cancelButton, info, {
-			BackgroundTransparency = textTransparency,
-			TextTransparency = textTransparency,
-		}):Play()
+	for _, button in ipairs({ cancelButton, yesButton, noButton }) do
+		if button.Visible then
+			TweenService:Create(button, info, {
+				BackgroundTransparency = textTransparency,
+				TextTransparency = textTransparency,
+			}):Play()
+		end
 	end
 
 	if not targetVisible then
@@ -314,19 +352,49 @@ local function fade(targetVisible)
 	end
 end
 
-local function show(state, text, showCancel, showBar)
+local function show(state, text, showCancel, showBar, showChoice)
 	currentState = state
 	status.Text = text or ""
 	cancelButton.Visible = showCancel or false
 	track.Visible = showBar ~= false
+	yesButton.Visible = showChoice or false
+	noButton.Visible = showChoice or false
 
+	-- Opacidade na mão, e não por tween: o painel pode JÁ estar na tela (a
+	-- pergunta virando "preparando a arena", por exemplo), e nesse caso o fade
+	-- abaixo sai pela porta dos fundos sem tocar em nada.
 	if showCancel then
 		cancelButton.BackgroundTransparency = 0
 		cancelButton.TextTransparency = 0
 	end
 
+	if showChoice then
+		for _, button in ipairs({ yesButton, noButton }) do
+			button.BackgroundTransparency = 0
+			button.TextTransparency = 0
+		end
+	end
+
 	fade(true)
 end
+
+yesButton.MouseButton1Click:Connect(function()
+	if not pendingFight then return end
+
+	local fight = pendingFight
+	pendingFight = nil
+
+	-- resposta imediata na tela; o servidor manda o "loading" dele logo em
+	-- seguida (ou um aviso, se a arena tiver acabado nesse intervalo)
+	show("loading", "Preparando a arena...", false, true, false)
+	GameAction:FireServer("fight", fight)
+end)
+
+noButton.MouseButton1Click:Connect(function()
+	pendingFight = nil
+	currentState = "idle"
+	fade(false)
+end)
 
 -- ===== ESTADO =====
 LobbyStatus.OnClientEvent:Connect(function(payload)
@@ -334,7 +402,13 @@ LobbyStatus.OnClientEvent:Connect(function(payload)
 
 	if state == "idle" then
 		currentState = "idle"
+		pendingFight = nil
 		fade(false)
+
+	elseif state == "confirm" then
+		-- pisou num quadrado da campanha: a partida só começa no "Sim"
+		pendingFight = payload.fight
+		show("confirm", payload.text or "Deseja enfrentar este time?", false, false, true)
 
 	elseif state == "queued" then
 		show("queued", payload.text or "Procurando oponente...", true, true)

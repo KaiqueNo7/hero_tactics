@@ -234,7 +234,25 @@ function HeroView.PlayMatchSound(view, name)
 	PlaySound(name, view)
 end
 
+-- ===== HERÓI INVISÍVEL NÃO EMITE NADA =====
+-- Esconder o boneco não bastava: partícula, balão de dano/cura e som próprio
+-- nascem NO SERVIDOR e chegam iguais aos dois clientes, então a fumacinha da
+-- Sombra Densa entregava, todo fim de turno, a casa exata onde o Nash tinha
+-- parado. O adversário não via o herói e sabia onde ele estava.
+--
+-- O filtro fica aqui, na porta de saída do visual, e não em cada skill: assim
+-- vale pra qualquer efeito de qualquer habilidade, inclusive as que ainda não
+-- existem. Quem quebra a invisibilidade (atacar, apanhar) apaga a marca ANTES
+-- de pedir o efeito da quebra — é por isso que a revelação continua aparecendo.
+local function Hidden(hero)
+	return hero ~= nil and hero.stealth == true
+end
+
 function HeroView.PlayAttackSound(hero)
+	-- Por HABILIDADE, não por nome: nome de herói pode mudar (Shadow virou
+	-- Nash no meio do projeto) e quebraria esta checagem em silêncio. Blade,
+	-- Kor e Dante continuam por nome porque são anteriores a essa lição — sem
+	-- problema tocar neles de novo, só não repetir o erro nos novos.
 	if hero.name == "Blade" then
 		PlaySound("SwordSwing", hero.view)
 	elseif hero.name == "Kor" then
@@ -243,10 +261,15 @@ function HeroView.PlayAttackSound(hero)
 		PlaySound("arrowSwing", hero.view)
 	elseif table.find(hero.abilities, "poisonAttack") then
 		PlaySound("PoisonHiss", hero.view)
+	elseif table.find(hero.abilities, "flameStrike") then
+		PlaySound("FlameSwing", hero.view) -- Karo
+	elseif table.find(hero.abilities, "ambush") then
+		PlaySound("DaggerSwing", hero.view) -- Nash
 	end
 end
 
 function HeroView.PlayHealSound(hero)
+	if Hidden(hero) then return end
 	PlaySound("Heal", hero.view)
 end
 
@@ -261,6 +284,13 @@ local SKILL_SOUNDS = {
 	aloneIsBetter = "SkillAlone",
 	brokenDefense = "SkillBrokenDefense",
 	clean = "SkillClean",
+
+	-- Ainda sem asset próprio. O PlaySound sai calado quando o som não existe em
+	-- ReplicatedStorage.Sounds, então isto é o gancho pronto pro dia em que o
+	-- arquivo entrar — e não um erro esperando acontecer.
+	ambush = "SkillAmbush",
+	stealth = "SkillStealth", -- Nash: entrando na sombra
+	shatter = "SkillShatter", -- Golem: partindo em dois
 }
 
 function HeroView.PlaySkillSound(key, view)
@@ -318,6 +348,32 @@ local SKILL_EFFECTS = {
 	-- usa pra vida (verde) e pra ataque (o mesmo âmbar do crachá de buff)
 	barrelHeal    = { color = Color3.fromRGB(120, 245, 150), texture = FX_SPARK, shape = "rise",  count = 20, size = 2.4, speed = 9 },
 	barrelAttack  = { color = Color3.fromRGB(255, 200, 90),  texture = FX_SPARK, shape = "rise",  count = 20, size = 2.4, speed = 9 },
+
+	-- ===== KARO =====
+	-- O rastro é discreto: ele acontece a cada passo do Karo, e a chama que fica
+	-- na casa (CreateFlame) já é o efeito principal. Fumaça grande aqui
+	-- competiria com ela e apagaria a leitura do próprio caminho.
+	-- Reaproveitado pelo Furor das Chamas (Skills.flameFury) além do próprio
+	-- rastro — "rise" combina com os dois: deixar fogo no chão e carregar
+	-- energia pisando nele de novo.
+	flamePath     = { color = Color3.fromRGB(255, 150, 70),  texture = FX_SMOKE, shape = "rise",  count = 10, size = 2.0, speed = 5 },
+	flameStrike   = { color = Color3.fromRGB(255, 120, 50),  texture = FX_SMOKE, shape = "burst", count = 26, size = 3.2, speed = 18 },
+
+	-- ===== SHADOW =====
+	-- Sumir é fumaça escura que SOBE e fecha; aparecer é a mesma cor estourando
+	-- pra fora. As duas juntas contam a história do vulto sem precisar de texto.
+	stealth       = { color = Color3.fromRGB(60, 60, 90),    texture = FX_SMOKE, shape = "rise",  count = 20, size = 2.8, speed = 7 },
+	stealthBreak  = { color = Color3.fromRGB(90, 90, 130),   texture = FX_SMOKE, shape = "burst", count = 22, size = 2.8, speed = 14 },
+	stealthHeal   = { color = Color3.fromRGB(130, 150, 220), texture = FX_SPARK, shape = "rise",  count = 14, size = 2.0, speed = 7 },
+
+	-- a emboscada é o golpe que define o herói: estoura roxo, bem visível
+	ambush        = { color = Color3.fromRGB(170, 110, 255), texture = FX_SPARK, shape = "burst", count = 30, size = 2.8, speed = 19 },
+
+	-- ===== GOLEM =====
+	-- Estilhaçar é a morte dele virando duas peças novas: pedra pra todo lado,
+	-- no mesmo peso da Tempestade de Gelo do Kor (o outro "morri e algo grande
+	-- acontece" do elenco).
+	shatter       = { color = Color3.fromRGB(150, 145, 135), texture = FX_SMOKE, shape = "burst", count = 40, size = 3.4, speed = 22 },
 }
 
 -- ===== CORTE DO BLADE (IMAGEM ANIMADA) =====
@@ -411,6 +467,8 @@ local function EnsureFlipbook(hero)
 end
 
 function HeroView.PlaySkillEffect(hero, key)
+	if Hidden(hero) then return end
+
 	local slash = FLIPBOOK_EFFECTS[key]
 	if slash then
 		local emitter = EnsureFlipbook(hero)
@@ -789,6 +847,124 @@ function HeroView.BreakBarrel(barrel)
 	Debris:AddItem(part, 1.2)
 end
 
+-- ===== FOGO NO CHÃO (Karo) =====
+-- Nasce por código como o barril, e pelo mesmo motivo: nada que dependa de um
+-- modelo guardado no place, que não entra no Rojo nem no git.
+--
+-- Vive na pasta de heróis da partida (não numa terceira pasta) porque o
+-- ClearMatch já apaga aquela pasta inteira no fim do jogo — chama esquecida
+-- queimando numa arena vazia seria um vazamento silencioso entre partidas.
+--
+-- O nome do Part carrega o hexId: é assim que o DestroyFlame acha a chama certa
+-- sem o servidor ter que guardar uma segunda tabela de Parts em paralelo à
+-- match.flames.
+local FLAME_COLOR = Color3.fromRGB(255, 140, 60)
+local FLAME_CORE = Color3.fromRGB(255, 225, 150)
+
+local function FlameName(hexId)
+	return "Flame_" .. hexId
+end
+
+function HeroView.CreateFlame(view, hexId)
+	if not view then return end
+
+	local existing = view.heroesFolder:FindFirstChild(FlameName(hexId))
+	if existing then existing:Destroy() end -- reacendeu a mesma casa: começa limpo
+
+	local center = HexGrid.GetWorldPosition(hexId, view.origin)
+	local size = HexGrid.GetHexSize()
+
+	-- Âncora invisível e fina, rente ao topo da casa. O fogo em si é partícula:
+	-- um bloco laranja sólido tamparia a casa e brigaria com a pintura de
+	-- movimento que o cliente já faz por cima do tabuleiro.
+	local part = Instance.new("Part")
+	part.Name = FlameName(hexId)
+	part.Size = Vector3.new(size * 0.9, 0.2, size * 0.9)
+	part.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y, 0))
+	part.Transparency = 1
+	part.Anchored = true
+	part.CanCollide = false
+	-- CanQuery false: a chama não pode roubar o clique da casa embaixo dela, ou
+	-- o jogador perderia a jogada tentando andar pro fogo.
+	part.CanQuery = false
+	part.CastShadow = false
+	part.Parent = view.heroesFolder
+
+	local attachment = Instance.new("Attachment")
+	attachment.Parent = part
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "Emitter"
+	emitter.Texture = FX_SMOKE
+	emitter.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, FLAME_CORE),
+		ColorSequenceKeypoint.new(1, FLAME_COLOR),
+	})
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.35),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 2.4),
+		NumberSequenceKeypoint.new(1, 0.2),
+	})
+	emitter.Lifetime = NumberRange.new(0.5, 0.9)
+	emitter.Rate = 14
+	emitter.Speed = NumberRange.new(3, 5.5)
+	emitter.SpreadAngle = Vector2.new(18, 18)
+	emitter.Acceleration = Vector3.new(0, 5, 0)
+	emitter.EmissionDirection = Enum.NormalId.Top
+	emitter.Rotation = NumberRange.new(0, 360)
+	emitter.RotSpeed = NumberRange.new(-90, 90)
+	emitter.LightEmission = 0.8
+	emitter.LightInfluence = 0
+	emitter.Parent = attachment
+
+	local light = Instance.new("PointLight")
+	light.Color = FLAME_COLOR
+	light.Range = 10
+	light.Brightness = 1.6
+	light.Parent = part
+
+	return part
+end
+
+function HeroView.DestroyFlame(view, hexId)
+	if not view then return end
+
+	local part = view.heroesFolder:FindFirstChild(FlameName(hexId))
+	if not part then return end
+
+	-- Para de EMITIR e só então destrói: apagar o Part na hora levaria junto as
+	-- partículas ainda no ar, e a chama sumiria num corte seco.
+	local emitter = part:FindFirstChildWhichIsA("ParticleEmitter", true)
+	if emitter then emitter.Enabled = false end
+
+	local light = part:FindFirstChildWhichIsA("PointLight")
+	if light then
+		TweenService:Create(light, TweenInfo.new(0.6), { Brightness = 0 }):Play()
+	end
+
+	Debris:AddItem(part, 1.2)
+end
+
+-- Alguém atravessou a chama: lufada curta pra amarrar o número de dano à casa.
+-- Toca sempre que uma chama é CONSUMIDA — o pedágio que mata o fogo (ver
+-- MatchManager.MoveHero: dano, depois ClearFlame na mesma casa). Som próprio,
+-- não o "Hit" genérico de golpe corpo a corpo: isto é a chama acabando, não
+-- uma pancada.
+function HeroView.PlayFlameHit(view, hexId)
+	if not view then return end
+
+	local part = view.heroesFolder:FindFirstChild(FlameName(hexId))
+	if not part then return end
+
+	PlaySound("FlameConsume", view)
+
+	local emitter = part:FindFirstChildWhichIsA("ParticleEmitter", true)
+	if emitter then emitter:Emit(18) end
+end
+
 -- A cor vem do lado (1 = azul, 2 = vermelho), não de "é o bot?": em PvP os
 -- dois lados são jogadores e a câmera é a mesma pros dois.
 local function TeamColor(hero)
@@ -895,6 +1071,8 @@ end
 -- Enfileira: uma mensagem por vez, nunca sobrepostas.
 -- `kind` é um tipo genérico ("damage", "heal", "buff") ou a chave da skill.
 function HeroView.Say(hero, text, kind)
+	if Hidden(hero) then return end
+
 	local uid = hero.uid
 	sayQueue[uid] = sayQueue[uid] or {}
 	table.insert(sayQueue[uid], { text = text, kind = kind or "info" })
@@ -943,11 +1121,18 @@ function HeroView.Create(hero)
 	local spriteId = HeroData.GetSpriteId(data)
 
 	if spriteId then
+		-- Escala estática por ficha (data.scale, 1 = tamanho normal). Os mini
+		-- golens usam isto pra ficar visivelmente menores que o Golem grande —
+		-- sem custo nenhum no "pés plantados": SizeOffset é FRAÇÃO do próprio
+		-- tamanho (ver comentário logo abaixo), então encolher os dois lados
+		-- igual mantém a base no chão sozinho, sem recalcular offset nenhum.
+		local scale = data.scale or 1
+
 		local spriteGui = Instance.new("BillboardGui")
 		spriteGui.Name = "Sprite"
 		spriteGui.Size = UDim2.new(
-			SPRITE_WIDTH, SPRITE_PIXEL_FLOOR_W,
-			SPRITE_HEIGHT, SPRITE_PIXEL_FLOOR_H)
+			SPRITE_WIDTH * scale, SPRITE_PIXEL_FLOOR_W * scale,
+			SPRITE_HEIGHT * scale, SPRITE_PIXEL_FLOOR_H * scale)
 		-- referência no topo da casa; o SizeOffset sobe meio sprite a partir
 		-- dali, então os pés ficam plantados seja qual for o tamanho desenhado
 		spriteGui.StudsOffsetWorldSpace = Vector3.new(0, -ANCHOR_LIFT, 0)
@@ -967,6 +1152,14 @@ function HeroView.Create(hero)
 		image.ImageRectSize = HeroData.GetFrameSize(data)
 		image.ImageRectOffset = HeroData.GetFrameOffset(data)
 		image.ResampleMode = Enum.ResamplerMode.Pixelated
+		-- Fit, não o Stretch padrão: o recorte de cada herói (HeroData) usa a
+		-- caixa REAL da arte, e a proporção dela raramente bate exata com a da
+		-- moldura (165x231). Sem Fit, esse descompasso esticava/espremia o
+		-- desenho pra preencher a moldura à força — com Fit ele escala mantendo
+		-- a proporção própria, sobra tira fina dos lados ou em cima/embaixo em
+		-- vez de distorcer o personagem. Já era assim em todo portrait do
+		-- cliente (draft, retrato, destaque); só faltava aqui, no tabuleiro.
+		image.ScaleType = Enum.ScaleType.Fit
 		image.Parent = spriteGui
 	else
 		local body = Instance.new("Part")
@@ -1177,12 +1370,17 @@ function HeroView.UpdateStats(hero)
 	local chill = row:FindFirstChild("Chill")
 
 	if atk then
-		atk.Value.Text = tostring(hero.attack)
+		-- EffectiveAttack, e não `hero.attack` cru: é o MESMO número que o
+		-- Snapshot manda pra coluna de retratos, então o crachá em cima do
+		-- boneco e a ficha da lateral nunca discordam. Quem muda por aqui é o
+		-- Nash invisível — 2 de ficha, 6 na mão.
+		local attack = GameConfig.EffectiveAttack(hero)
+		atk.Value.Text = tostring(attack)
 
 		-- Buffado = fundo e número em verde, com a moldura mais grossa. O ícone
 		-- de espada continua vermelho: ele é a identidade do crachá, e trocar a
 		-- cor dele junto faria os dois selos ficarem verdes e indistinguíveis.
-		local buffed = hero.attack > hero.baseAttack
+		local buffed = attack > hero.baseAttack
 		local edge = atk:FindFirstChild("Edge")
 
 		TweenService:Create(atk, TweenInfo.new(0.25), {
@@ -1258,21 +1456,22 @@ function HeroView.SetPosition(hero, hexId)
 	hero.part.CFrame = AnchorCFrame(hexId, hero.view.origin)
 end
 
-function HeroView.WalkPath(hero, path)
-	if not hero.part or not path then return end
+-- Anda UMA casa: tween + som + espera o passo terminar. Extraído de propósito
+-- pra separar do que o Karo precisa fazer casa por casa (cobrar pedágio de
+-- fogo com o herói já logicamente NAQUELA casa) — ver MatchManager.MoveHero.
+-- Devolve `false` se o modelo sumiu no meio do caminho (herói destruído).
+function HeroView.WalkStep(hero, hexId)
+	if not (hero.part and hero.part.Parent) then return false end
 
-	for _, hexId in ipairs(path) do
-		if not hero.part or not hero.part.Parent then return end
-
-		local tween = TweenService:Create(
-			hero.part,
-			TweenInfo.new(MOVE_STEP_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
-			{ CFrame = AnchorCFrame(hexId, hero.view.origin) }
-		)
-		tween:Play()
-		PlaySound("FootstepWood", hero.view)
-		task.wait(MOVE_STEP_TIME)
-	end
+	local tween = TweenService:Create(
+		hero.part,
+		TweenInfo.new(MOVE_STEP_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
+		{ CFrame = AnchorCFrame(hexId, hero.view.origin) }
+	)
+	tween:Play()
+	PlaySound("FootstepWood", hero.view)
+	task.wait(MOVE_STEP_TIME)
+	return true
 end
 
 -- ===== ANIMAÇÃO =====

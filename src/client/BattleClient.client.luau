@@ -52,12 +52,11 @@ end
 
 local state = nil
 
--- Declarado AQUI, e nao junto da implementacao la embaixo, porque o modal da
--- Casa de Promocao (renderPromotionChoice) precisa dele umas 600 linhas antes.
--- Com `local function` no ponto da implementacao o nome virava global nil aqui
--- em cima: o modal abria, criava o primeiro cartao e estourava no meio, deixando
--- um card sem nome ("Label") e a escolha travada sem como resolver. Forward
--- declaration resolve sem ter que mover funcao nenhuma de lugar.
+-- Declarado AQUI, e nao junto da implementacao la embaixo, porque o destaque
+-- azul da Casa de Promocao (renderPromotionResurrect) precisa dele umas 600
+-- linhas antes. Com `local function` no ponto da implementacao o nome virava
+-- global nil aqui em cima. Forward declaration resolve sem ter que mover
+-- funcao nenhuma de lugar.
 local heroByUid
 
 local selectedUid = nil
@@ -622,207 +621,86 @@ showHeroDetail = function(hero)
 	detailBackdrop.Visible = true
 end
 
--- ===== MODAL DE ESCOLHA DA CASA DE PROMOÇÃO =====
--- Sem botão de fechar e sem clique-fora: "entrou na casa, tem que escolher" é
--- regra, não sugestão — o servidor já recusa qualquer outra ação enquanto isto
--- está pendente (ver match.pendingPromotion em AuthorizeAction/EndTurn), então
--- deixar fechar sem escolher só confundiria o jogador sobre o que aconteceu.
-local promotionBackdrop = Instance.new("TextButton")
-promotionBackdrop.Name = "PromotionBackdrop"
-promotionBackdrop.Size = UDim2.fromScale(1, 1)
-promotionBackdrop.BackgroundColor3 = Color3.new(0, 0, 0)
-promotionBackdrop.BackgroundTransparency = 0.5
-promotionBackdrop.AutoButtonColor = false
-promotionBackdrop.Text = ""
-promotionBackdrop.ZIndex = 45
-promotionBackdrop.Visible = false
-promotionBackdrop.Parent = gui
+-- ===== TÚMULO CLICÁVEL DA CASA DE PROMOÇÃO (sem modal) =====
+-- Chegar na casa de promoção não abre mais um card de escolha: as lápides que
+-- podem voltar ficam AZUIS no próprio tabuleiro (mesmo `paint()` que pinta
+-- destino de movimento/ataque), e o jogador clica ali — o ressuscitado nasce
+-- exatamente naquela casa, não perto da casa de promoção (ver
+-- PerformResurrection). O bloqueio de qualquer outra ação enquanto isto está
+-- pendente continua sendo o servidor (match.pendingPromotion em
+-- AuthorizeAction/EndTurn) — aqui só decide COMO o jogador aponta a escolha.
+-- Pisca entre dois tons de azul — mesma técnica da casa de promoção ativa
+-- (renderPromotionSquares): TweenInfo com Reverses + RepeatCount -1 faz o loop
+-- sozinho, sem RenderStepped nem polling.
+local PROMOTION_RESURRECT_COLOR_LOW = Color3.fromRGB(40, 70, 130)
+local PROMOTION_RESURRECT_COLOR_HIGH = Color3.fromRGB(120, 190, 255)
 
-local promotionPanel = Instance.new("Frame")
-promotionPanel.Name = "PromotionChoice"
-promotionPanel.AnchorPoint = Vector2.new(0.5, 0.5)
-promotionPanel.Position = UDim2.fromScale(0.5, 0.5)
-promotionPanel.Size = UDim2.new(0, 460, 0, 200)
-promotionPanel.BackgroundColor3 = Color3.fromRGB(16, 19, 28)
-promotionPanel.BorderSizePixel = 0
-promotionPanel.ZIndex = 46
-promotionPanel.Visible = false
-promotionPanel.Parent = gui
+-- Bookkeeping PRÓPRIO, separado de savedColors/clearHighlights: aquele é
+-- limpo toda vez que o jogador seleciona/desseleciona um herói, e o túmulo
+-- azul precisa sobreviver a isso — ele reflete o estado do SERVIDOR
+-- (pendingPromotion), não a seleção local.
+local promotionHighlighted = {} -- [tile Part] = tween
+local promotionOptionUids = {} -- [uid] = true, lido pelo clique
 
-local promotionCorner = Instance.new("UICorner")
-promotionCorner.CornerRadius = UDim.new(0, 14)
-promotionCorner.Parent = promotionPanel
-
-local promotionStroke = Instance.new("UIStroke")
-promotionStroke.Color = Color3.fromRGB(255, 205, 90)
-promotionStroke.Thickness = 2
-promotionStroke.Parent = promotionPanel
-
-local promotionTitle = Instance.new("TextLabel")
-promotionTitle.Size = UDim2.new(1, -32, 0, 30)
-promotionTitle.Position = UDim2.new(0, 16, 0, 14)
-promotionTitle.BackgroundTransparency = 1
-promotionTitle.Text = "Casa de Promoção"
-promotionTitle.TextColor3 = Color3.fromRGB(255, 214, 120)
-promotionTitle.TextXAlignment = Enum.TextXAlignment.Left
-promotionTitle.TextScaled = true
-promotionTitle.Font = Enum.Font.GothamBlack
-promotionTitle.ZIndex = 46
-promotionTitle.Parent = promotionPanel
-
-local promotionSubtitle = Instance.new("TextLabel")
-promotionSubtitle.Size = UDim2.new(1, -32, 0, 20)
-promotionSubtitle.Position = UDim2.new(0, 16, 0, 46)
-promotionSubtitle.BackgroundTransparency = 1
-promotionSubtitle.Text = "Escolha quem volta pra ajudar:"
-promotionSubtitle.TextColor3 = Color3.fromRGB(200, 212, 232)
-promotionSubtitle.TextXAlignment = Enum.TextXAlignment.Left
-promotionSubtitle.TextSize = 15
-promotionSubtitle.Font = Enum.Font.GothamBold
-promotionSubtitle.ZIndex = 46
-promotionSubtitle.Parent = promotionPanel
-
-local promotionList = Instance.new("Frame")
-promotionList.Name = "List"
-promotionList.Position = UDim2.new(0, 16, 0, 72)
-promotionList.Size = UDim2.new(1, -32, 0, 112)
-promotionList.BackgroundTransparency = 1
-promotionList.ZIndex = 46
-promotionList.Parent = promotionPanel
-
-local promotionListLayout = Instance.new("UIListLayout")
-promotionListLayout.FillDirection = Enum.FillDirection.Horizontal
-promotionListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-promotionListLayout.Padding = UDim.new(0, 10)
-promotionListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-promotionListLayout.Parent = promotionList
-
-local PROMO_CARD_SIZE = 100
-
--- `slot` é uma tabela (não só a Frame) porque o clique precisa ler o uid ATUAL
--- do card, não o de quando ele foi criado: os cards são reaproveitados entre
--- atualizações (a lista de opções pode encolher se uma lápide for destruída no
--- meio da escolha), então o handler fecha sobre `slot` e lê `slot.uid` na hora
--- do clique — nunca um uid capturado de saída.
-local function buildPromotionCard()
-	local slot = {}
-
-	local card = Instance.new("TextButton")
-	card.Name = "Card"
-	card.Size = UDim2.new(0, PROMO_CARD_SIZE, 0, PROMO_CARD_SIZE)
-	card.BackgroundColor3 = Color3.fromRGB(26, 31, 44)
-	card.AutoButtonColor = false
-	card.Text = ""
-	card.BorderSizePixel = 0
-	card.ZIndex = 47
-	card.Parent = promotionList
-
-	local cardCorner = Instance.new("UICorner")
-	cardCorner.CornerRadius = UDim.new(0, 10)
-	cardCorner.Parent = card
-
-	local cardStroke = Instance.new("UIStroke")
-	cardStroke.Name = "Edge"
-	cardStroke.Color = Color3.fromRGB(90, 130, 200)
-	cardStroke.Thickness = 1.4
-	cardStroke.Parent = card
-
-	local portrait = Instance.new("ImageLabel")
-	portrait.Size = UDim2.new(1, -12, 1, -34)
-	portrait.Position = UDim2.new(0, 6, 0, 6)
-	portrait.BackgroundTransparency = 1
-	portrait.ScaleType = Enum.ScaleType.Fit
-	portrait.ResampleMode = Enum.ResamplerMode.Pixelated
-	portrait.ZIndex = 48
-	portrait.Parent = card
-
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.AnchorPoint = Vector2.new(0, 1)
-	nameLabel.Position = UDim2.new(0, 4, 1, -4)
-	nameLabel.Size = UDim2.new(1, -8, 0, 18)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.TextColor3 = Color3.new(1, 1, 1)
-	nameLabel.TextScaled = true
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.ZIndex = 48
-	nameLabel.Parent = card
-
-	card.MouseButton1Click:Connect(function()
-		if slot.uid then
-			GameAction:FireServer("resurrect", slot.uid)
+local function clearPromotionHighlights()
+	for tile, tween in pairs(promotionHighlighted) do
+		tween:Cancel()
+		if tile.Parent then
+			tile.Color = tile:GetAttribute("BaseColor") or fallbackColor(tile)
 		end
-	end)
-
-	slot.card = card
-	slot.portrait = portrait
-	slot.name = nameLabel
-	return slot
+	end
+	promotionHighlighted = {}
+	promotionOptionUids = {}
 end
 
--- Reaproveitados entre atualizações — igual às linhas da coluna de heróis,
--- criar/destruir Frame a cada snapshot seria trabalho pra nada quando a lista
--- de opções normalmente não muda de um snapshot pro outro.
-local promotionCards = {}
+-- ===== "SELECIONE O HERÓI PARA REVIVER" =====
+-- Texto persistente, não a fila de mensagens transientes (messageLabel) — este
+-- fica na tela o tempo INTEIRO em que a escolha está pendente, não alguns
+-- segundos e some.
+local promotionPrompt = Instance.new("TextLabel")
+promotionPrompt.Name = "PromotionPrompt"
+promotionPrompt.AnchorPoint = Vector2.new(0.5, 0)
+promotionPrompt.Position = UDim2.new(0.5, 0, 0, 58)
+promotionPrompt.Size = UDim2.new(0, 460, 0, 30)
+promotionPrompt.BackgroundTransparency = 1
+promotionPrompt.Text = "Selecione o herói para reviver"
+promotionPrompt.TextColor3 = Color3.fromRGB(140, 195, 255)
+promotionPrompt.TextStrokeTransparency = 0.35
+promotionPrompt.TextScaled = true
+promotionPrompt.Font = Enum.Font.GothamBold
+promotionPrompt.Visible = false
+promotionPrompt.ZIndex = 40
+promotionPrompt.Parent = gui
 
-local function renderPromotionChoice(state)
-	local pending = state.pendingPromotion
+local function renderPromotionResurrect(state)
+	clearPromotionHighlights()
+
+	local pending = state and state.pendingPromotion
 	local options = pending and pending.options
+	local board = state and state.boardFolder
 
-	if not options or #options == 0 then
-		promotionBackdrop.Visible = false
-		promotionPanel.Visible = false
-		return
-	end
+	promotionPrompt.Visible = options ~= nil and #options > 0
 
-	promotionBackdrop.Visible = true
-	promotionPanel.Visible = true
+	if not options or #options == 0 or not board then return end
 
-	for index, uid in ipairs(options) do
-		local slot = promotionCards[index]
-		if not slot then
-			slot = buildPromotionCard()
-			promotionCards[index] = slot
-		end
-
-		slot.card.LayoutOrder = index
-		slot.card.Visible = true
-		slot.uid = uid
+	for _, uid in ipairs(options) do
+		promotionOptionUids[uid] = true
 
 		local hero = heroByUid(uid)
-		local data = hero and HeroData.GetById(hero.dataId)
-		if data then
-			local spriteId = spriteOf(data)
-			if spriteId then
-				slot.portrait.Image = spriteId
-				slot.portrait.ImageRectSize = HeroData.GetFrameSize(data)
-				slot.portrait.ImageRectOffset = HeroData.GetFrameOffset(data)
-				slot.portrait.BackgroundTransparency = 1
-			else
-				slot.portrait.Image = ""
-				slot.portrait.BackgroundTransparency = 0
-				slot.portrait.BackgroundColor3 = data.color
-			end
-			slot.name.Text = hero.name or data.name
-		else
-			-- Opcao que o cliente nao consegue resolver (uid fora de state.heroes).
-			-- Esconder e mais honesto que deixar um cartao em branco e clicavel: o
-			-- clique iria pro servidor com um uid que ele tambem recusaria, e o
-			-- jogador ficaria sem saber por que "nao acontece nada".
-			slot.uid = nil
-			slot.card.Visible = false
+		local tile = hero and board:FindFirstChild(hero.position)
+		if tile and tile:IsA("BasePart") then
+			-- SEM tocar no attribute BaseColor: essa é a cor ORIGINAL do
+			-- xadrez do tabuleiro (gravada uma vez pelo BoardSpawner), e
+			-- clearPromotionHighlights depende dela pra restaurar certo
+			-- quando a escolha se resolve. Só o .Color visível pulsa.
+			tile.Color = PROMOTION_RESURRECT_COLOR_LOW
+			local tween = TweenService:Create(tile,
+				TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+				{ Color = PROMOTION_RESURRECT_COLOR_HIGH })
+			tween:Play()
+			promotionHighlighted[tile] = tween
 		end
 	end
-
-	-- sobrou card de uma escolha anterior com mais opções: esconde em vez de
-	-- destruir, pro próximo pending com mais gente reaproveitar de novo
-	for index = #options + 1, #promotionCards do
-		promotionCards[index].card.Visible = false
-	end
-end
-
-local function hidePromotionChoice()
-	promotionBackdrop.Visible = false
-	promotionPanel.Visible = false
 end
 
 -- ===== CASAS DE PROMOÇÃO (pintura do tabuleiro) =====
@@ -897,6 +775,11 @@ end
 -- antes desta guarda — ou seja, continua sempre fresco sem forçar re-render.
 local function rowSignature(hero)
 	if not hero then return "vazio" end
+	-- O registro do invisível vem oco (sem dataId, vida ou ataque): formatar com
+	-- %d estouraria. E ele tem assinatura PRÓPRIA e constante, pra que o card de
+	-- interrogação não seja redesenhado a cada snapshot enquanto ele fica na
+	-- sombra.
+	if hero.hidden then return "oculto" end
 	return ("%d|%d|%d|%s|%s"):format(hero.dataId, hero.currentHp, hero.attack,
 		tostring(hero.isAlive), tostring(hero.sideIndex))
 end
@@ -912,6 +795,38 @@ local function renderRow(row, hero)
 
 	if not hero then
 		row.card.Visible = false
+		return
+	end
+
+	-- ===== O ADVERSÁRIO ESCONDIDO =====
+	-- Card de interrogação, e NÃO card escondido. Nesta coluna retrato apagado
+	-- significa uma coisa só — morreu —, então sumir com o Shadow enquanto ele
+	-- está na sombra contaria uma mentira pior do que não contar nada: o
+	-- adversário jogaria o resto do turno achando que está num 3v2.
+	--
+	-- Vida e ataque ficam de fora porque o servidor não os manda (ver Snapshot).
+	-- É o que a furtividade esconde: onde ele está e como ele está, não que ele
+	-- existe.
+	if hero.hidden then
+		row.card.Visible = true
+		row.portrait.Image = ""
+		row.portrait.BackgroundTransparency = 0
+		row.portrait.BackgroundColor3 = Color3.fromRGB(30, 32, 44)
+		row.portrait.ImageColor3 = Color3.new(1, 1, 1)
+		row.portrait.ImageTransparency = 0
+		row.heroName.Text = "?"
+		row.heroName.TextColor3 = Color3.fromRGB(150, 156, 180)
+		row.card.BackgroundColor3 = Color3.fromRGB(24, 27, 37)
+		row.stroke.Color = Color3.fromRGB(90, 94, 120)
+		row.stroke.Transparency = 0.35
+
+		for _, dash in ipairs(row.cross) do
+			dash.Visible = false
+		end
+
+		row.hpTrack.Visible = false
+		row.hpLabel.Visible = false
+		row.atkLabel.Visible = false
 		return
 	end
 
@@ -1810,6 +1725,17 @@ end
 local function selectHero(uid)
 	clearHighlights()
 
+	-- Escolha de reviver pendente: o servidor já recusa mover/atacar com
+	-- qualquer herói enquanto isto está aberto (AuthorizeAction), mas sem o
+	-- backdrop de tela cheia que o modal antigo tinha, nada mais impedia o
+	-- clique de selecionar um herói vivo e pintar um destaque de
+	-- movimento/ataque que o servidor ia rejeitar em silêncio. A única jogada
+	-- válida agora é clicar no túmulo azul.
+	if state and state.pendingPromotion and #state.pendingPromotion.options > 0 then
+		selectedUid = nil
+		return
+	end
+
 	local hero = heroByUid(uid)
 	if not hero or not hero.isMine or not hero.isAlive then
 		selectedUid = nil
@@ -1830,7 +1756,16 @@ local function selectHero(uid)
 	for _, other in ipairs(state.heroes) do
 		if other.isAlive then
 			blocked[other.position] = true
-			if not other.isMine then
+
+			-- Shadow invisível: BLOQUEIA a casa, mas não vira alvo. As duas
+			-- coisas juntas são a furtividade — pintar a casa de vermelho como
+			-- "ataque possível" entregaria de graça exatamente o que o servidor
+			-- se deu ao trabalho de não contar (ver o desvio no Snapshot).
+			--
+			-- Ele fica de fora do enemyAt, então nenhum destaque nasce ali e o
+			-- clique não tem uid pra mandar: o jogador vê uma casa que não dá
+			-- pra usar, sem saber por quê.
+			if not other.isMine and not other.hidden then
 				enemyAt[other.position] = other.uid
 			end
 		elseif not other.graveDestroyed then
@@ -1930,6 +1865,16 @@ mouse.Button1Down:Connect(function()
 		return
 	end
 
+	-- Túmulo azul da Casa de Promoção: clique direto revive ali mesmo, sem
+	-- passar pela seleção normal de herói. Checado ANTES do resto porque uma
+	-- lápide também bate `heroUid and hero.isMine` lá embaixo — sem este desvio,
+	-- clicar nela cairia em `selectHero`, que descarta herói morto e não faz
+	-- nada.
+	if heroUid and promotionOptionUids[heroUid] then
+		GameAction:FireServer("resurrect", heroUid)
+		return
+	end
+
 	if heroUid then
 		local hero = heroByUid(heroUid)
 		if hero and hero.isMine then
@@ -1991,6 +1936,64 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
+-- ===== FURTIVIDADE: O MESMO BONECO, DUAS APARÊNCIAS =====
+-- Primeiro lugar do jogo em que um herói aparece diferente pra cada jogador. O
+-- servidor cria UM modelo e o Roblox replica igual pros dois clientes; o que
+-- torna isto possível é que transparência mexida NO CLIENTE não volta pro
+-- servidor nem chega ao adversário. Cada um pinta a sua cópia.
+--
+-- Isto é só a APARÊNCIA. Quem garante a regra é o servidor, que nem conta ao
+-- adversário que este herói existe (ver Snapshot) e recusa ataque contra
+-- invisível (ver AttackHero). Se este arquivo inteiro fosse adulterado, o
+-- máximo que se ganharia era ver um vulto que continua não sendo alvo.
+--
+-- `alpha`: 0 = sólido, 1 = sumido.
+local function paintHero(anchor, alpha)
+	local hidden = alpha >= 1
+
+	for _, child in ipairs(anchor:GetChildren()) do
+		if child:IsA("BasePart") then
+			-- anéis de time e o cilindro de placeholder
+			child.Transparency = alpha
+		elseif child:IsA("BillboardGui") then
+			-- O crachá de ATK/HP some junto com o dono. O balão de texto também:
+			-- número de dano flutuando sobre uma casa vazia é a denúncia mais
+			-- óbvia possível de que tem alguém ali.
+			if child.Name == "HeroInfo" or child.Name == "FloatingText" then
+				child.Enabled = not hidden
+			end
+
+			local image = child:FindFirstChildWhichIsA("ImageLabel")
+			if image then image.ImageTransparency = alpha end
+		end
+	end
+
+	-- Some do mouse junto com o desenho: sem isto o adversário acharia o
+	-- invisível varrendo o tabuleiro com o cursor e vendo o clique pegar em algo
+	-- que não está na tela.
+	anchor.CanQuery = not hidden
+end
+
+local function applyStealthVisuals(state)
+	local folder = state and state.heroesFolder
+	if not (folder and folder.Parent) then return end
+
+	for _, hero in ipairs(state.heroes or {}) do
+		local anchor = folder:FindFirstChild(hero.uid)
+		if anchor and anchor:IsA("BasePart") then
+			local alpha = 0
+			if hero.hidden then
+				alpha = 1
+			elseif hero.stealth then
+				-- o dono enxerga o próprio vulto, translúcido: precisa saber onde
+				-- ele está pra planejar a emboscada
+				alpha = GameConfig.STEALTH_OWNER_TRANSPARENCY
+			end
+			paintHero(anchor, alpha)
+		end
+	end
+end
+
 -- ===== ESTADO =====
 MatchUpdate.OnClientEvent:Connect(function(newState)
 	state = newState
@@ -2011,6 +2014,12 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	-- os heróis é justamente o que ensina que elas existem e que ainda não
 	-- valem. Só mexe em cor de casa, então não depende da GUI de batalha.
 	renderPromotionSquares(state)
+
+	-- ANTES do desvio por fase, como as casas de promoção e pelo mesmo motivo:
+	-- mexe só em objeto do Workspace, não depende da GUI de batalha, e um
+	-- invisível que reaparecesse durante a tela de fim de jogo entregaria a
+	-- posição dele numa revanche.
+	applyStealthVisuals(state)
 
 	if state.phase == "finished" then
 		gui.Enabled = true
@@ -2047,7 +2056,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 			PlayUiSound(state.winner == "win" and "Victory" or "Defeat")
 		end
 
-		hidePromotionChoice()
+		clearPromotionHighlights()
 		clearHighlights()
 		selectedUid = nil
 		return
@@ -2059,7 +2068,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		surrenderButton.Visible = false
 		closeConfirm()
 		hideTeams()
-		hidePromotionChoice()
+		clearPromotionHighlights()
 		clearHighlights()
 		selectedUid = nil
 		return
@@ -2077,7 +2086,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	renderCounterBadge(state.counterAttackUsed)
 	renderTeams(state)
 	-- renderPromotionSquares roda lá em cima, antes do desvio por fase
-	renderPromotionChoice(state)
+	renderPromotionResurrect(state)
 	resultPlayed = false
 	endTurnButton.Visible = true
 	endTurnButton.Active = state.isMyTurn

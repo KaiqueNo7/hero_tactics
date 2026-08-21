@@ -2,20 +2,30 @@
 	GameStartTrigger.server.lua
 	Script — ServerScriptService
 
-	Porta de entrada do lobby: dois pads (bot e PvP) e a fila de espera do PvP.
+	Porta de entrada do lobby: o pad de treino, o pad de PvP com a fila, e os onze
+	quadrados da campanha — um por confronto, com o retrato do herói em cima.
 
-	Várias partidas rodam ao mesmo tempo, cada uma na sua arena. O pad só recusa
-	quando (a) as arenas acabaram — MAX_SIMULTANEOUS_MATCHES — ou (b) o jogador
-	já está numa partida.
+	Os quadrados também respondem pelo painel CAMPANHA do menu (mesma ação
+	"fight"), então o jogador entra pisando ou clicando. O ESTADO deles é por
+	jogador, e uma Part tem uma cor só pra todo mundo: quem pinta cada cópia é o
+	cliente (LobbyMenu), pela tag Campaign.PAD_TAG.
+
+	Várias partidas rodam ao mesmo tempo, cada uma na sua arena. A entrada só
+	recusa quando (a) as arenas acabaram — MAX_SIMULTANEOUS_MATCHES — ou (b) o
+	jogador já está numa partida.
 ]]
 
 local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
+local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
+local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 
 local PlaceHero = ReplicatedStorage.Remotes.PlaceHero
@@ -105,8 +115,112 @@ local function DecoratePad(pad, color, title, subtitle)
 	subtitleLabel.Parent = billboard
 end
 
-DecoratePad(botPad, Color3.fromRGB(60, 170, 130), "JOGAR CONTRA O BOT", "pise para começar")
+-- O pad do bot continua sendo treino LIVRE (time sorteado, sem prêmio). Quem
+-- desbloqueia herói é o painel CAMPANHA, no menu do lobby.
+DecoratePad(botPad, Color3.fromRGB(60, 170, 130), "TREINO CONTRA O BOT", "campanha: menu CAMPANHA")
 DecoratePad(pvpPad, Color3.fromRGB(200, 70, 70), "JOGAR CONTRA JOGADOR", "pise para entrar na fila")
+
+-- ===================== QUADRADOS DA CAMPANHA =====================
+-- Um pad por confronto, com o retrato do herói e o nome flutuando em cima.
+--
+-- ADOTA o que já existir: se houver uma Part chamada FightPad_<id> em qualquer
+-- lugar do Workspace, ela é usada como está — posição, tamanho e material do
+-- jeito que foram deixados no Studio. Só quando não existe é que uma é criada,
+-- numa grade solta perto da neve. É o mesmo acordo dos pads de bot e PvP: o
+-- cenário é de quem edita o place, o script só liga o comportamento.
+--
+-- A COR e o CADEADO não saem daqui: o estado (aberto/trancado/concluído) é POR
+-- JOGADOR, e uma Part tem uma cor só pra todo mundo. Quem pinta é o cliente
+-- (LobbyMenu), na cópia dele, pela tag CollectionService abaixo.
+
+local FIGHT_PAD_SIZE = Vector3.new(10, 1, 11)
+local FIGHT_PAD_Y = 712.9 -- mesmo chão dos outros pads do lobby
+
+-- Grade padrão: 6 na fileira de trás, o resto na da frente, ao norte do lobby
+-- (lado da neve). Só vale pra pads que ainda não existem no place.
+local function DefaultFightPadPosition(index)
+	local row = index <= 6 and 0 or 1
+	local column = row == 0 and (index - 1) or (index - 7)
+	local perRow = row == 0 and 6 or (#Campaign.FIGHTS - 6)
+	local spread = 18
+
+	local x = (column - (perRow - 1) / 2) * spread
+	local z = -34 - row * 16
+	return Vector3.new(x, FIGHT_PAD_Y, z)
+end
+
+local function BuildFightBillboard(pad, data)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "FightLabel"
+	billboard.Size = UDim2.new(0, 120, 0, 150)
+	billboard.StudsOffset = Vector3.new(0, 7, 0)
+	billboard.AlwaysOnTop = true
+	billboard.MaxDistance = 160
+	billboard.Parent = pad
+
+	local portrait = Instance.new("ImageLabel")
+	portrait.Name = "Portrait"
+	portrait.Size = UDim2.new(1, 0, 0, 110)
+	portrait.BackgroundTransparency = 1
+	portrait.ScaleType = Enum.ScaleType.Fit
+	portrait.ResampleMode = Enum.ResamplerMode.Pixelated
+	portrait.Parent = billboard
+
+	local spriteId = HeroData.GetSpriteId(data)
+	if spriteId then
+		portrait.Image = spriteId
+		portrait.ImageRectSize = HeroData.GetFrameSize(data)
+		portrait.ImageRectOffset = HeroData.GetFrameOffset(data)
+	else
+		portrait.BackgroundTransparency = 0
+		portrait.BackgroundColor3 = data.color
+	end
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "HeroName"
+	nameLabel.Position = UDim2.new(0, 0, 0, 112)
+	nameLabel.Size = UDim2.new(1, 0, 0, 24)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = data.name:upper()
+	nameLabel.TextColor3 = Color3.new(1, 1, 1)
+	nameLabel.TextStrokeTransparency = 0.3
+	nameLabel.TextScaled = true
+	nameLabel.Font = Enum.Font.GothamBlack
+	nameLabel.Parent = billboard
+end
+
+-- Monta a Part (ou adota a que já existe) e devolve ela pronta. Quem liga o
+-- toque é o final do arquivo, junto dos outros pads — lá o OnFightRequested já
+-- existe.
+local function EnsureFightPad(fight, index)
+	local data = HeroData.GetById(fight.hero)
+	if not data then return nil end
+
+	local padName = "FightPad_" .. fight.hero
+	local pad = Workspace:FindFirstChild(padName, true)
+
+	if not pad then
+		pad = Instance.new("Part")
+		pad.Name = padName
+		pad.Size = FIGHT_PAD_SIZE
+		pad.Position = DefaultFightPadPosition(index)
+		pad.Parent = Workspace:FindFirstChild("Base") or Workspace
+	end
+
+	pad.Anchored = true
+	pad.CanCollide = true
+	pad.Material = Enum.Material.SmoothPlastic
+	-- cor de partida; o cliente repinta conforme o estado DELE
+	pad.Color = Color3.fromRGB(70, 90, 120)
+	pad:SetAttribute("FightHero", fight.hero)
+
+	if not pad:FindFirstChild("FightLabel") then
+		BuildFightBillboard(pad, data)
+	end
+
+	CollectionService:AddTag(pad, Campaign.PAD_TAG)
+	return pad
+end
 
 -- O cenário da arena é persistente: só constrói se ainda não existir no place.
 -- As arenas dos slots seguintes são clonadas sob demanda, na primeira partida
@@ -171,8 +285,14 @@ local function SetPvpSubtitle(text)
 end
 
 -- ===================== FILA =====================
-local function SendStatus(player, state, text)
-	LobbyStatus:FireClient(player, { state = state, text = text })
+-- `extra` leva campos soltos do estado (hoje só o confronto que o modal de
+-- confirmação está perguntando).
+local function SendStatus(player, state, text, extra)
+	local payload = { state = state, text = text }
+	if extra then
+		for key, value in pairs(extra) do payload[key] = value end
+	end
+	LobbyStatus:FireClient(player, payload)
 end
 
 local function RefreshQueue()
@@ -223,8 +343,67 @@ local function OnBotPadTouched(player)
 	end
 end
 
+-- ===================== CAMPANHA =====================
+-- Confronto liberado pra ESTE jogador, ou nil (já avisando o motivo). A conta é
+-- a mesma que o lobby faz pra desenhar o quadrado — e agora sobre a MESMA lista
+-- dos dois lados (ver HeroUnlockService.Push), senão a tela mostra cadeado e o
+-- servidor deixa passar.
+--
+-- Roda nas DUAS pontas do fluxo, de propósito: quando o jogador pisa no
+-- quadrado (pra decidir se pergunta) e de novo quando ele responde "Sim" (pra
+-- valer de verdade). Confiar na primeira seria confiar no cliente — um
+-- FireServer à mão pularia a escada inteira e pegaria o Golem no primeiro
+-- minuto.
+local function ResolveFight(player, heroId)
+	local fight = Campaign.GetFight(tonumber(heroId))
+	if not fight then return nil end
+
+	if Campaign.StateOf(HeroUnlockService.GetPlayableIds(player), fight) == "locked" then
+		SendStatus(player, "busy", "Vença os confrontos anteriores primeiro")
+		return nil
+	end
+
+	return fight
+end
+
+-- Pisou no quadrado: PERGUNTA, não entra. Quem entra é o "Sim" do modal, que
+-- volta pelo GameAction como um pedido normal.
+local function OnFightPadTouched(player, heroId)
+	local fight = ResolveFight(player, heroId)
+	if not fight then return end
+	if not CanStart(player) then return end
+
+	SendStatus(player, "confirm",
+		("Deseja enfrentar %s?"):format(HeroData.GetById(fight.hero).name),
+		{ fight = fight.hero })
+end
+
+local function OnFightRequested(player, heroId)
+	local fight = ResolveFight(player, heroId)
+	if not fight then return end
+	if not CanStart(player) then return end
+
+	LeaveQueue(player, false)
+	SendStatus(player, "loading", "Preparando a arena...")
+
+	-- confronto CONCLUÍDO continua entrando: é revanche/treino contra o mesmo
+	-- time, e o Unlock idempotente cuida de não premiar duas vezes
+	if not MatchManager.StartMatch(player, nil, nil, fight) then
+		SendStatus(player, "busy", "Todas as arenas estão ocupadas — tente em instantes")
+	end
+end
+
 local function OnPvpPadTouched(player)
 	if table.find(queue, player) then return end
+
+	-- O PvP abre com PVP_MIN_HEROES heróis na mão, quaisquer que sejam. Mesma
+	-- regra que o lobby usa pra apagar o botão — aqui é onde ela vale.
+	if not Campaign.PvpUnlocked(HeroUnlockService.GetPlayableIds(player)) then
+		SendStatus(player, "busy", ("Desbloqueie %d heróis para jogar online")
+			:format(Campaign.PVP_MIN_HEROES))
+		return
+	end
+
 	if not CanStart(player) then return end
 
 	table.insert(queue, player)
@@ -267,6 +446,15 @@ end
 ConnectPad(botPad, OnBotPadTouched)
 ConnectPad(pvpPad, OnPvpPadTouched)
 
+-- Os quadrados da campanha entram pelo MESMO caminho dos outros pads (debounce
+-- de toque incluído) — só que pisar abre a pergunta em vez de começar a
+-- partida. Quem recusa confronto trancado é o ResolveFight, nas duas pontas.
+for index, fight in ipairs(Campaign.FIGHTS) do
+	ConnectPad(EnsureFightPad(fight, index), function(player)
+		OnFightPadTouched(player, fight.hero)
+	end)
+end
+
 PlaceHero.OnServerEvent:Connect(function(player, dataId, hexId)
 	MatchManager.PlaceHero(player, dataId, hexId)
 end)
@@ -286,6 +474,8 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 		MatchManager.LeaveMatch(player)
 	elseif action == "cancelQueue" then
 		LeaveQueue(player, true)
+	elseif action == "fight" then
+		OnFightRequested(player, arg1)
 	end
 end)
 

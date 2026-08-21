@@ -8,6 +8,7 @@ local Workspace = game:GetService("Workspace")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local HeroData = require(ReplicatedStorage.Modules.HeroData)
 
 local BoardSpawner = {}
 
@@ -355,9 +356,68 @@ function BoardSpawner.EnsureArena(slot)
 	return clone
 end
 
+-- ===== O ADVERSÁRIO EM PÉ NO SLOT 2 =====
+-- Num confronto da campanha quem fica ali é o HERÓI que dá nome ao confronto,
+-- com o sprite dele: o jogador olha pro outro lado do campo e vê CONTRA QUEM
+-- está jogando, em vez do mesmo boneco genérico nos onze confrontos. O treino
+-- livre (sem confronto definido) continua com o boneco.
+--
+-- Sprite chapado, e não modelo 3D: é assim que os heróis já aparecem no
+-- tabuleiro, no draft e na ficha — um boneco 3D seria o único lugar do jogo em
+-- que o mesmo personagem tem outra forma.
+local STAND_SPRITE_HEIGHT = 11 -- studs; na mesma ordem de grandeza do boneco em PLAYER_STAND_SCALE
+local STAND_SPRITE_WIDTH = 8
+
+local function SpawnHeroStand(boardFolder, origin, data)
+	local anchor = Instance.new("Part")
+	anchor.Name = "BotDummy" -- mesmo nome do boneco: quem procurava, continua achando
+	anchor.Size = Vector3.new(1, 1, 1)
+	anchor.Transparency = 1
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CanQuery = false
+
+	local floorY = origin.Y - 0.5 -- mesmo piso do boneco, logo abaixo
+	anchor.Position = HexGrid.GetStandPosition(2, floorY + STAND_SPRITE_HEIGHT / 2, origin)
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "HeroStand"
+	-- Size em SCALE numa BillboardGui é medido em STUDS: o sprite tem tamanho de
+	-- mundo e encolhe com a distância como qualquer coisa do cenário, em vez de
+	-- ficar do mesmo tamanho na tela.
+	billboard.Size = UDim2.fromScale(STAND_SPRITE_WIDTH, STAND_SPRITE_HEIGHT)
+	billboard.AlwaysOnTop = false
+	billboard.Parent = anchor
+
+	local image = Instance.new("ImageLabel")
+	image.Size = UDim2.fromScale(1, 1)
+	image.BackgroundTransparency = 1
+	image.ScaleType = Enum.ScaleType.Fit
+	image.ResampleMode = Enum.ResamplerMode.Pixelated
+	image.Parent = billboard
+
+	local spriteId = HeroData.GetSpriteId(data)
+	if spriteId then
+		image.Image = spriteId
+		image.ImageRectSize = HeroData.GetFrameSize(data)
+		image.ImageRectOffset = HeroData.GetFrameOffset(data)
+	else
+		image.BackgroundTransparency = 0
+		image.BackgroundColor3 = data.color
+	end
+
+	anchor.Parent = boardFolder
+end
+
 -- Bonequin do bot no slot 2, ao lado do jogador. Em PvP o slot 2 é o outro
 -- jogador de verdade, então o bonequin nem é criado.
-local function SpawnBotDummy(boardFolder, origin)
+local function SpawnBotDummy(boardFolder, origin, botDataId)
+	local data = botDataId and HeroData.GetById(botDataId)
+	if data then
+		SpawnHeroStand(boardFolder, origin, data)
+		return
+	end
+
 	local template = ReplicatedStorage:FindFirstChild("BotDummyTemplate")
 	local source = template and template:FindFirstChildWhichIsA("Model")
 	if not source then return end
@@ -399,7 +459,9 @@ end
 -- o slot 2 é um jogador de verdade. Devolve o folder pra partida guardar — o
 -- cliente recebe essa referência no snapshot e nunca procura "o Board" pelo
 -- nome, que com várias partidas seria ambíguo.
-function BoardSpawner.SpawnBoard(slot, withBotDummy)
+-- `botDataId` é o herói do confronto da campanha: é ele que fica de pé do outro
+-- lado. Sem ele (treino livre, PvP) o slot 2 recebe o boneco genérico ou nada.
+function BoardSpawner.SpawnBoard(slot, withBotDummy, botDataId)
 	slot = slot or 1
 
 	local template = ReplicatedStorage:FindFirstChild("HexTile")
@@ -430,7 +492,7 @@ function BoardSpawner.SpawnBoard(slot, withBotDummy)
 
 	BoardSpawner.EnsureArena(slot)
 	if withBotDummy then
-		SpawnBotDummy(boardFolder, origin)
+		SpawnBotDummy(boardFolder, origin, botDataId)
 	end
 
 	return boardFolder

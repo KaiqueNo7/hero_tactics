@@ -42,15 +42,14 @@ Progression.MAX_LEVEL = 100
 
 -- ===== MOEDAS =====
 -- Duas torneiras: a vitória pinga pouco e toda hora, o nível jorra de vez em
--- quando. O herói custa exatamente um nível — subir de nível paga um herói
--- inteiro, e as vitórias avulsas encurtam a espera pelo seguinte.
+-- quando.
 --
--- Ficam aqui, e não no serviço, pelo mesmo motivo da curva de XP: é regra de
--- jogo, e a vitrine no lobby precisa ler o preço pra escrever no botão sem
--- duplicar o número.
+-- Moeda NÃO compra mais herói. O elenco inteiro sai da escada de confrontos
+-- contra bot (ReplicatedStorage.Modules.Campaign), e o HERO_COST que morava
+-- aqui saiu junto com a vitrine de compra. Saldo e nível continuam de pé pro
+-- apoio (Monetization) e pro que vier depois.
 Progression.WIN_COINS = 50
 Progression.LEVEL_UP_COINS = 500
-Progression.HERO_COST = 500
 
 -- Quanto uma partida paga em moedas. Só a vitória paga: o consolo da derrota e
 -- do empate é o XP, que sempre pinga.

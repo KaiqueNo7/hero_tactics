@@ -335,12 +335,12 @@ for index, data in ipairs(HeroData.CATALOG) do
 	takenCorner.CornerRadius = UDim.new(0, 8)
 	takenCorner.Parent = taken
 
-	-- Cadeado de herói não comprado. Fica ACIMA do "Taken" (ZIndex maior) porque
-	-- bloqueado e já escolhido pelo adversário podem valer ao mesmo tempo, e a
-	-- informação útil pro jogador é a que ele consegue mudar: comprar.
+	-- Cadeado de herói ainda não conquistado. Fica ACIMA do "Taken" (ZIndex
+	-- maior) porque bloqueado e já escolhido pelo adversário podem valer ao
+	-- mesmo tempo, e a informação útil pro jogador é a que ele consegue mudar.
 	--
-	-- Mostra o PREÇO, não mais um nível: o catálogo deixou de ser liberado por
-	-- nível e virou compra na vitrine do lobby.
+	-- Diz ONDE se conquista: já foi nível, depois foi preço em moedas, agora é
+	-- o confronto da campanha — que tem o nome do próprio herói.
 	local lock = Instance.new("TextLabel")
 	lock.Name = "Lock"
 	lock.Size = UDim2.fromScale(1, 1)
@@ -349,7 +349,7 @@ for index, data in ipairs(HeroData.CATALOG) do
 	lock.BorderSizePixel = 0
 	lock.Visible = false
 	lock.ZIndex = 6
-	lock.Text = ("%d\nMOEDAS"):format(HeroData.GetCost(data))
+	lock.Text = "VENÇA\n" .. data.name:upper()
 	lock.TextColor3 = Color3.fromRGB(255, 220, 150)
 	lock.TextSize = 13
 	lock.Font = Enum.Font.GothamBold

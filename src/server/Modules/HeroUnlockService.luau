@@ -2,24 +2,25 @@
 	HeroUnlockService.lua
 	ModuleScript — ServerScriptService/Modules/HeroUnlockService
 
-	Quais heróis cada jogador possui, e a compra que adiciona um à lista.
+	Quais heróis cada jogador possui, e a vitória que adiciona um à lista.
 
-	Antes o elenco era liberado por NÍVEL: o catálogo em HeroData carregava um
-	`unlock` e o ProgressionService dizia o nível. Agora o nível não tranca mais
-	ninguém — o catálogo inteiro está à venda desde a primeira partida, e o que
-	separa é a carteira. Quem começa de graça está marcado com `starter` no
-	catálogo; o resto custa Progression.HERO_COST.
+	Duas gerações ficaram pelo caminho: o elenco já foi liberado por NÍVEL e
+	depois por COMPRA com moedas. Agora é conquista — cada herói sai de derrotar
+	o bot correspondente (ReplicatedStorage.Modules.Campaign). O `starter` do
+	catálogo marca os três que já vêm no primeiro login.
 
 	O QUE MORA ONDE
-	A regra (quem é grátis, quanto custa) fica em ReplicatedStorage.Modules —
-	cliente e servidor leem a mesma coisa. A POSSE mora aqui e só aqui: é o
-	servidor que compra, grava e responde. O cliente manda "quero o herói 7" e
-	recebe de volta a lista atualizada; ele nunca informa preço nem posse.
+	A regra (quem é inicial, qual confronto paga qual herói) fica em
+	ReplicatedStorage.Modules — cliente e servidor leem a mesma coisa. A POSSE
+	mora aqui e só aqui, e é ela a FONTE ÚNICA da progressão inteira: bot
+	derrotado, grupo liberado e PvP liberado são todos DERIVADOS desta lista
+	(ver Campaign). Não existe segunda lista de bots vencidos pra gravar e
+	discordar desta. O cliente nunca informa posse; ele só recebe.
 
 	Mesma dependência de DataStore do ProgressionService e do CoinService: exige
 	"Enable Studio Access to API Services" (Game Settings > Security) pra
 	persistir dentro do Studio. Sem isso os pcall do SafeStore falham com warn e
-	a compra vale só pra sessão.
+	o desbloqueio vale só pra sessão.
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
@@ -28,8 +29,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
-local Progression = require(ReplicatedStorage.Modules.Progression)
-local CoinService = require(ServerScriptService.Modules.CoinService)
 local DevAccess = require(ServerScriptService.Modules.DevAccess)
 local SafeStore = require(ServerScriptService.Modules.SafeStore)
 
@@ -51,29 +50,30 @@ local function EnsureRemote(className, name)
 end
 
 local rosterUpdate = EnsureRemote("RemoteEvent", "RosterUpdate")
-local buyHero = EnsureRemote("RemoteEvent", "BuyHero")
 
 local HeroUnlockService = {}
 
--- [userId] = { [dataId] = true } — só os COMPRADOS. Os `starter` não entram
+-- [userId] = { [dataId] = true } — só os CONQUISTADOS. Os `starter` não entram
 -- aqui: eles saem do catálogo, e gravar o óbvio só faria a chave crescer à toa.
 local owned = {}
 
 -- ===================== LEITURA =====================
-local function BoughtSet(userId)
+local function WonSet(userId)
 	return owned[userId] or {}
 end
 
--- O que o jogador pode levar pra partida: os grátis + os comprados. `player`
--- (e não userId) porque o DevAccess decide pela pessoa, não pelo número.
+-- O que o jogador pode levar pra partida: os iniciais + os conquistados. É
+-- também o conjunto que o Campaign lê pra dizer o que está aberto, o que está
+-- concluído e se o PvP já abriu. `player` (e não userId) porque o DevAccess
+-- decide pela pessoa, não pelo número.
 function HeroUnlockService.GetPlayableIds(player)
 	local userId = player and player.UserId or nil
 	local fullCatalog = DevAccess.HasFullCatalog(player)
-	local bought = userId and BoughtSet(userId) or {}
+	local won = userId and WonSet(userId) or {}
 
 	local set = {}
 	for _, data in ipairs(HeroData.CATALOG) do
-		if fullCatalog or HeroData.IsStarter(data) or bought[data.id] then
+		if fullCatalog or HeroData.IsStarter(data) or won[data.id] then
 			set[data.id] = true
 		end
 	end
@@ -84,20 +84,27 @@ function HeroUnlockService.OwnsHero(player, dataId)
 	return HeroUnlockService.GetPlayableIds(player)[dataId] == true
 end
 
+
 -- ===================== ESTADO PRO CLIENTE =====================
--- Manda a lista de ids comprados. A vitrine junta isso com o catálogo (que ela
--- já tem) pra saber o que desenhar como "seu" e o que desenhar com preço.
--- `bought` é o id recém-comprado, pra UI poder comemorar; nil no estado inicial.
-local function Push(player, bought)
+-- Manda a lista de ids conquistados. O lobby junta isso com o catálogo (que ele
+-- já tem) e com o Campaign pra desenhar o elenco E os quadrados de confronto.
+-- `unlocked` é o id recém-conquistado, pra UI poder comemorar; nil no estado
+-- inicial.
+-- Manda o conjunto EFETIVO (GetPlayableIds), e não só os conquistados: é o
+-- mesmo que o servidor usa pra decidir se o confronto está trancado. Enquanto
+-- eram listas diferentes, o testador/dono via cadeado na tela e entrava assim
+-- mesmo — porque pro servidor o DevAccess já tinha liberado tudo, e o cliente
+-- não sabia disso. Uma lista só, os dois lados enxergam a mesma coisa.
+local function Push(player, unlocked)
 	if not player or not player.Parent then return end
 
 	local ids = {}
-	for dataId in pairs(BoughtSet(player.UserId)) do
+	for dataId in pairs(HeroUnlockService.GetPlayableIds(player)) do
 		table.insert(ids, dataId)
 	end
 	table.sort(ids)
 
-	rosterUpdate:FireClient(player, { owned = ids, bought = bought })
+	rosterUpdate:FireClient(player, { owned = ids, unlocked = unlocked })
 end
 
 local function Load(player)
@@ -122,10 +129,15 @@ local function Load(player)
 	Push(player)
 end
 
--- ===================== COMPRA =====================
--- Devolve (ok, motivo). O motivo é pro log do servidor; o cliente só vê a lista
--- nova (ou a ausência dela) e o saldo, que o CoinService empurra sozinho.
-function HeroUnlockService.Buy(player, dataId)
+-- ===================== CONQUISTA =====================
+-- Chamada pelo MatchManager quando o jogador vence um confronto da campanha.
+-- Devolve (ok, motivo); o motivo é pro log do servidor.
+--
+-- IDEMPOTENTE de propósito: "já possui" sai como recusa silenciosa e sem erro.
+-- É o que faz o estado "concluído" do quadrado valer — repetir um confronto já
+-- vencido (revanche, ou o mesmo evento de fim de partida chegando duas vezes)
+-- não regrava nada nem dispara comemoração de novo.
+function HeroUnlockService.Unlock(player, dataId)
 	if not player then return false, "sem jogador" end
 
 	dataId = tonumber(dataId)
@@ -133,22 +145,10 @@ function HeroUnlockService.Buy(player, dataId)
 
 	local data = HeroData.GetById(dataId)
 	if not data then return false, "herói inexistente" end
-
-	-- Grátis e já-comprado saem aqui: nos dois casos cobrar seria roubo, e o
-	-- jogador não perde nada por um clique repetido numa carta que já é dele.
 	if HeroData.IsStarter(data) then return false, "herói é inicial" end
 
 	local userId = player.UserId
-	if BoughtSet(userId)[dataId] then return false, "já possui" end
-
-	local cost = HeroData.GetCost(data)
-	if cost <= 0 then return false, "sem preço" end
-
-	-- A ORDEM IMPORTA: debita primeiro, grava a posse depois. Se invertesse e a
-	-- cobrança falhasse, o jogador ficaria com um herói de graça; assim, o pior
-	-- caso é o inverso — e o inverso é tratado logo abaixo, devolvendo a moeda.
-	local paid, saldo = CoinService.Spend(userId, cost)
-	if not paid then return false, "saldo insuficiente" end
+	if WonSet(userId)[dataId] then return false, "já possui" end
 
 	local set = owned[userId] or {}
 	set[dataId] = true
@@ -162,27 +162,20 @@ function HeroUnlockService.Buy(player, dataId)
 	end, ("gravação de heróis de %s"):format(player.Name))
 
 	if not stored then
-		-- Pagou e não gravou. Devolver a moeda é a única saída honesta: sem isso
-		-- o jogador perde 500 e não leva nada, e é o tipo de coisa que ele vai
-		-- lembrar. A posse NÃO entra no cache, pra sessão e disco não divergirem.
-		CoinService.Award(userId, cost)
-		warn(("HeroUnlockService: compra de %s por %s não gravou — moedas devolvidas.")
-			:format(data.name, player.Name))
+		-- Não gravou: o cache NÃO recebe o herói, pra sessão e disco não
+		-- divergirem. O jogador vence de novo e conquista de novo — melhor do
+		-- que ele achar que tem um herói que some no próximo login.
+		warn(("HeroUnlockService: %s venceu %s e o desbloqueio não gravou.")
+			:format(player.Name, data.name))
 		return false, "falha ao gravar"
 	end
 
 	owned[userId] = set
 	Push(player, dataId)
 
-	print(("HeroUnlockService: %s comprou %s por %d (saldo %s)."):format(
-		player.Name, data.name, cost, tostring(saldo)))
-
+	print(("HeroUnlockService: %s desbloqueou %s."):format(player.Name, data.name))
 	return true, nil
 end
-
-buyHero.OnServerEvent:Connect(function(player, dataId)
-	HeroUnlockService.Buy(player, dataId)
-end)
 
 Players.PlayerAdded:Connect(function(player)
 	task.spawn(Load, player)
