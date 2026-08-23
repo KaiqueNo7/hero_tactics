@@ -58,6 +58,9 @@
         },
         "SoundClient": {
           "$path": "src/client/SoundClient.client.luau"
+        },
+        "TutorialClient": {
+          "$path": "src/client/TutorialClient.client.luau"
         }
       }
     }

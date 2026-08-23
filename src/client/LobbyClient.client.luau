@@ -448,3 +448,100 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 		end)
 	end
 end)
+
+-- ===================== AMBIENTAÇÃO DA TRILHA =====================
+-- Cada ilha da trilha (ReplicatedStorage.Modules.LobbyZones) tem o próprio ar:
+-- a Clareira é clara e limpa, o Bosque Sombrio é roxo e denso, a Geleira é
+-- branca e estourada, a Forja é laranja e fechada. Atravessar a ponte troca a
+-- paleta, e é isso que faz cada trecho parecer um LUGAR e não mais um pedaço de
+-- chão com árvore diferente.
+--
+-- POR QUE NO CLIENTE. Lighting é global e replicado: se o servidor trocasse a
+-- paleta, o jogador parado no lobby veria o mundo escurecer porque OUTRA pessoa
+-- entrou no Bosque. Mexer aqui só afeta a tela de quem atravessou — mesma ideia
+-- do vulto do Nash e da cor dos quadrados por jogador.
+--
+-- Sair de todas as zonas devolve a paleta padrão chamando o MESMO LightingSetup
+-- que o servidor aplicou na entrada. Sem uma cópia dos valores do lobby aqui:
+-- eram duas listas pra discordar, e a segunda ficaria velha na primeira vez que
+-- alguém calibrasse o sol.
+local LobbyZones = require(ReplicatedStorage.Modules.LobbyZones)
+local Lighting = game:GetService("Lighting")
+
+local ZONE_FADE = TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+local ZONE_POLL = 0.4 -- andar não é um evento; olhar 2x por segundo basta e não pesa
+
+-- A paleta do lobby, lida UMA vez do que o servidor deixou pronto. Ler no
+-- primeiro uso e não no topo do arquivo é de propósito: este script sobe antes
+-- do Environment do servidor replicar, e a captura sairia com a Lighting de
+-- fábrica do place.
+local lobbyPalette = nil
+
+local function capture()
+	local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
+	return {
+		Ambient = Lighting.Ambient,
+		OutdoorAmbient = Lighting.OutdoorAmbient,
+		Brightness = Lighting.Brightness,
+		Atmosphere = atmosphere and {
+			Density = atmosphere.Density,
+			Haze = atmosphere.Haze,
+			Color = atmosphere.Color,
+			Decay = atmosphere.Decay,
+		} or nil,
+		Tint = Color3.new(1, 1, 1),
+	}
+end
+
+-- Correção de cor própria da trilha. Nome explícito e reaproveitada: criar uma
+-- por travessia deixava um rastro de efeitos mortos em Lighting.
+local function zoneTint()
+	local existing = Lighting:FindFirstChild("TrailTint")
+	if existing then return existing end
+
+	local tint = Instance.new("ColorCorrectionEffect")
+	tint.Name = "TrailTint"
+	tint.Parent = Lighting
+	return tint
+end
+
+local function applyPalette(palette)
+	TweenService:Create(Lighting, ZONE_FADE, {
+		Ambient = palette.Ambient,
+		OutdoorAmbient = palette.OutdoorAmbient,
+		Brightness = palette.Brightness,
+	}):Play()
+
+	local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
+	if atmosphere and palette.Atmosphere then
+		TweenService:Create(atmosphere, ZONE_FADE, palette.Atmosphere):Play()
+	end
+
+	TweenService:Create(zoneTint(), ZONE_FADE, { TintColor = palette.Tint }):Play()
+end
+
+local currentZoneId = nil
+
+task.spawn(function()
+	while true do
+		task.wait(ZONE_POLL)
+
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+
+		-- Durante a partida a câmera está na arena, longe de qualquer zona: sem
+		-- esta guarda, entrar em batalha "saía" da trilha e reacendia o lobby no
+		-- meio do tabuleiro.
+		if root and currentState == "idle" then
+			lobbyPalette = lobbyPalette or capture()
+
+			local zone = LobbyZones.ZoneAt(root.Position)
+			local id = zone and zone.id or nil
+
+			if id ~= currentZoneId then
+				currentZoneId = id
+				applyPalette(zone and zone.ambience or lobbyPalette)
+			end
+		end
+	end
+end)

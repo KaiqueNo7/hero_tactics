@@ -28,6 +28,7 @@ local HeroView = require(ServerScriptService.Modules.HeroView)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local LeaderboardService = require(ServerScriptService.Modules.LeaderboardService)
 local ProgressionService = require(ServerScriptService.Modules.ProgressionService)
+local HeroStatsService = require(ServerScriptService.Modules.HeroStatsService)
 -- O DevAccess saiu daqui junto com a liberação por nível: quem sabe quais heróis
 -- o jogador pode levar (inclusive as exceções de testador) é o HeroUnlockService.
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
@@ -278,6 +279,14 @@ end
 function KillHero(match, hero, attacker)
 	hero.isAlive = false
 
+	-- Abate contabilizado antes de qualquer skill correr: o onDie do Golem
+	-- estilhaça e cria heróis novos, e o onKill do Merlin pode matar de novo em
+	-- cascata. Somando depois, o crédito se perderia no meio dessa cadeia.
+	-- `attacker ~= hero` porque o Golem se "mata" ao estilhaçar.
+	if attacker and attacker ~= hero and attacker.stats then
+		attacker.stats.kills += 1
+	end
+
 	-- a casa NÃO é liberada: o túmulo continua ocupando o hex (Golem é a
 	-- exceção — ver noGrave abaixo, que libera a própria antes das invocações)
 	TriggerSkills(match, hero, "onDie")
@@ -419,6 +428,23 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 		if effect.type == "wound" then amount += 1 end
 	end
 
+	-- ===== TELEMETRIA =====
+	-- Aqui e só aqui. Todo dano do jogo passa por esta função — golpe, revide,
+	-- skill, veneno, Morte Súbita, maldição de túmulo — então instrumentar este
+	-- ponto pega tudo, e nenhuma skill nova precisa lembrar de somar nada.
+	--
+	-- Guarda o número CHEIO, não o descontado da vida que sobrava: é o mesmo que
+	-- o "-N" que sobe em cima do herói (HeroView.Say logo abaixo), e a tela de
+	-- resultado mentiria se dissesse 3 onde o jogador viu 12.
+	--
+	-- Sem autor = dano de ambiente. Ele conta como recebido (o tanque que
+	-- aguentou a Morte Súbita aguentou de verdade), mas não credita ninguém.
+	hero.stats.taken += amount
+	if attacker and attacker.stats then
+		attacker.stats.dealt += amount
+		attacker.stats.biggestHit = math.max(attacker.stats.biggestHit, amount)
+	end
+
 	hero.currentHp -= amount
 	HeroView.UpdateStats(hero)
 	-- Sem autor = dano de ambiente (veneno, morte súbita), e esse é mudo: o som
@@ -434,9 +460,23 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 	end
 end
 
-local function Heal(match, hero, amount)
+-- `source` é QUEM curou, e é opcional porque quase toda cura do jogo é em si
+-- mesmo (Ceos, Merlin, Nash). Só a Elaria cura outro herói, e é a única chamada
+-- que passa o parâmetro — ver Skills.health.
+local function Heal(match, hero, amount, source)
 	if not hero.isAlive then return end
+
+	local before = hero.currentHp
 	hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp)
+
+	-- o que REALMENTE entrou na barra, não o que foi oferecido: curar 2 em quem
+	-- está com 1 de dano faltando vale 1. Sem isso a Elaria pareceria melhor do
+	-- que é justamente nos turnos em que a cura dela se perde.
+	local healer = source or hero
+	if healer.stats then
+		healer.stats.healed += (hero.currentHp - before)
+	end
+
 	HeroView.UpdateStats(hero)
 	HeroView.PlayHealSound(hero)
 	HeroView.Say(hero, "+" .. tostring(amount), "heal")
@@ -608,7 +648,7 @@ local function BuildSkillApi(match)
 		ApplyDamage = function(hero, amount, attacker, isCounterAttack)
 			ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 		end,
-		Heal = function(hero, amount) Heal(match, hero, amount) end,
+		Heal = function(hero, amount, source) Heal(match, hero, amount, source) end,
 		IncreaseAttack = IncreaseAttack,
 		GetHeroAt = function(hexId) return GetHeroAt(match, hexId) end,
 		GetAlliesInRange = function(hero, range) return GetAlliesInRange(match, hero, range) end,
@@ -782,6 +822,17 @@ local function Snapshot(match, viewerId)
 			-- nil pra herói vivo, de propósito: não é "0 hits", é "não se aplica".
 			graveHitsLeft = (not hero.isAlive) and hero.graveHitsLeft or nil,
 			graveDestroyed = (not hero.isAlive) and hero.graveDestroyed or nil,
+
+			-- O que ele fez na partida. SÓ NO FIM: durante o jogo isto seria uma
+			-- tabela a mais por herói em cada um dos muitos snapshots por turno,
+			-- pra alimentar uma tela que ninguém está vendo ainda.
+			stats = (match.phase == "finished") and {
+				dealt = hero.stats.dealt,
+				taken = hero.stats.taken,
+				healed = hero.stats.healed,
+				kills = hero.stats.kills,
+				biggestHit = hero.stats.biggestHit,
+			} or nil,
 		})
 	end
 
@@ -874,8 +925,51 @@ local function Snapshot(match, viewerId)
 		pendingPromotion = { options = match.pendingPromotion.options }
 	end
 
+	-- ===== RESUMO DA PARTIDA =====
+	-- Do ponto de vista de QUEM RECEBE, como todo o resto do snapshot: cada
+	-- jogador vê o destaque do PRÓPRIO time. Num PvP os dois recebem resumos
+	-- diferentes da mesma partida, e é isso que se quer — "meu destaque" não é
+	-- uma pergunta com resposta global.
+	--
+	-- Destaque e escudo são separados porque medem coisas opostas e o mesmo
+	-- herói raramente é os dois: quem converte turno em dano e quem gastou a
+	-- vida pra que o outro pudesse. Empate desempata pelo abate, que é o dano
+	-- que valeu mais.
+	local summary = nil
+	if match.phase == "finished" then
+		local mvp, protector, biggest = nil, nil, nil
+
+		for _, hero in pairs(match.heroes) do
+			if hero.ownerId == viewerId then
+				local stats = hero.stats
+
+				if not mvp or stats.dealt > mvp.stats.dealt
+					or (stats.dealt == mvp.stats.dealt and stats.kills > mvp.stats.kills) then
+					mvp = hero
+				end
+				if not protector or stats.taken > protector.stats.taken then
+					protector = hero
+				end
+				if not biggest or stats.biggestHit > biggest.stats.biggestHit then
+					biggest = hero
+				end
+			end
+		end
+
+		summary = {
+			turns = match.turn and match.turn.number or 0,
+			-- uid e não o herói inteiro: o cliente já tem a ficha completa na
+			-- lista `heroes` acima e cruza pelo uid, como faz na Casa de Promoção
+			mvpUid = mvp and mvp.stats.dealt > 0 and mvp.uid or nil,
+			protectorUid = protector and protector.stats.taken > 0 and protector.uid or nil,
+			biggestHitUid = biggest and biggest.stats.biggestHit > 0 and biggest.uid or nil,
+			biggestHit = biggest and biggest.stats.biggestHit or 0,
+		}
+	end
+
 	return {
 		phase = match.phase,
+		summary = summary,
 		deployZone = viewerSide.zone,
 		placedCount = viewerSide.placedCount,
 		opponentPlacedCount = opponent.placedCount,
@@ -964,6 +1058,22 @@ function CreateHero(match, dataId, ownerId, hexId)
 		-- onTurnStart resolve. Nascer verdadeiro esconderia qualquer herói cujo
 		-- adversário ainda não tivesse sido posicionado.
 		stealth = false,
+
+		-- ===== O QUE ESTE HERÓI FEZ NA PARTIDA =====
+		-- Mora no próprio herói, e não numa tabela paralela em `match`, por dois
+		-- motivos: quem morre leva o histórico junto pro fim da partida (o
+		-- snapshot lê do mesmo lugar, vivo ou não), e quem volta pela Casa de
+		-- Promoção CONTINUA de onde parou, em vez de renascer zerado.
+		--
+		-- Alimentado em ApplyDamage, Heal e KillHero; lido no Snapshot (tela de
+		-- resultado) e no fim da partida (HeroStatsService).
+		stats = {
+			dealt = 0,
+			taken = 0,
+			healed = 0,
+			kills = 0,
+			biggestHit = 0,
+		},
 
 		-- Golem: true só depois do Estilhaçar (Skills.shatter/SuppressGrave).
 		-- Nasce false pra todo mundo — herói normal morre com lápide, do jeito
@@ -1176,6 +1286,68 @@ local function AwardFightHero(match, side)
 	task.spawn(HeroUnlockService.Unlock, side.player, match.fight.hero)
 end
 
+-- ===================== TELEMETRIA DE BALANCEAMENTO =====================
+-- Fecha a conta de cada herói da partida e entrega ao HeroStatsService, que
+-- acumula e grava em lote (ver o cabeçalho de lá — gravar na hora estouraria o
+-- limite de escrita da chave).
+--
+-- CONTA OS DOIS LADOS, inclusive o do bot. O herói é o objeto de estudo, não o
+-- jogador: se o Bramm perde sempre, perde tanto na mão de gente quanto na mão
+-- da IA, e jogar fora metade da amostra só deixaria o número mais lento de
+-- convergir. O que NÃO entra é quem já entrou: a chamada é uma só, no
+-- CheckGameOver, que só passa por aqui uma vez por partida.
+--
+-- `result` é do ponto de vista do LADO, então cada herói herda o resultado do
+-- dono. Empate marca os dois lados como "draw".
+--
+-- PARTIDA ABANDONADA NÃO ENTRA, e isso é de propósito. Desistência e queda de
+-- conexão passam por AwardAbandon/EndMatch, que não chamam o CheckGameOver —
+-- então nunca chegam aqui. Quem desiste no turno 2 não está dizendo nada sobre
+-- o herói que levou; contaria como derrota dele e sujaria justamente a
+-- estatística que se quer limpa. Se um dia isso virar interessante, entra como
+-- um campo PRÓPRIO (`abandoned`), nunca somado às derrotas.
+local function RecordHeroStats(match)
+	if match.statsRecorded then return end
+	match.statsRecorded = true
+
+	local entries = {}
+
+	for _, hero in pairs(match.heroes) do
+		local side = SideOf(match, hero.ownerId)
+		if side then
+			local result
+			if match.winner == "draw" then
+				result = "draws"
+			elseif match.winner == side.id then
+				result = "wins"
+			else
+				result = "losses"
+			end
+
+			-- Vários heróis com o MESMO dataId numa partida (os dois lados
+			-- levando Ceos, ou os pedaços do Golem) somam na mesma linha, que é
+			-- o que a telemetria por herói quer.
+			local row = entries[hero.dataId] or {
+				matches = 0, wins = 0, losses = 0, draws = 0,
+				damageDealt = 0, damageTaken = 0, healed = 0,
+				kills = 0, deaths = 0, survived = 0,
+			}
+
+			row.matches += 1
+			row[result] += 1
+			row.damageDealt += hero.stats.dealt
+			row.damageTaken += hero.stats.taken
+			row.healed += hero.stats.healed
+			row.kills += hero.stats.kills
+			if hero.isAlive then row.survived += 1 else row.deaths += 1 end
+
+			entries[hero.dataId] = row
+		end
+	end
+
+	HeroStatsService.AddMatch(entries)
+end
+
 -- ===================== FIM DE JOGO =====================
 function CheckGameOver(match)
 	local aliveOne = #LivingHeroesOf(match, match.sides[1].id)
@@ -1208,6 +1380,10 @@ function CheckGameOver(match)
 		-- e, se era confronto da campanha, entrega o herói do quadrado
 		AwardFightHero(match, winningSide)
 	end
+
+	-- Depois de match.winner estar definido nos dois ramos: é dele que sai
+	-- vitória/derrota/empate de cada herói.
+	RecordHeroStats(match)
 	return true
 end
 
@@ -1263,6 +1439,18 @@ end
 -- Elaria cola em ferido, o Karo procura a casa que pega três, o Nash guarda a
 -- sombra, os Taunt se metem na frente do carry, os ranged mantêm distância — e
 -- ninguém tenta bater através de um Taunt.
+--
+-- JOGADA COMBINADA. As três camadas pontuam um herói de cada vez, e por muito
+-- tempo foi só isso: cada peça buscava o melhor pra si e o time era a soma. Duas
+-- parcelas quebram esse isolamento sem inventar planejador de turno nenhum —
+-- elas medem o que uma peça faz PELAS OUTRAS, na moeda das camadas existentes:
+--   BuildLineBlocks (posição) o aliado atravessado na linha do Blade perde
+--                             pontos por ficar; sair da frente vira jogada
+--   PushValue       (ataque)  o empurrão do Bramm vale o dano extra que ele
+--                             monta pro Noctin, não só o próprio golpe
+-- Como o valor do combo entra no plano de QUEM MONTA, a ordem certa (montar
+-- antes de colher) sai sozinha do desempate por nota — o loop refaz tudo a cada
+-- ação e o beneficiado já encontra o tabuleiro pronto.
 
 local TAUNT = GameConfig.ABILITIES.TAUNT
 local RANGED = GameConfig.ABILITIES.RANGED
@@ -1476,20 +1664,142 @@ local function EstimateDamage(match, attacker, target, fromPos)
 	return damage
 end
 
--- Inimigos extras que o Blade acerta na mesma linha
+-- Inimigos extras que o Blade acerta na mesma linha.
+--
+-- Copia a regra do Skills.beyondFront de perto: SÓ ALIADO VIVO interrompe o
+-- corte. Casa vazia, túmulo e barril deixam o golpe passar. Antes esta conta
+-- parava na primeira casa que não tivesse inimigo — então um buraco no meio da
+-- fila escondia da IA o segundo alvo, e o Blade escolhia a linha errada por não
+-- enxergar o que a própria skill acerta.
 local function LineHits(match, attacker, target, fromPos)
 	if not HasSkill(attacker, "beyondFront") then return 0 end
 
 	local hits = 0
 	for _, hexId in ipairs(HexGrid.GetLineBeyond(fromPos, target.position, 2)) do
 		local other = GetHeroAt(match, hexId)
-		if other and other.isAlive and other.ownerId ~= attacker.ownerId then
+		if other and other.isAlive then
+			if other.ownerId == attacker.ownerId then break end
 			hits += 1
-		else
-			break
 		end
 	end
 	return hits
+end
+
+-- ===== SAIR DA FRENTE DO CORTE =====
+-- O beyondFront para no primeiro ALIADO vivo da linha. Quando é o próprio time
+-- que está atravessado, o golpe que pegaria três pega um — e a IA nunca via
+-- isso, porque cada herói pontuava só a própria casa e ninguém tinha motivo pra
+-- sair da frente de outro.
+--
+-- Este mapa é a ponte: casa -> quanto o TIME perde se alguém estiver parado
+-- nela. Entra como penalidade no ScorePosition, então o aliado atravessado
+-- passa a QUERER sair dali sozinho — sem plano de turno, sem coordenação
+-- explícita. Ele anda primeiro (o passo dele vale mais), o Blade corta depois:
+-- o loop do bot refaz o plano a cada ação e já encontra a linha limpa.
+--
+-- Vale pra qualquer portador de beyondFront e só enquanto ele ainda puder
+-- atacar neste turno — gasto o golpe, ninguém mais precisa se mexer por ele.
+local function BuildLineBlocks(match, ctx)
+	local blocks = nil
+
+	for _, cutter in ipairs(ctx.allies) do
+		if HasSkill(cutter, "beyondFront") and not match.turn.attacked[cutter.uid] then
+			-- de onde ele pode bater neste turno: a casa atual mais as que alcança
+			local positions = { [cutter.position] = true }
+			if not match.turn.moved[cutter.uid] then
+				for hexId in pairs(HexGrid.ComputeReach(cutter.position, MoveRangeOf(cutter), FreeChecker(match))) do
+					if IsFree(match, hexId) then positions[hexId] = true end
+				end
+			end
+
+			for fromPos in pairs(positions) do
+				for _, enemy in ipairs(ctx.enemies) do
+					if HexGrid.Distance(fromPos, enemy.position) <= cutter.attackRange then
+						-- procura UM aliado atravessado; o que vier DEPOIS dele é
+						-- exatamente o que se ganha tirando-o dali
+						local blockerHex, gain = nil, 0
+
+						for _, hexId in ipairs(HexGrid.GetLineBeyond(fromPos, enemy.position, 2)) do
+							local other = GetHeroAt(match, hexId)
+							-- o próprio cortador não conta: se ele vai bater de
+							-- `fromPos`, a casa velha dele já está vazia
+							if other and other.isAlive and other ~= cutter then
+								if other.ownerId == cutter.ownerId then
+									if blockerHex then break end -- dois aliados na fila: sem jeito
+									-- só vale pedir a casa a quem ainda pode andar
+									if match.turn.moved[other.uid] or match.turn.attacked[other.uid] then break end
+									blockerHex = hexId
+								elseif blockerHex then
+									gain += 1
+								end
+							end
+						end
+
+						if blockerHex and gain > 0 then
+							blocks = blocks or {}
+							-- mesmo peso do acerto extra no ScoreAttack: sair da
+							-- frente vale exatamente o que o corte ganha
+							blocks[blockerHex] = math.max(blocks[blockerHex] or 0, gain * 30)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return blocks
+end
+
+-- ===== O EMPURRÃO DO BRAMM É JOGADA DE EQUIPE =====
+-- A Fúria empurra o alvo uma casa pra trás. Pro Bramm isso não muda quase nada:
+-- o dano sai igual. Quem ganha é o TIME — inimigo empurrado pra longe dos
+-- companheiros fica ISOLADO, e isolado é o dobro de dano pro Noctin.
+--
+-- Sem esta conta a IA só via o número do golpe e o arremesso era acidente. Com
+-- ela o empurrão vale o que o ALIADO ganha depois, então o Bramm joga primeiro
+-- — não porque alguém escreveu "Bramm antes de Noctin", mas porque o plano dele
+-- passou a pontuar mais.
+--
+-- Genérico de propósito: quem colhe é qualquer herói com `aloneIsBetter`, e a
+-- conta continua valendo se o elenco crescer. O que ele NÃO faz é segurar o
+-- Noctin quando o Noctin já tem um abate na mão neste turno — e está certo:
+-- abate agora vale mais que combo depois.
+local function PushValue(match, attacker, target, fromPos, ctx, damage)
+	if not HasSkill(attacker, "rage") then return 0 end
+	if damage >= target.currentHp then return 0 end -- morre no golpe: não há empurrão
+
+	local behind = HexGrid.GetLineBeyond(fromPos, target.position, 1)[1]
+	-- bloqueado não empurra, vira +1 de dano (já contado no EstimateDamage)
+	if not (behind and IsFree(match, behind)) then return 0 end
+
+	-- isolar é o ponto: já sozinho, o empurrão não muda a conta de ninguém
+	if #AlliesAdjacentTo(match, target, target.position) == 0 then return 0 end
+	if #AlliesAdjacentTo(match, target, behind) > 0 then return 0 end
+
+	local score = 0
+	local remaining = target.currentHp - damage
+
+	for _, ally in ipairs(ctx.allies) do
+		local reach = match.turn.moved[ally.uid] and 0 or MoveRangeOf(ally)
+
+		if ally ~= attacker and HasSkill(ally, "aloneIsBetter")
+			and not match.turn.attacked[ally.uid]
+			and HexGrid.Distance(ally.position, behind) <= reach + ally.attackRange then
+			-- na mesma moeda do ScoreAttack (dano * 10): o combo vale o dano
+			-- EXTRA que o dobro rende, não o golpe inteiro
+			score += ally.attack * 10
+			if ally.attack * 2 >= remaining then
+				score += 110 -- e o arremesso virou abate
+			end
+		end
+	end
+
+	-- Dante e afins perdem o bônus de aliado adjacente ao ficar sozinhos
+	if HasSkill(target, "trustInTeam") and target.trustInTeamApplied then
+		score += 10
+	end
+
+	return score
 end
 
 -- Dano que voltaria em contra-ataque (0 se o alvo morre ou não alcança)
@@ -1505,11 +1815,14 @@ local function CounterDamage(attacker, target, fromPos, damage)
 	return incoming
 end
 
-local function ScoreAttack(match, attacker, target, fromPos)
+local function ScoreAttack(match, attacker, target, fromPos, ctx)
 	if TauntBlocks(match, attacker, target, fromPos) then return nil end
 
 	local damage = EstimateDamage(match, attacker, target, fromPos)
 	local score = damage * 10
+
+	-- o que este golpe deixa MONTADO pro resto do time (ver PushValue)
+	score += PushValue(match, attacker, target, fromPos, ctx, damage)
 
 	if damage >= target.currentHp then
 		score += 120 + ThreatScore(target) * 4 -- abater é sempre a prioridade
@@ -1679,6 +1992,13 @@ local function ScorePosition(match, hero, fromPos, ctx)
 		score -= (hero == ctx.carry) and 22 or 10
 	end
 
+	-- ===== NÃO FIQUE NA FRENTE DO CORTE =====
+	-- Ver BuildLineBlocks: parado nesta casa, este herói é o que impede o
+	-- beyondFront aliado de pegar a fila inteira. Sair vale o que o corte ganha.
+	if ctx.lineBlock then
+		score -= ctx.lineBlock[fromPos] or 0
+	end
+
 	-- ===== CASA DE PROMOÇÃO =====
 	-- Só o corredor escolhido no BuildBoardContext puxa por isto, e o valor
 	-- cresce conforme ele chega perto: é objetivo estratégico, não corrida cega
@@ -1733,7 +2053,7 @@ local function PlanFor(match, hero, ctx)
 			local reach = ReachFrom(match, hero, fromPos, hero.attackRange)
 			for _, enemy in ipairs(ctx.enemies) do
 				if reach[enemy.position] then
-					local attackScore = ScoreAttack(match, hero, enemy, fromPos)
+					local attackScore = ScoreAttack(match, hero, enemy, fromPos, ctx)
 					if attackScore and (not bestAttackScore or attackScore > bestAttackScore) then
 						bestTarget, bestAttackScore = enemy, attackScore
 					end
@@ -1833,6 +2153,9 @@ function BotPlayTurn(match, botId)
 			-- ou um passo muda tudo isso, e planejar o turno inteiro de uma vez
 			-- seria decidir com um tabuleiro que já não existe.
 			local ctx = BuildBoardContext(match, botId, enemies)
+			-- depende do alcance dos aliados, então sai depois do contexto e
+			-- é refeito junto com ele a cada ação
+			ctx.lineBlock = BuildLineBlocks(match, ctx)
 
 			local best = nil
 			for _, hero in ipairs(ctx.allies) do

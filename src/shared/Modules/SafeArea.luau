@@ -46,8 +46,6 @@ function SafeArea.Top()
 	return SafeArea.TopInset() + SafeArea.MARGIN
 end
 
--- Primeiro X livre DENTRO da faixa do topo. Só interessa a quem insiste em
--- desenhar lá em cima; abaixo da faixa a largura é toda nossa.
 function SafeArea.Left()
 	local ok, rect = pcall(function() return GuiService.TopbarInset end)
 	if ok and typeof(rect) == "Rect" then
@@ -56,15 +54,6 @@ function SafeArea.Left()
 	return SafeArea.MARGIN
 end
 
--- A faixa muda: o celular gira, o jogador entra em tela cheia, o Roblox liga um
--- botão novo — e, o caso que pegou este código de surpresa, ela nasce ESCONDIDA
--- atrás da tela de carregamento. Os scripts sobem nesse instante, medem zero e
--- desenham colado no topo; segundos depois a barra aparece por cima de tudo.
---
--- Por que vigiar em vez de escutar um sinal: quem muda nessa hora é o
--- GetGuiInset, que não tem sinal de mudança, e o TopbarInset (que tem) fica
--- parado. Reler dois números quatro vezes por segundo custa nada perto de
--- reposicionar a interface na mão em cada tela.
 local RunService = game:GetService("RunService")
 
 local watchers = {}

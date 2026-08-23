@@ -24,9 +24,17 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
+local LobbyZones = require(ReplicatedStorage.Modules.LobbyZones)
+local Tutorial = require(ReplicatedStorage.Modules.Tutorial)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
+local LobbyZoneBuilder = require(ServerScriptService.Modules.LobbyZoneBuilder)
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
+
+-- Mesmo motivo do Store.server acordar o CoinService: o TutorialService cria o
+-- remote e escuta entrada/saída de jogador ao ser exigido, e ninguém mais o
+-- exige — o tutorial é entre o cliente e o DataStore, a partida não sabe dele.
+local TutorialService = require(ServerScriptService.Modules.TutorialService)
 
 local PlaceHero = ReplicatedStorage.Remotes.PlaceHero
 local GameAction = ReplicatedStorage.Remotes.GameAction
@@ -136,31 +144,55 @@ DecoratePad(pvpPad, Color3.fromRGB(200, 70, 70), "JOGAR CONTRA JOGADOR", "pise p
 local FIGHT_PAD_SIZE = Vector3.new(10, 1, 11)
 local FIGHT_PAD_Y = 712.9 -- mesmo chão dos outros pads do lobby
 
--- Grade padrão: 6 na fileira de trás, o resto na da frente, ao norte do lobby
--- (lado da neve). Só vale pra pads que ainda não existem no place.
-local function DefaultFightPadPosition(index)
-	local row = index <= 6 and 0 or 1
-	local column = row == 0 and (index - 1) or (index - 7)
-	local perRow = row == 0 and 6 or (#Campaign.FIGHTS - 6)
-	local spread = 18
+-- Onde um pad NOVO nasce. Antes era uma grade solta ao norte do lobby; agora é
+-- o encaixe da zona do grupo dele, na trilha (ver LobbyZones). O
+-- LobbyZoneBuilder.PlacePads reposiciona todo mundo logo depois de qualquer
+-- jeito — isto só evita que o quadrado pisque no lugar errado no primeiro
+-- quadro, e serve de rede se a trilha estiver desligada.
+local function DefaultFightPadPosition(fight)
+	local zone = LobbyZones.ForGroup(fight.group)
+	if not zone then return Vector3.new(0, FIGHT_PAD_Y, -34) end
 
-	local x = (column - (perRow - 1) / 2) * spread
-	local z = -34 - row * 16
-	return Vector3.new(x, FIGHT_PAD_Y, z)
+	local peers = {}
+	for _, other in ipairs(Campaign.FIGHTS) do
+		if other.group == fight.group then table.insert(peers, other) end
+	end
+
+	local slots = LobbyZones.PadSlots(zone, #peers)
+	local index = table.find(peers, fight) or 1
+	return slots[index]
 end
 
+-- ===== TAMANHO DO RETRATO NO CENÁRIO =====
+-- O billboard é medido em PIXELS e o Roblox já o encolhe com a distância, então
+-- estes números são o tamanho NA TELA de quem está em cima do pad. No valor
+-- original (120x150) o herói cobria o quadrado inteiro e tapava o cenário atrás
+-- — de perto virava outdoor, e com onze pads o lobby ficava uma parede de
+-- retratos.
+--
+-- Um número só governa tudo: moldura, retrato, nome e altura do poste saem
+-- daqui multiplicados. Mexer na escala não desalinha nada — era isso que
+-- acontecia quando cada medida era ajustada na mão.
+local FIGHT_PORTRAIT_SCALE = 0.55
+
 local function BuildFightBillboard(pad, data)
+	local scale = FIGHT_PORTRAIT_SCALE
+	local portraitHeight = math.round(110 * scale)
+	local nameHeight = math.round(24 * scale)
+
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "FightLabel"
-	billboard.Size = UDim2.new(0, 120, 0, 150)
-	billboard.StudsOffset = Vector3.new(0, 7, 0)
+	billboard.Size = UDim2.new(0, math.round(120 * scale), 0, portraitHeight + nameHeight + 6)
+	-- o poste desce junto: retrato menor pendurado na mesma altura ficava
+	-- solto no ar, longe do quadrado que ele nomeia
+	billboard.StudsOffset = Vector3.new(0, 3 + 4 * scale, 0)
 	billboard.AlwaysOnTop = true
 	billboard.MaxDistance = 160
 	billboard.Parent = pad
 
 	local portrait = Instance.new("ImageLabel")
 	portrait.Name = "Portrait"
-	portrait.Size = UDim2.new(1, 0, 0, 110)
+	portrait.Size = UDim2.new(1, 0, 0, portraitHeight)
 	portrait.BackgroundTransparency = 1
 	portrait.ScaleType = Enum.ScaleType.Fit
 	portrait.ResampleMode = Enum.ResamplerMode.Pixelated
@@ -178,8 +210,8 @@ local function BuildFightBillboard(pad, data)
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "HeroName"
-	nameLabel.Position = UDim2.new(0, 0, 0, 112)
-	nameLabel.Size = UDim2.new(1, 0, 0, 24)
+	nameLabel.Position = UDim2.new(0, 0, 0, portraitHeight + 2)
+	nameLabel.Size = UDim2.new(1, 0, 0, nameHeight)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = data.name:upper()
 	nameLabel.TextColor3 = Color3.new(1, 1, 1)
@@ -192,7 +224,7 @@ end
 -- Monta a Part (ou adota a que já existe) e devolve ela pronta. Quem liga o
 -- toque é o final do arquivo, junto dos outros pads — lá o OnFightRequested já
 -- existe.
-local function EnsureFightPad(fight, index)
+local function EnsureFightPad(fight)
 	local data = HeroData.GetById(fight.hero)
 	if not data then return nil end
 
@@ -203,7 +235,7 @@ local function EnsureFightPad(fight, index)
 		pad = Instance.new("Part")
 		pad.Name = padName
 		pad.Size = FIGHT_PAD_SIZE
-		pad.Position = DefaultFightPadPosition(index)
+		pad.Position = DefaultFightPadPosition(fight)
 		pad.Parent = Workspace:FindFirstChild("Base") or Workspace
 	end
 
@@ -214,9 +246,17 @@ local function EnsureFightPad(fight, index)
 	pad.Color = Color3.fromRGB(70, 90, 120)
 	pad:SetAttribute("FightHero", fight.hero)
 
-	if not pad:FindFirstChild("FightLabel") then
-		BuildFightBillboard(pad, data)
-	end
+	-- REFAZ, não "cria se faltar". O billboard fica SALVO no place junto com o
+	-- pad adotado, então a versão antiga sobrevivia ao arquivo novo: mexer em
+	-- FIGHT_PORTRAIT_SCALE não mudava nada em lugar nenhum, e o único jeito de
+	-- ver o efeito era apagar os onze billboards na mão pelo Explorer.
+	--
+	-- Mesma política do LightingSetup e do LobbyZones: quem manda na aparência é
+	-- este arquivo. O pad em si continua sendo adotado como está — o que se
+	-- descarta aqui é só a plaquinha que o próprio script desenhou antes.
+	local existingLabel = pad:FindFirstChild("FightLabel")
+	if existingLabel then existingLabel:Destroy() end
+	BuildFightBillboard(pad, data)
 
 	CollectionService:AddTag(pad, Campaign.PAD_TAG)
 	return pad
@@ -226,6 +266,10 @@ end
 -- As arenas dos slots seguintes são clonadas sob demanda, na primeira partida
 -- que precisar delas.
 BoardSpawner.EnsureArena(1)
+
+-- A trilha de biomas do lobby. Vem ANTES dos quadrados: eles são posicionados
+-- em cima das ilhas, e ilha que não existe ainda não segura pad nenhum.
+LobbyZoneBuilder.BuildTerrain()
 
 -- ===================== RAIO DE SPAWN =====================
 -- Os 19 SpawnLocations do lobby chegam a ~30 studs do centro e o pad de PvP
@@ -449,17 +493,57 @@ ConnectPad(pvpPad, OnPvpPadTouched)
 -- Os quadrados da campanha entram pelo MESMO caminho dos outros pads (debounce
 -- de toque incluído) — só que pisar abre a pergunta em vez de começar a
 -- partida. Quem recusa confronto trancado é o ResolveFight, nas duas pontas.
-for index, fight in ipairs(Campaign.FIGHTS) do
-	ConnectPad(EnsureFightPad(fight, index), function(player)
+for _, fight in ipairs(Campaign.FIGHTS) do
+	ConnectPad(EnsureFightPad(fight), function(player)
 		OnFightPadTouched(player, fight.hero)
 	end)
 end
 
+-- Com todos os quadrados de pé, a trilha os leva pra ilha do grupo deles. Roda
+-- DEPOIS do laço acima de propósito — ver o comentário em
+-- LobbyZoneBuilder.BuildTerrain sobre as duas metades.
+LobbyZoneBuilder.PlacePads()
+
+-- ===================== LIMITE DE VAZÃO =====================
+-- O Roblox garante que o `player` que chega num OnServerEvent é autêntico, mas
+-- NÃO limita quantas vezes um cliente dispara o remote. Todo o resto da defesa
+-- deste jogo é validação de CONTEÚDO (é a sua vez? o herói é seu? a casa está
+-- livre?) e ela está completa — o que faltava era o custo de PERGUNTAR.
+--
+-- Um cliente adulterado num laço de FireServer("move", ...) é recusado em todas
+-- as tentativas, mas cada recusa ainda paga um MatchOfPlayer (varre as partidas
+-- ativas) e, quando a jogada é legítima, um FindPath. Milhares por segundo viram
+-- lag pros DOIS jogadores da partida — não é roubo, é negação de serviço.
+--
+-- Janela de 1 segundo, e o orçamento é por JOGADOR e compartilhado entre os
+-- remotes: um humano num jogo de turnos toca a tela 2 ou 3 vezes por segundo no
+-- pico, então ACTION_BUDGET dá uma folga de 4x sem nunca atrapalhar quem joga
+-- de verdade. Passou do teto, o excedente é descartado calado até a janela
+-- virar — sem kick e sem log por evento, que seriam DUAS formas novas de o
+-- atacante gastar recurso do servidor.
+local ACTION_BUDGET = 12
+local windowStart, actionCount = {}, {}
+
+local function AllowAction(player)
+	local now = os.clock()
+
+	if not windowStart[player] or now - windowStart[player] >= 1 then
+		windowStart[player] = now
+		actionCount[player] = 0
+	end
+
+	actionCount[player] += 1
+	return actionCount[player] <= ACTION_BUDGET
+end
+
 PlaceHero.OnServerEvent:Connect(function(player, dataId, hexId)
+	if not AllowAction(player) then return end
 	MatchManager.PlaceHero(player, dataId, hexId)
 end)
 
 GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
+	if not AllowAction(player) then return end
+
 	if action == "move" then
 		MatchManager.MoveHero(player, arg1, arg2)
 	elseif action == "attack" then
@@ -479,8 +563,22 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 	end
 end)
 
+-- "Já vi esta lição." Único remote do jogo em que a palavra do cliente vale sem
+-- conferência, e o TutorialService explica por quê no cabeçalho: forjar isto só
+-- pula o próprio tutorial de quem forjou. O MarkSeen valida o id contra a lista
+-- de lições, então lixo não chega ao DataStore.
+ReplicatedStorage.Remotes[Tutorial.REMOTE_NAME].OnServerEvent:Connect(function(player, lessonId)
+	if not AllowAction(player) then return end
+	TutorialService.MarkSeen(player, lessonId)
+end)
+
 Players.PlayerRemoving:Connect(function(player)
 	lastTouch[player] = nil
+	-- as duas tabelas do limite de vazão são indexadas por Player: sem esta
+	-- limpeza elas seguram uma referência ao jogador que saiu, e num servidor de
+	-- vida longa isso é vazamento de memória puro
+	windowStart[player] = nil
+	actionCount[player] = nil
 	LeaveQueue(player, false)
 	MatchManager.HandlePlayerLeft(player)
 end)

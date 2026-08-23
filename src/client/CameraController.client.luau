@@ -224,6 +224,47 @@ local function setDefaultControls(enabled)
 	end
 end
 
+-- ===== MOVIMENTO DE LOBBY =====
+-- Andar, pular e os controles na tela, do jeito que o place configurou. Separado
+-- do returnToLobby porque precisa valer TAMBÉM pra quem acabou de entrar e pra
+-- quem renasceu — dois casos em que o returnToLobby nem chega a rodar.
+local function applyLobbyMovement(character)
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	humanoid.WalkSpeed = LOBBY_WALK_SPEED
+	humanoid.JumpPower = LOBBY_JUMP_POWER
+	humanoid.JumpHeight = LOBBY_JUMP_HEIGHT
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
+
+	setDefaultControls(true)
+end
+
+-- ===== NASCER FORA DE PARTIDA JÁ VEM COM CONTROLE =====
+-- O `controlsEnabled` é estado de MÓDULO e a TouchGui é recriada a cada
+-- respawn: renascendo com a bandeira ainda em `false`, o applyTouchGui carimbava
+-- esse `false` na GUI nova e o thumbstick e o botão de pulo não voltavam mais.
+-- E não voltavam nem depois, porque o returnToLobby desiste na primeira linha
+-- quando `activated` já é false — que é justamente o caso de quem saiu da
+-- partida pela morte, pela desconexão, ou perdeu o MatchUpdate de "lobby".
+--
+-- A regra aqui é sem estado e vale ao contrário: TODO personagem que nasce fora
+-- de uma partida nasce com movimento e controles de lobby. Cobre a primeira
+-- entrada, o respawn e qualquer restauração que tenha se perdido no caminho.
+player.CharacterAdded:Connect(function(character)
+	if activated then return end
+	applyLobbyMovement(character)
+end)
+
+-- O script pode subir DEPOIS do personagem já existir (é o caso comum na
+-- primeira entrada), e aí o CharacterAdded acima nunca dispara pra ele.
+if player.Character then
+	task.defer(applyLobbyMovement, player.Character)
+end
+
 -- Altura em que o HumanoidRootPart descansa com o boneco de pé no chão.
 -- Precisa ser medida DEPOIS do ScaleTo: as partes crescem junto, e um número
 -- fixo (era "+3.5", cravado pra escala 1.6) enfia o boneco no piso ou o deixa
@@ -324,14 +365,8 @@ local function returnToLobby()
 
 		if humanoid then
 			camera.CameraSubject = humanoid
-			humanoid.WalkSpeed = LOBBY_WALK_SPEED
-			humanoid.JumpPower = LOBBY_JUMP_POWER
-			humanoid.JumpHeight = LOBBY_JUMP_HEIGHT
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
 		end
+		applyLobbyMovement(character)
 
 		if rootPart then
 			rootPart.CFrame = lobbyCFrame()

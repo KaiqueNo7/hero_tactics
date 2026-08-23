@@ -204,7 +204,11 @@ Skills.health = {
 	apply = function(ctx)
 		for _, ally in ipairs(ctx.api.GetAlliesInRange(ctx.hero, 1)) do
 			if ally.isAlive and ally.currentHp < ally.maxHp then
-				ctx.api.Heal(ally, 2)
+				-- terceiro parâmetro = quem curou. Única cura do jogo em outro
+				-- herói, e por isso a única que precisa dizer de quem é o crédito:
+				-- sem ele a telemetria daria a cura ao CURADO, e a coluna da
+				-- Elaria (a razão de ela existir) ficaria zerada.
+				ctx.api.Heal(ally, 2, ctx.hero)
 			end
 		end
 	end,

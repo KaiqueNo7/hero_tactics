@@ -7,9 +7,6 @@
 	tanto o servidor (HeroView) quanto o client (seleção) precisam disso.
 ]]
 
--- Caminho explícito, como todos os outros módulos do projeto fazem. `script.Parent`
--- funcionaria, mas amarra o módulo a estar dentro da pasta Modules — e quebra
--- calado se alguém clonar o HeroData pra outro lugar.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 
@@ -23,23 +20,6 @@ HeroData.FRAME_HEIGHT = 231
 HeroData.SHEET_COLUMNS = 3 -- largura do PNG dividida por 165
 
 -- ===== SPRITE PRÓPRIO (HERÓIS NOVOS) =====
--- A folha original tem 9 quadros e já está fechada. Herói criado depois vem no
--- próprio asset: `sprite` é o id e `spriteRect` recorta a arte dentro dele.
---
--- O recorte não é frescura: o PNG do Kor é 1024x1024 com o desenho ocupando
--- x 184..816 / y 24..1006 e o resto transparente. Sem recortar, o herói entraria
--- na moldura com a margem vazia junto — apareceria pequeno no tabuleiro e ainda
--- esticado, porque a moldura tem a proporção do quadro da folha (165x231) e o
--- asset é quadrado. O retângulo abaixo é o desenho centralizado e ampliado até a
--- MESMA proporção da folha, então ele entra em todo lugar (tabuleiro, carta do
--- draft, retrato da UI) sem distorcer e no mesmo tamanho aparente dos outros.
---
--- Para um herói novo: pegue a caixa da arte visível (o bounding box dos pixels
--- opacos), centre nela um retângulo de proporção 165/231 e cole aqui.
--- { offsetX, offsetY, largura, altura }
-
--- O Roblox exige o prefixo rbxassetid:// — número solto não carrega.
--- Sem `data` (ou com herói da folha) devolve a folha compartilhada.
 function HeroData.GetSpriteId(data)
 	local raw = (data and data.sprite) or HeroData.SPRITE_SHEET
 	local digits = tostring(raw):gsub("%D", "")
@@ -47,15 +27,24 @@ function HeroData.GetSpriteId(data)
 	return "rbxassetid://" .. digits
 end
 
+-- Vector2.new(0, 0) é o valor especial do Roblox pra "ImageRectSize/Offset
+-- desligados": o ImageLabel mostra o asset INTEIRO, sem recorte nenhum. É o que
+-- todo herói com `sprite` próprio usa até alguém medir a caixa real da arte
+-- (bounding box do canal alfa) e preencher `spriteRect` — a partir daí some o
+-- respiro transparente ao redor do desenho, sem precisar mexer em mais nada.
+local FULL_IMAGE = Vector2.new(0, 0)
+
 function HeroData.GetFrameSize(data)
 	local rect = data and data.spriteRect
 	if rect then return Vector2.new(rect[3], rect[4]) end
+	if data and data.sprite then return FULL_IMAGE end
 	return Vector2.new(HeroData.FRAME_WIDTH, HeroData.FRAME_HEIGHT)
 end
 
 function HeroData.GetFrameOffset(data)
 	local rect = data and data.spriteRect
 	if rect then return Vector2.new(rect[1], rect[2]) end
+	if data and data.sprite then return FULL_IMAGE end
 	return Vector2.new(
 		(data.frame % HeroData.SHEET_COLUMNS) * HeroData.FRAME_WIDTH,
 		math.floor(data.frame / HeroData.SHEET_COLUMNS) * HeroData.FRAME_HEIGHT
@@ -63,11 +52,6 @@ function HeroData.GetFrameOffset(data)
 end
 
 -- ===== ÍCONE DE VENENO (POR ESTÁGIO DE DURAÇÃO) =====
--- Tira horizontal com 3 células de largura IGUAL (uma por estágio de duração
--- restante, 3 = GameConfig.POISON_DURATION). Frame 1 = acabou de envenenar,
--- frame 3 = último turno do veneno. Recorte por ESCALA (não por pixel), então
--- não precisa saber a resolução exata do PNG — só as 3 células terem a mesma largura.
--- Vazio = sem sprite, usa o fallback de texto (☠).
 HeroData.POISON_SHEET = "81879107964596"
 HeroData.POISON_FRAME_COUNT = 3
 
@@ -83,49 +67,44 @@ function HeroData.GetPoisonStageIndex(durationRemaining)
 end
 
 -- ===== CATÁLOGO =====
+-- TODO herói tem `sprite` próprio agora — a folha compartilhada (SPRITE_SHEET)
+-- ficou só de fallback pro que não tiver o campo preenchido. `frame` continua
+-- na ficha dos 9 primeiros por registro histórico, mas não é mais lido: com
+-- `sprite` presente, GetFrameOffset/GetFrameSize nem olham pra ele (ver os dois
+-- acima).
+--
+-- SEM `spriteRect` ainda. Os assets são novos (trocados de uma vez, ver commit)
+-- e ninguém mediu a caixa real da arte de cada um — por ora todos caem no
+-- FULL_IMAGE (mostra o asset inteiro, sem recorte, redimensionado por
+-- ScaleType.Fit sem distorcer). Funciona certo em todo lugar; só não tem o
+-- enquadramento justo que um `spriteRect` medido dá. Preencher esse campo
+-- (bounding box do canal alfa, pixel a pixel) é a única coisa que falta pra
+-- cada herói ficar como Kor/Merlin/Karo/Nash/Golem ficavam antes da troca.
 HeroData.CATALOG = {
-	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true },
-	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 21, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90) },
-	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70) },
-	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165) },
-	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true },
-	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true },
-	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110) },
-	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200) },
-	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60) },
+	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true, sprite = "103777626179081" },
+	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 21, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90), sprite = "83438666758571" },
+	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), sprite = "86297729820057" },
+	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165), sprite = "78689016224804" },
+	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true, sprite = "87491587460698" },
+	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true, sprite = "73241918809413" },
+	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110), sprite = "132874639832051" },
+	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "109962159828363" },
+	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "111573115536769" },
 
-	-- Kor não tem `frame`: veio depois da folha e mora no próprio asset.
-	{
-		id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged",
+	{ id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged",
 		abilities = { "iceEffect", "iceStorm" },
 		color = Color3.fromRGB(150, 210, 240),
-		sprite = "83205436087529",
-		spriteRect = { 210, 143, 562, 787 },
-	},
+		sprite = "117920404008708" },
 
-	-- Merlin — o lobo. Também mora no próprio asset.
-	--
-	-- spriteRect é a CAIXA REAL da arte (bounding box do canal alfa, medido
-	-- pixel a pixel), sem forçar a proporção 165/231 da folha. A moldura do
-	-- tabuleiro usa ScaleType.Fit (ver HeroView.Create) especificamente pra
-	-- aceitar isso: uma caixa mais larga ou mais alta que a moldura encolhe
-	-- mantendo a PRÓPRIA proporção, com uma tira vazia de um lado, em vez de
-	-- cortar personagem ou esticar o desenho. Cortar ficha real foi o bug que
-	-- apareceu quando esse retângulo era forçado a bater 165/231 na unha.
-	{
-		id = 11, name = "Merlin", attack = 1, hp = 17, ability = nil,
+	{ id = 11, name = "Merlin", attack = 1, hp = 17, ability = nil,
 		abilities = { "bloodScent", "frenzy" },
 		color = Color3.fromRGB(150, 70, 60),
-		sprite = "135349806753304",
-		spriteRect = { 0, 3, 600, 813 },
-	},
+		sprite = "71212181858232" },
 
-	-- Karo — fogo e zona de controle.
 	{ id = 12, name = "Karo", attack = 2, hp = 19, ability = nil,
 		abilities = { "flamePath", "flameStrike", "flameFury" },
 		color = Color3.fromRGB(255, 140, 70),
-		sprite = "134098189560240",
-		spriteRect = { 4, 6, 589, 699 } },
+		sprite = "106340673286109" },
 
 	-- Nash — furtivo, emboscador (era "Shadow"; nome próprio, menos genérico).
 	-- Sprint é o que deixa a emboscada viável: sem ele, alcance de ataque 1
@@ -138,8 +117,7 @@ HeroData.CATALOG = {
 	{ id = 13, name = "Nash", attack = 2, hp = 14, ability = "Sprint",
 		abilities = { "stealth", "stealthHeal", "ambush" },
 		color = Color3.fromRGB(80, 90, 120),
-		sprite = "84667645314133",
-		spriteRect = { 5, 2, 605, 873 } },
+		sprite = "76145370522288" },
 
 	-- Golem — tank gigante que se parte em DOIS golens menores ao perder a
 	-- primeira vida. Taunt é o que faz o "tank" ser tank: sem ele, 40 de vida é
@@ -149,8 +127,7 @@ HeroData.CATALOG = {
 	{ id = 14, name = "Golem", attack = 1, hp = 40, ability = "Taunt",
 		abilities = { "shatter" },
 		color = Color3.fromRGB(140, 140, 140),
-		sprite = "120512252753630",
-		spriteRect = { 2, 7, 634, 663 } },
+		sprite = "130313080668622" },
 }
 
 -- ===== INVOCAÇÕES =====
@@ -168,10 +145,10 @@ HeroData.CATALOG = {
 -- O GetById abaixo procura nas duas tabelas, então tudo que já recebe um
 -- dataId (HeroView, MatchManager, o modal da UI) funciona sem saber que essa
 -- divisão existe. É só a ESCOLHA que enxerga o catálogo puro.
--- Mesmo sprite pros dois (medido do mesmo jeito que Karo/Nash/Golem acima) —
--- são o mesmo desenho de "golem pequeno", só a cor de fallback muda.
-local MINI_GOLEM_SPRITE = "88844199109622"
-local MINI_GOLEM_RECT = { 6, 2, 270, 352 }
+-- Mesmo sprite pros dois — são o mesmo desenho de "golem pequeno", só a cor de
+-- fallback muda. Sem spriteRect ainda, mesmo motivo do catálogo acima: asset
+-- novo, ninguém mediu a caixa real da arte — por ora cai no FULL_IMAGE.
+local MINI_GOLEM_SPRITE = "95023163743619"
 -- Visivelmente menor que o Golem grande (data.scale, lido em HeroView.Create).
 -- 0.6 e não menos: abaixo disso o crachá de ATK/HP (tamanho fixo, não escala)
 -- passa a competir demais com o próprio desenho.
@@ -181,12 +158,12 @@ HeroData.SUMMONS = {
 	{ id = 15, name = "Golem", attack = 2, hp = 5, ability = nil,
 		abilities = {},
 		color = Color3.fromRGB(120, 120, 120),
-		sprite = MINI_GOLEM_SPRITE, spriteRect = MINI_GOLEM_RECT, scale = MINI_GOLEM_SCALE },
+		sprite = MINI_GOLEM_SPRITE, scale = MINI_GOLEM_SCALE },
 
 	{ id = 16, name = "Golem", attack = 2, hp = 5, ability = nil,
 		abilities = {},
 		color = Color3.fromRGB(100, 100, 100),
-		sprite = MINI_GOLEM_SPRITE, spriteRect = MINI_GOLEM_RECT, scale = MINI_GOLEM_SCALE },
+		sprite = MINI_GOLEM_SPRITE, scale = MINI_GOLEM_SCALE },
 }
 
 -- ===== ELENCO INICIAL =====

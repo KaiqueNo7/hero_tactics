@@ -1318,26 +1318,70 @@ end)
 -- lobby. As colunas das laterais continuam sendo a leitura rápida da partida.
 
 -- ===== PAINEL DE FIM DE PARTIDA =====
+-- Deixou de ser só "Vitória/Derrota + dois botões". Agora é a prestação de
+-- contas da partida: os heróis QUE VOCÊ levou, um card cada, com o que fizeram.
+--
+-- CADA JOGADOR VÊ O PRÓPRIO TIME. Os números vêm do `summary` do snapshot, que
+-- o servidor já calcula por espectador (ver MatchManager.Snapshot) — o cliente
+-- não escolhe de quem é o destaque, só desenha o que chegou pra ele.
+--
+-- Painel maior (520x412) e centralizado. As colunas laterais continuam visíveis
+-- por trás dele: elas mostram QUEM sobrou dos dois lados, ele mostra o que cada
+-- um dos seus fez pra chegar lá.
+local RESULT_CARD_W = 148
+local RESULT_CARD_H = 176
+local RESULT_CARD_GAP = 10
+
 local resultPanel = Instance.new("Frame")
-resultPanel.Size = UDim2.new(0, 320, 0, 220)
-resultPanel.Position = UDim2.new(0.5, -160, 0.5, -110)
+resultPanel.Size = UDim2.new(0, 520, 0, 412)
+resultPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+resultPanel.Position = UDim2.new(0.5, 0, 0.5, 0)
 resultPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
-resultPanel.BackgroundTransparency = 0.1
+resultPanel.BackgroundTransparency = 0.06
 resultPanel.BorderSizePixel = 0
 resultPanel.Visible = false
 resultPanel.Parent = gui
 
 local resultCorner = Instance.new("UICorner")
-resultCorner.CornerRadius = UDim.new(0, 12)
+resultCorner.CornerRadius = UDim.new(0, 14)
 resultCorner.Parent = resultPanel
 
 local resultLabel = Instance.new("TextLabel")
-resultLabel.Size = UDim2.new(1, -20, 0, 60)
-resultLabel.Position = UDim2.new(0, 10, 0, 16)
+resultLabel.Size = UDim2.new(1, -20, 0, 46)
+resultLabel.Position = UDim2.new(0, 10, 0, 12)
 resultLabel.BackgroundTransparency = 1
 resultLabel.TextScaled = true
 resultLabel.Font = Enum.Font.GothamBold
 resultLabel.Parent = resultPanel
+
+-- Linha de contexto embaixo do título: quantos turnos e o maior golpe da
+-- partida. É o "resumo em uma frase" antes dos cards detalharem por herói.
+local resultSubtitle = Instance.new("TextLabel")
+resultSubtitle.Size = UDim2.new(1, -20, 0, 16)
+resultSubtitle.Position = UDim2.new(0, 10, 0, 58)
+resultSubtitle.BackgroundTransparency = 1
+resultSubtitle.TextColor3 = Color3.fromRGB(150, 160, 182)
+resultSubtitle.TextSize = 13
+resultSubtitle.Font = Enum.Font.Gotham
+resultSubtitle.Text = ""
+resultSubtitle.Parent = resultPanel
+
+-- Onde os cards dos heróis entram. Centralizado por UIListLayout horizontal, pra
+-- 3 heróis ou 4 (o Golem estilhaçado vira dois) caberem sem recalcular posição.
+local resultTeam = Instance.new("Frame")
+resultTeam.Name = "TeamRow"
+resultTeam.Position = UDim2.new(0, 0, 0, 82)
+resultTeam.Size = UDim2.new(1, 0, 0, RESULT_CARD_H)
+resultTeam.BackgroundTransparency = 1
+resultTeam.Parent = resultPanel
+
+local resultTeamLayout = Instance.new("UIListLayout")
+resultTeamLayout.FillDirection = Enum.FillDirection.Horizontal
+resultTeamLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+resultTeamLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+resultTeamLayout.Padding = UDim.new(0, RESULT_CARD_GAP)
+resultTeamLayout.SortOrder = Enum.SortOrder.LayoutOrder
+resultTeamLayout.Parent = resultTeam
 
 local replayButton = Instance.new("TextButton")
 replayButton.Size = UDim2.new(1, -60, 0, 46)
@@ -1376,6 +1420,194 @@ end)
 lobbyButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("leaveMatch")
 end)
+
+-- ===== CARDS DO FIM DE PARTIDA =====
+-- Uma faixa colorida no topo do card marca o papel daquele herói na partida.
+-- Um selo só por herói, na ordem abaixo: o destaque vence o escudo quando o
+-- mesmo herói fez as duas coisas, porque "quem mais bateu" é a leitura que o
+-- jogador procura primeiro.
+local RESULT_BADGES = {
+	{ key = "mvp",       text = "DESTAQUE",   color = Color3.fromRGB(240, 196, 84) },
+	{ key = "protector", text = "ESCUDO",     color = Color3.fromRGB(110, 180, 240) },
+	{ key = "biggest",   text = "MAIOR GOLPE", color = Color3.fromRGB(232, 122, 108) },
+}
+
+-- Rótulo à esquerda, número à direita. Duas TextLabels e não uma string
+-- formatada com espaços: alinhado por espaço, o número dança de card pra card
+-- (a fonte não é monoespaçada) e some da borda quando o card encolhe — e ele
+-- encolhe, porque o Golem estilhaçado enfia dois cards a mais na fileira.
+local function buildResultStat(parent, order, label, value, color)
+	local y = 112 + order * 15
+
+	local name = Instance.new("TextLabel")
+	name.Size = UDim2.new(0.62, -8, 0, 15)
+	name.Position = UDim2.new(0, 8, 0, y)
+	name.BackgroundTransparency = 1
+	name.TextXAlignment = Enum.TextXAlignment.Left
+	name.TextColor3 = color
+	name.TextSize = 11
+	name.TextTruncate = Enum.TextTruncate.AtEnd
+	name.Font = Enum.Font.Gotham
+	name.Text = label
+	name.Parent = parent
+
+	local number = Instance.new("TextLabel")
+	number.Size = UDim2.new(0.38, -8, 0, 15)
+	number.Position = UDim2.new(0.62, 0, 0, y)
+	number.BackgroundTransparency = 1
+	number.TextXAlignment = Enum.TextXAlignment.Right
+	number.TextColor3 = color
+	number.TextSize = 12
+	number.Font = Enum.Font.GothamBold
+	number.Text = tostring(value)
+	number.Parent = parent
+end
+
+local function buildResultCard(hero, badgeKey, order)
+	local data = HeroData.GetById(hero.dataId)
+	local stats = hero.stats or {}
+
+	local card = Instance.new("Frame")
+	card.Name = hero.uid
+	card.Size = UDim2.new(0, RESULT_CARD_W, 0, RESULT_CARD_H)
+	card.BackgroundColor3 = hero.isAlive and Color3.fromRGB(26, 30, 42) or DEAD_CARD
+	card.BorderSizePixel = 0
+	card.LayoutOrder = order
+	card.Parent = resultTeam
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = card
+
+	local badge = nil
+	for _, entry in ipairs(RESULT_BADGES) do
+		if entry.key == badgeKey then badge = entry break end
+	end
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = badge and badge.color or Color3.fromRGB(52, 58, 74)
+	stroke.Thickness = badge and 2 or 1
+	stroke.Parent = card
+
+	-- Faixa do selo. Ocupa espaço fixo mesmo sem selo (fica transparente), pra
+	-- os quatro cards alinharem os retratos na mesma altura.
+	local ribbon = Instance.new("TextLabel")
+	ribbon.Size = UDim2.new(1, 0, 0, 18)
+	ribbon.BackgroundColor3 = badge and badge.color or Color3.new(0, 0, 0)
+	ribbon.BackgroundTransparency = badge and 0.12 or 1
+	ribbon.BorderSizePixel = 0
+	ribbon.Text = badge and badge.text or ""
+	ribbon.TextColor3 = Color3.fromRGB(22, 22, 28)
+	ribbon.TextSize = 10
+	ribbon.Font = Enum.Font.GothamBlack
+	ribbon.Parent = card
+
+	local ribbonCorner = Instance.new("UICorner")
+	ribbonCorner.CornerRadius = UDim.new(0, 10)
+	ribbonCorner.Parent = ribbon
+
+	local portrait = Instance.new("ImageLabel")
+	portrait.Size = UDim2.new(0, 62, 0, 62)
+	portrait.Position = UDim2.new(0.5, -31, 0, 22)
+	portrait.BackgroundTransparency = 1
+	portrait.ScaleType = Enum.ScaleType.Fit
+	portrait.ResampleMode = Enum.ResamplerMode.Pixelated
+	portrait.Parent = card
+
+	local spriteId = spriteOf(data)
+	if spriteId and data then
+		portrait.Image = spriteId
+		portrait.ImageRectSize = HeroData.GetFrameSize(data)
+		portrait.ImageRectOffset = HeroData.GetFrameOffset(data)
+		-- morto fica dessaturado, mas reconhecível: mesma regra da coluna lateral
+		portrait.ImageColor3 = hero.isAlive and Color3.new(1, 1, 1) or DEAD_TINT
+	elseif data then
+		portrait.BackgroundTransparency = 0
+		portrait.BackgroundColor3 = data.color
+	end
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Position = UDim2.new(0, 4, 0, 86)
+	nameLabel.Size = UDim2.new(1, -8, 0, 16)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = hero.name or (data and data.name) or "?"
+	nameLabel.TextColor3 = hero.isAlive and Color3.fromRGB(232, 238, 250) or DEAD_TINT
+	nameLabel.TextSize = 14
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = card
+
+	local statusLabel = Instance.new("TextLabel")
+	statusLabel.Position = UDim2.new(0, 4, 0, 100)
+	statusLabel.Size = UDim2.new(1, -8, 0, 12)
+	statusLabel.BackgroundTransparency = 1
+	statusLabel.Text = hero.isAlive
+		and ("sobreviveu · %d/%d"):format(math.max(hero.currentHp, 0), hero.maxHp)
+		or "caiu em combate"
+	statusLabel.TextColor3 = hero.isAlive
+		and Color3.fromRGB(130, 200, 150) or Color3.fromRGB(198, 116, 116)
+	statusLabel.TextSize = 10
+	statusLabel.Font = Enum.Font.Gotham
+	statusLabel.Parent = card
+
+	buildResultStat(card, 0, "Dano causado", stats.dealt or 0, Color3.fromRGB(255, 186, 120))
+	buildResultStat(card, 1, "Dano recebido", stats.taken or 0, Color3.fromRGB(150, 190, 245))
+
+	-- A terceira linha muda conforme o herói: cura pra quem curou, abates pra
+	-- quem abateu, e o maior golpe pra quem só bateu. Três linhas fixas
+	-- deixariam dois zeros em quase todo card, e zero não informa nada — o
+	-- espaço vale mais mostrando o que aquele herói de fato fez.
+	if (stats.healed or 0) > 0 then
+		buildResultStat(card, 2, "Cura", stats.healed, Color3.fromRGB(150, 225, 175))
+	elseif (stats.kills or 0) > 0 then
+		buildResultStat(card, 2, "Abates", stats.kills, Color3.fromRGB(238, 170, 160))
+	elseif (stats.biggestHit or 0) > 0 then
+		buildResultStat(card, 2, "Maior golpe", stats.biggestHit, Color3.fromRGB(200, 200, 214))
+	end
+end
+
+-- Redesenha a fileira inteira. Os cards são descartáveis: a partida acabou, não
+-- há atualização incremental pra otimizar, e recriar é o que garante que uma
+-- revanche não herde os números da anterior.
+local function renderResultTeam(state)
+	for _, child in ipairs(resultTeam:GetChildren()) do
+		if child:IsA("Frame") then child:Destroy() end
+	end
+
+	local summary = state.summary or {}
+	local mine = {}
+	for _, hero in ipairs(state.heroes) do
+		if hero.isMine then table.insert(mine, hero) end
+	end
+
+	-- Ordem de card = ordem do uid, a MESMA da coluna lateral (o servidor já
+	-- ordena assim no Snapshot). Sem isso os cards embaralhariam a cada revanche
+	-- e o jogador perderia a referência de posição que já criou olhando a coluna.
+	table.sort(mine, function(a, b) return a.uid < b.uid end)
+
+	-- O painel acompanha a fileira. Normalmente são 3 cards, mas o Golem que
+	-- estilhaça vira três registros (o corpo e os dois pedaços) e o time passa a
+	-- cinco — numa largura fixa, os dois últimos ficavam pendurados pra fora.
+	local count = math.max(#mine, 1)
+	local width = 24 + count * RESULT_CARD_W + (count - 1) * RESULT_CARD_GAP
+	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412)
+
+	for index, hero in ipairs(mine) do
+		local badgeKey = nil
+		if hero.uid == summary.mvpUid then badgeKey = "mvp"
+		elseif hero.uid == summary.protectorUid then badgeKey = "protector"
+		elseif hero.uid == summary.biggestHitUid then badgeKey = "biggest" end
+
+		buildResultCard(hero, badgeKey, index)
+	end
+
+	if summary.turns then
+		local biggest = (summary.biggestHit or 0) > 0
+			and ("   ·   maior golpe: %d de dano"):format(summary.biggestHit) or ""
+		resultSubtitle.Text = ("%d turnos%s"):format(summary.turns, biggest)
+	else
+		resultSubtitle.Text = ""
+	end
+end
 
 -- Implementacao do heroByUid declarado la em cima. Em Lua uma funcao so enxerga
 -- os locais declarados ANTES dela, e este e usado tanto pela linha de mira
@@ -2038,6 +2270,10 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		-- as colunas continuam: no fim da partida elas viram o placar do que
 		-- sobrou de cada lado, e o painel de resultado fica no meio, sem tapar
 		renderTeams(state)
+
+		-- o time DELE, com o que cada herói fez. O servidor já mandou o resumo
+		-- do ponto de vista deste espectador (ver Snapshot.summary).
+		renderResultTeam(state)
 
 		-- o servidor já manda o resultado do ponto de vista de quem recebe
 		if state.winner == "draw" then

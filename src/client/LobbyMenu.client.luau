@@ -342,12 +342,18 @@ local PAD_COLOR = {
 
 -- Cadeado desenhado com duas Frames (corpo + arco), pelo mesmo motivo do X do
 -- botão de fechar: o glifo 🔒 não existe nas fontes do Roblox e sai quadradinho.
+-- Medidas em ESCALA, não em pixel. O retrato do pad é dimensionado no servidor
+-- (GameStartTrigger.FIGHT_PORTRAIT_SCALE) e o cadeado mora dentro do MESMO
+-- billboard: em pixel fixo ele parava de caber assim que o retrato encolhia —
+-- 34px de cadeado num billboard de 66px de largura é metade da moldura. Assim
+-- ele acompanha qualquer escala futura sozinho.
 local function buildPadLock(parent)
 	local holder = Instance.new("Frame")
 	holder.Name = "Lock"
 	holder.AnchorPoint = Vector2.new(0.5, 0.5)
-	holder.Position = UDim2.new(0.5, 0, 0, 55)
-	holder.Size = UDim2.new(0, 34, 0, 40)
+	holder.Position = UDim2.new(0.5, 0, 0.38, 0) -- meio do retrato, acima do nome
+	holder.Size = UDim2.new(0.42, 0, 0.42, 0)
+	holder.SizeConstraint = Enum.SizeConstraint.RelativeXX -- quadrado, não achatado
 	holder.BackgroundTransparency = 1
 	holder.Visible = false
 	holder.Parent = parent
@@ -356,17 +362,17 @@ local function buildPadLock(parent)
 	shackle.Name = "Shackle"
 	shackle.AnchorPoint = Vector2.new(0.5, 0)
 	shackle.Position = UDim2.new(0.5, 0, 0, 0)
-	shackle.Size = UDim2.new(0, 20, 0, 22)
+	shackle.Size = UDim2.new(0.6, 0, 0.55, 0)
 	shackle.BackgroundTransparency = 1
 	shackle.Parent = holder
 	corner(shackle, 10)
-	stroke(shackle, Color3.fromRGB(226, 232, 245), 4, 0)
+	stroke(shackle, Color3.fromRGB(226, 232, 245), 3, 0)
 
 	local body = Instance.new("Frame")
 	body.Name = "Body"
 	body.AnchorPoint = Vector2.new(0.5, 1)
 	body.Position = UDim2.new(0.5, 0, 1, 0)
-	body.Size = UDim2.new(0, 34, 0, 26)
+	body.Size = UDim2.new(1, 0, 0.65, 0)
 	body.BackgroundColor3 = Color3.fromRGB(226, 232, 245)
 	body.BorderSizePixel = 0
 	body.Parent = holder
