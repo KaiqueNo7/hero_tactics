@@ -71,11 +71,21 @@ tufo de cabelo castanho escapando do boné, postura ereta de lutador de rua. Sem
 luta com os punhos (habilidade `firstPunch`). Cor de assinatura: terracota
 `RGB(205,92,70)`.
 
-### 2. Vic — planta venenosa
-Corpo verde folhagem, capuz feito de folhas largas cobrindo a cabeça inteira (rosto
-pouco visível, sombreado), roupa por baixo num roxo/púrpura contrastante, mãos
-recolhidas nas mangas-folha. Sem arma visível — o próprio corpo é a arma (veneno no
-toque, `poisonAttack`). Cor de assinatura: verde `RGB(120,180,90)`.
+### 2. Vic — gorgona venenosa (redesign, Era 2 — ver nota abaixo)
+Substituiu o design antigo (planta de capuz de folhas). Mulher-serpente: da cintura
+pra baixo é cauda de cobra verde com listras amarelo-esverdeadas na barriga; da
+cintura pra cima veste um robe/quimono verde de manga comprida com friso dourado e
+faixa dourada na cintura, gola em V que cobre o tronco (versão "menos sexualizada"
+do primeiro rascunho, que tinha o torso à mostra). Cabelo é um emaranhado de cobras
+vivas (4, olhos vermelhos), tiara dourada com gema verde na testa, brincos longos
+dourados, pele morena-clara, olhos verdes, expressão séria/calma. Sem arma — veneno
+é o próprio corpo (`poisonAttack`). Cor de assinatura: verde `RGB(120,180,90)`.
+
+**Nota de inconsistência:** esse redesign saiu no estilo Era 2 (sombreado em
+gradiente, contorno fino, textura de escama/tecido detalhada) — não no Era 1 que
+ficou definido como alvo pro resto do elenco. Sinalizando, não travando: se quiser
+manter a Vic assim mesmo destoando, ou regerar ela em Era 1 depois, os dois caminhos
+ficam abertos.
 
 ### 3. Mineiro — sortudo
 Capacete de mineração amarelo com lanterna frontal, barba ruiva cheia, jaqueta jeans
