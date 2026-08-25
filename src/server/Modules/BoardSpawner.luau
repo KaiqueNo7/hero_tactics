@@ -9,6 +9,7 @@ local Workspace = game:GetService("Workspace")
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
+local LightingSetup = require(script.Parent.LightingSetup)
 
 local BoardSpawner = {}
 
@@ -16,7 +17,6 @@ local BoardSpawner = {}
 local HEX_RADIUS = 6
 local TILE_FILL = 0.94
 local TILE_THICKNESS = 1
-local ARENA_OFFSET = GameConfig.ArenaOrigin(1)
 
 -- O cenário mora fora do folder Board (que é destruído a cada partida) e
 -- PERSISTE no place. Assim dá pra ver e personalizar a taverna no Studio sem
@@ -38,8 +38,8 @@ end
 
 -- ===== CONFIG =====
 local POINTY_TO_FLAT_ROTATION = 30
-local COLOR_A = Color3.fromRGB(120, 170, 220)
-local COLOR_B = Color3.fromRGB(90, 130, 180)
+local COLOR_A = GameConfig.HEX_COLOR_A
+local COLOR_B = GameConfig.HEX_COLOR_B
 
 local function ApplyColor(instance, color)
 	if instance:IsA("BasePart") then
@@ -332,28 +332,33 @@ function BoardSpawner.EnsureArena(slot)
 	HexGrid.Generate()
 
 	local name = ArenaFolderName(slot)
-	local existing = Workspace:FindFirstChild(name)
-	if existing then return existing end
+	local folder = Workspace:FindFirstChild(name)
 
-	if slot <= 1 then
-		return BuildTavern(GameConfig.ArenaOrigin(1))
-	end
+	if not folder then
+		if slot <= 1 then
+			folder = BuildTavern(GameConfig.ArenaOrigin(1))
+		else
+			-- clona a arena original em vez de reconstruir: o layout tem que ser
+			-- idêntico, inclusive o que foi editado à mão no Studio
+			local source = BoardSpawner.EnsureArena(1)
+			local delta = GameConfig.ArenaOrigin(slot) - GameConfig.ArenaOrigin(1)
 
-	-- clona a arena original em vez de reconstruir: o layout tem que ser
-	-- idêntico, inclusive o que foi editado à mão no Studio
-	local source = BoardSpawner.EnsureArena(1)
-	local delta = GameConfig.ArenaOrigin(slot) - GameConfig.ArenaOrigin(1)
-
-	local clone = source:Clone()
-	clone.Name = name
-	for _, descendant in ipairs(clone:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			descendant.CFrame = descendant.CFrame + delta
+			folder = source:Clone()
+			folder.Name = name
+			for _, descendant in ipairs(folder:GetDescendants()) do
+				if descendant:IsA("BasePart") then
+					descendant.CFrame = descendant.CFrame + delta
+				end
+			end
+			folder.Parent = Workspace
 		end
 	end
-	clone.Parent = Workspace
 
-	return clone
+	-- Fora do `if`: a arena montada à mão no place chega aqui pelo caminho do
+	-- `FindFirstChild` e precisa de luz igual. O LightArena é idempotente.
+	LightingSetup.LightArena(folder)
+
+	return folder
 end
 
 -- ===== O ADVERSÁRIO EM PÉ NO SLOT 2 =====
@@ -455,6 +460,27 @@ local function SpawnBotDummy(boardFolder, origin, botDataId)
 	dummy.Parent = boardFolder
 end
 
+-- A taverna é editada à mão no Studio; GameConfig.ARENA_ORIGIN é um número
+-- escrito à mão. Quando alguém move uma e esquece a outra, a partida roda
+-- inteira só que o tabuleiro nasce no vazio, longe do cenário — sintoma que
+-- custa caro pra diagnosticar e é trivial de detectar aqui.
+local function WarnIfOffTheFloor(arena, origin)
+	local floor = arena and arena:FindFirstChild("Floor", true)
+	if not floor or not floor:IsA("BasePart") then return end
+
+	local center = HexGrid.GetBoardCenter(origin)
+	local delta = floor.Position - center
+
+	if math.abs(delta.X) > floor.Size.X / 2
+		or math.abs(delta.Z) > floor.Size.Z / 2
+		or math.abs(center.Y - (floor.Position.Y + floor.Size.Y / 2)) > 2
+	then
+		warn(("BoardSpawner: o tabuleiro (centro %s) não cai sobre o piso da %s (%s). "
+			.. "Ajuste GameConfig.ARENA_ORIGIN: ele é a origem, e o centro fica em origem + (18, 0, 25.98).")
+			:format(tostring(center), arena.Name, tostring(floor.Position)))
+	end
+end
+
 -- Monta o tabuleiro do slot pedido. withBotDummy = false nas partidas PvP, onde
 -- o slot 2 é um jogador de verdade. Devolve o folder pra partida guardar — o
 -- cliente recebe essa referência no snapshot e nunca procura "o Board" pelo
@@ -490,7 +516,9 @@ function BoardSpawner.SpawnBoard(slot, withBotDummy, botDataId)
 		CreateHexTile(template, worldPos, color, hex.id).Parent = boardFolder
 	end
 
-	BoardSpawner.EnsureArena(slot)
+	local arena = BoardSpawner.EnsureArena(slot)
+	WarnIfOffTheFloor(arena, origin)
+
 	if withBotDummy then
 		SpawnBotDummy(boardFolder, origin, botDataId)
 	end

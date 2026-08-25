@@ -23,6 +23,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
 local Tutorial = require(ReplicatedStorage.Modules.Tutorial)
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local TutorialUpdate = ReplicatedStorage.Remotes:WaitForChild(Tutorial.REMOTE_NAME)
@@ -106,7 +107,7 @@ textLabel.TextYAlignment = Enum.TextYAlignment.Top
 textLabel.TextWrapped = true
 textLabel.TextColor3 = Color3.fromRGB(214, 222, 238)
 textLabel.TextSize = 14
-textLabel.Font = Enum.Font.Gotham
+textLabel.Font = GameConfig.UI_FONT_BODY
 textLabel.Text = ""
 textLabel.Parent = card
 

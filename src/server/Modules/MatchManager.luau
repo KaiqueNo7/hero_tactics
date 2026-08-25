@@ -1451,11 +1451,17 @@ function BotPlayTurn(match, botId)
 				MatchManager.AttackHero(nil, best.hero.uid, best.target.uid, match)
 				task.wait(BOT_ACTION_DELAY)
 			else
-				-- Sem inimigo no alcance: se sobrou um barril ao lado, o golpe
-				-- parado vira cura ou ataque extra em vez de nada.
-				local barrel = best.hero.isAlive and BotBrain.BarrelInReach(match, best.hero) or nil
-				if barrel then
-					MatchManager.AttackHero(nil, best.hero.uid, barrel.uid, match)
+				-- Sem inimigo no alcance, o golpe parado vira alguma coisa em vez
+				-- de nada. LÁPIDE ANTES DE BARRIL: o barril é um bônus pra quem
+				-- bate, a lápide é a única forma de tirar do adversário a Casa
+				-- de Promoção — negar um herói inteiro voltando ao tabuleiro
+				-- vale mais que qualquer prêmio de caixote.
+				local extra = best.hero.isAlive
+					and (BotBrain.GraveInReach(match, best.hero, botId)
+						or BotBrain.BarrelInReach(match, best.hero))
+					or nil
+				if extra then
+					MatchManager.AttackHero(nil, best.hero.uid, extra.uid, match)
 					task.wait(BOT_ACTION_DELAY)
 				end
 

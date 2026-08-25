@@ -32,8 +32,8 @@ local BARREL_COLOR = Color3.fromRGB(232, 172, 74) -- alvo neutro: nem inimigo, n
 local GRAVE_ATTACK_COLOR = Color3.fromRGB(178, 140, 210)
 
 -- cor base caso o attribute BaseColor não exista (defensivo)
-local COLOR_A = Color3.fromRGB(120, 170, 220)
-local COLOR_B = Color3.fromRGB(90, 130, 180)
+local COLOR_A = GameConfig.HEX_COLOR_A
+local COLOR_B = GameConfig.HEX_COLOR_B
 
 -- ===== CASAS DE PROMOÇÃO (cores por estado) =====
 -- Inativa: escura, quase apagada — ainda não é nada. Liberada: dourado quente,
@@ -41,9 +41,16 @@ local COLOR_B = Color3.fromRGB(90, 130, 180)
 -- entre os dois tons pra "quase brilhando". Usada: volta pro checkerboard
 -- comum da própria coluna — ela cumpriu o papel e se mistura de novo ao
 -- tabuleiro normal, sem chamar mais atenção.
-local PROMOTION_INACTIVE_COLOR = Color3.fromRGB(38, 38, 46)
-local PROMOTION_ACTIVE_COLOR_LOW = Color3.fromRGB(158, 122, 40)
-local PROMOTION_ACTIVE_COLOR_HIGH = Color3.fromRGB(255, 214, 120)
+--
+-- Os três tons desceram junto com a luz da taverna. O inativo era azul-chumbo,
+-- a única cor FRIA num tabuleiro de pedra quente — lia como casa quebrada, não
+-- como casa apagada; agora é a própria pedra escurecida. E o dourado alto batia
+-- 255 no vermelho: com a lareira e as janelas acesas em cima dele, a casa
+-- passava do Threshold do Bloom e virava um borrão branco a cada pulso, bem no
+-- momento em que ela mais precisa ser lida.
+local PROMOTION_INACTIVE_COLOR = Color3.fromRGB(52, 44, 38)
+local PROMOTION_ACTIVE_COLOR_LOW = Color3.fromRGB(120, 92, 34)
+local PROMOTION_ACTIVE_COLOR_HIGH = Color3.fromRGB(196, 158, 78)
 
 local function fallbackColor(tile)
 	local col = string.byte(tile.Name, 1) - string.byte("A", 1)
@@ -533,7 +540,7 @@ detailAbilities.TextXAlignment = Enum.TextXAlignment.Left
 detailAbilities.TextYAlignment = Enum.TextYAlignment.Top
 detailAbilities.TextWrapped = true
 detailAbilities.TextSize = 14
-detailAbilities.Font = Enum.Font.Gotham
+detailAbilities.Font = GameConfig.UI_FONT_BODY
 detailAbilities.ZIndex = 36
 detailAbilities.Parent = detail
 
@@ -1255,7 +1262,7 @@ confirmText.Text = ""
 confirmText.TextColor3 = Color3.fromRGB(200, 208, 224)
 confirmText.TextWrapped = true
 confirmText.TextSize = 14
-confirmText.Font = Enum.Font.Gotham
+confirmText.Font = GameConfig.UI_FONT_BODY
 confirmText.ZIndex = 46
 confirmText.Parent = confirmPanel
 
@@ -1362,7 +1369,7 @@ resultSubtitle.Position = UDim2.new(0, 10, 0, 58)
 resultSubtitle.BackgroundTransparency = 1
 resultSubtitle.TextColor3 = Color3.fromRGB(150, 160, 182)
 resultSubtitle.TextSize = 13
-resultSubtitle.Font = Enum.Font.Gotham
+resultSubtitle.Font = GameConfig.UI_FONT_BODY
 resultSubtitle.Text = ""
 resultSubtitle.Parent = resultPanel
 
@@ -1447,7 +1454,7 @@ local function buildResultStat(parent, order, label, value, color)
 	name.TextColor3 = color
 	name.TextSize = 11
 	name.TextTruncate = Enum.TextTruncate.AtEnd
-	name.Font = Enum.Font.Gotham
+	name.Font = GameConfig.UI_FONT_BODY
 	name.Text = label
 	name.Parent = parent
 
@@ -1546,7 +1553,7 @@ local function buildResultCard(hero, badgeKey, order)
 	statusLabel.TextColor3 = hero.isAlive
 		and Color3.fromRGB(130, 200, 150) or Color3.fromRGB(198, 116, 116)
 	statusLabel.TextSize = 10
-	statusLabel.Font = Enum.Font.Gotham
+	statusLabel.Font = GameConfig.UI_FONT_BODY
 	statusLabel.Parent = card
 
 	buildResultStat(card, 0, "Dano causado", stats.dealt or 0, Color3.fromRGB(255, 186, 120))

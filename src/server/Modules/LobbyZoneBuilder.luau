@@ -2,9 +2,14 @@
 	LobbyZoneBuilder.lua
 	ModuleScript — ServerScriptService/Modules/LobbyZoneBuilder
 
-	Levanta a trilha desenhada em ReplicatedStorage.Modules.LobbyZones: uma
-	ilhota por grupo da campanha, as pontes entre elas e a vegetação de cada
-	bioma.
+	Levanta as ilhas desenhadas em ReplicatedStorage.Modules.LobbyZones: uma por
+	grupo da campanha, em cruz em volta do lobby, cada uma com a ponte que a liga
+	a ele.
+
+	SÓ CHÃO, BORDA E PONTE. Ele já plantou árvore, pedra e brasa por código; saiu
+	tudo. Cenário gerado por script destoa de qualquer coisa montada à mão, e o
+	lobby é montado à mão — o construtor entrega a superfície nivelada, o encaixe
+	dos quadrados e a rede anti-queda, e o Studio faz o resto por cima.
 
 	IDEMPOTENTE, e isso não é detalhe. Tudo que ele cria mora dentro de uma pasta
 	só (Workspace.LobbyTrail) e é reconstruído do zero a cada chamada. Rodar duas
@@ -48,97 +53,6 @@ local function NewPart(name, size, cframe, color, material, parent)
 	part.Parent = parent
 	return part
 end
-
--- Sorteio ESTÁVEL por zona: a mesma zona sai igual em todo servidor. Com
--- math.random puro, cada servidor desenhava uma floresta diferente e dois
--- jogadores no mesmo lugar viam árvores em posições diferentes — o cenário é
--- replicado, então ele precisa ser o mesmo objeto pra todo mundo, e reconstruir
--- igual é o que garante isso depois de um restart.
-local function SeededRandom(zone)
-	local seed = 0
-	for index = 1, #zone.id do
-		seed += string.byte(zone.id, index) * index
-	end
-	return Random.new(seed)
-end
-
--- ===== VEGETAÇÃO =====
--- Um construtor só, quatro biomas. As diferenças entre um pinheiro, um tronco
--- morto, um pico de gelo e uma rocha em brasa são altura, número de camadas e
--- cor — não quatro funções. `kind` só escolhe o formato das camadas.
-local function BuildProp(zone, parent, position, rng)
-	local props = zone.props
-	local kind = props.kind
-
-	local height = rng:NextNumber(7, 13)
-	local trunkHeight = kind == "shard" and height * 0.2 or height * 0.45
-	local trunkWidth = rng:NextNumber(1.4, 2.4)
-
-	local trunk = NewPart("Trunk",
-		Vector3.new(trunkWidth, trunkHeight, trunkWidth),
-		CFrame.new(position + Vector3.new(0, trunkHeight / 2, 0)),
-		props.trunk, Enum.Material.Wood, parent)
-
-	if kind == "dead" then
-		-- galho seco: o tronco inclina e ganha dois braços, sem copa nenhuma.
-		-- É a ausência de folha que faz o bosque parecer morto.
-		trunk.Material = Enum.Material.Wood
-		trunk.CFrame = CFrame.new(position + Vector3.new(0, trunkHeight / 2, 0))
-			* CFrame.Angles(math.rad(rng:NextNumber(-14, 14)), 0, math.rad(rng:NextNumber(-14, 14)))
-
-		for _ = 1, 2 do
-			local armLength = rng:NextNumber(3, 5.5)
-			NewPart("Branch",
-				Vector3.new(0.8, armLength, 0.8),
-				trunk.CFrame
-					* CFrame.new(0, trunkHeight * rng:NextNumber(0.1, 0.4), 0)
-					* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), math.rad(rng:NextNumber(45, 75)))
-					* CFrame.new(0, armLength / 2, 0),
-				props.trunk, Enum.Material.Wood, parent)
-		end
-		return
-	end
-
-	if kind == "ember" then
-		-- pedra com a brasa por dentro: o Neon é o que "acende" sem custar luz
-		trunk.Material = Enum.Material.Basalt
-		trunk.Size = Vector3.new(trunkWidth * 2.2, trunkHeight * 0.7, trunkWidth * 2.2)
-		trunk.CFrame = CFrame.new(position + Vector3.new(0, trunkHeight * 0.35, 0))
-			* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
-
-		local glow = NewPart("Ember",
-			Vector3.new(trunkWidth * 0.7, trunkHeight * 0.5, trunkWidth * 0.7),
-			trunk.CFrame * CFrame.new(0, trunkHeight * 0.3, 0),
-			props.foliage[rng:NextInteger(1, #props.foliage)], Enum.Material.Neon, parent)
-		glow.CanCollide = false
-		return
-	end
-
-	-- conifer e shard: camadas empilhadas que afinam pra cima. O pinheiro tem
-	-- cones largos e baixos; o pico de gelo, poucos e altos.
-	local layers = kind == "shard" and 2 or 3
-	local layerHeight = (height - trunkHeight) / layers
-	local width = kind == "shard" and trunkWidth * 2.4 or trunkWidth * 4
-
-	for layer = 1, layers do
-		local shrink = 1 - (layer - 1) / (layers + 0.6)
-		local y = trunkHeight + layerHeight * (layer - 0.5)
-
-		local piece = NewPart("Canopy",
-			Vector3.new(width * shrink, layerHeight * 1.15, width * shrink),
-			CFrame.new(position + Vector3.new(0, y, 0))
-				* CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0),
-			props.foliage[rng:NextInteger(1, #props.foliage)],
-			kind == "shard" and Enum.Material.Ice or Enum.Material.Grass,
-			parent)
-
-		if kind == "shard" then
-			piece.Transparency = 0.25
-			piece.Reflectance = 0.2
-		end
-	end
-end
-
 -- ===== ILHA =====
 -- A borda é uma peça a mais, mais larga e mais baixa: dá o "penhasco" de graça,
 -- no mesmo estilo achatado do lobby, sem mesh nova.
@@ -178,52 +92,33 @@ local function BuildIsland(zone, parent)
 	title.TextScaled = true
 	title.Font = Enum.Font.GothamBlack
 	title.Parent = sign
-
-	-- props espalhados pela BORDA, deixando o miolo livre pros quadrados: mata
-	-- plantada no meio vira obstáculo entre o jogador e o confronto.
-	local rng = SeededRandom(zone)
-	local inner = span / 2 - 6
-
-	for _ = 1, zone.props.count do
-		local edge = rng:NextInteger(1, 4)
-		local along = rng:NextNumber(-inner, inner)
-		local depth = rng:NextNumber(inner * 0.6, inner)
-
-		local offset
-		if edge == 1 then offset = Vector2.new(along, -depth)
-		elseif edge == 2 then offset = Vector2.new(along, depth)
-		elseif edge == 3 then offset = Vector2.new(-depth, along)
-		else offset = Vector2.new(depth, along) end
-
-		BuildProp(zone, parent, Vector3.new(
-			zone.center.X + offset.X,
-			LobbyZones.GROUND_Y,
-			zone.center.Y + offset.Y), rng)
-	end
 end
 
 -- ===== PONTE =====
--- Ponto a ponto, com a prancha girada pra direção da travessia. Ser genérica é
--- o que permite reorganizar as zonas mexendo só nas coordenadas do LobbyZones:
--- ponte diagonal, mais curta ou mais longa sai da mesma função.
-local function BuildBridge(fromCenter, toCenter, index, parent)
-	local a = Vector3.new(fromCenter.X, LobbyZones.GROUND_Y, fromCenter.Y)
-	local b = Vector3.new(toCenter.X, LobbyZones.GROUND_Y, toCenter.Y)
+-- Uma por zona, sempre do LOBBY até a ilha — o traçado é uma estrela, não uma
+-- fila (ver o cabeçalho do LobbyZones).
+--
+-- Começa na BORDA do lobby, calculada pelo LobbyEdgeToward: o lobby é
+-- retangular, então a saída pro norte e a saída pro leste ficam a distâncias
+-- diferentes do centro. Antes isto era um `startInset` fixo que valia zero na
+-- primeira ponte, e ela nascia no meio da grama e atravessava o lobby inteiro
+-- por baixo.
+local function BuildBridge(zone, index, parent)
+	local from = LobbyZones.LobbyEdgeToward(zone.center)
+	local a = Vector3.new(from.X, LobbyZones.GROUND_Y, from.Y)
+	local b = Vector3.new(zone.center.X, LobbyZones.GROUND_Y, zone.center.Y)
 
 	local direction = (b - a)
 	local distance = direction.Magnitude
 	if distance < 1 then return end
 	direction = direction.Unit
 
-	-- recorta o que está DENTRO das ilhas: a ponte liga borda a borda, senão
-	-- ela atravessa a ilha inteira por baixo do chão
-	local half = LobbyZones.ISLAND_SPAN / 2
-	local startInset = index == 1 and 0 or half -- o lobby não tem borda calculada
-	local span = distance - startInset - half
+	-- recorta o pedaço que cairia DENTRO da ilha: a ponte encosta na borda dela,
+	-- senão atravessa o quadrado inteiro por baixo do chão
+	local span = distance - LobbyZones.ISLAND_SPAN / 2
 	if span <= 2 then return end
 
-	local start = a + direction * startInset
-	local middle = start + direction * (span / 2)
+	local middle = a + direction * (span / 2)
 
 	local plank = NewPart("Bridge_" .. index,
 		Vector3.new(LobbyZones.BRIDGE_WIDTH, LobbyZones.BRIDGE_THICKNESS, span),
@@ -256,7 +151,14 @@ local function TrailBounds(margin)
 	local min, max = Vector2.new(1e9, 1e9), Vector2.new(-1e9, -1e9)
 	local half = LobbyZones.ISLAND_SPAN / 2 + margin
 
-	for _, point in ipairs(LobbyZones.PathPoints()) do
+	-- o lobby entra na conta junto das ilhas: a rede precisa cobrir o miolo da
+	-- cruz também, senão quem cai de uma ponte perto de casa passa por dentro
+	local pontos = { LobbyZones.LOBBY_CENTER }
+	for _, zone in ipairs(LobbyZones.ZONES) do
+		table.insert(pontos, zone.center)
+	end
+
+	for _, point in ipairs(pontos) do
 		min = Vector2.new(math.min(min.X, point.X - half), math.min(min.Y, point.Y - half))
 		max = Vector2.new(math.max(max.X, point.X + half), math.max(max.Y, point.Y + half))
 	end
@@ -277,8 +179,10 @@ local function BuildFallNet(folder)
 	net.CanCollide = false
 	net.Transparency = 1
 
-	local exit = LobbyZones.LOBBY_EXIT
-	local landing = CFrame.new(exit.X - 14, LobbyZones.GROUND_Y + 4, exit.Y)
+	-- Devolve pro CENTRO do lobby, que agora é o eixo da cruz: de lá toda ilha
+	-- fica a uma ponte, então quem caiu volta pertinho de onde estava indo.
+	local casa = LobbyZones.LOBBY_CENTER
+	local landing = CFrame.new(casa.X, LobbyZones.GROUND_Y + 4, casa.Y)
 
 	net.Touched:Connect(function(hit)
 		local character = hit.Parent
@@ -343,19 +247,17 @@ function LobbyZoneBuilder.BuildTerrain()
 	folder.Name = FOLDER_NAME
 	folder.Parent = Workspace
 
-	for _, zone in ipairs(LobbyZones.ZONES) do
+	-- uma ilha e uma ponte por zona: a ponte de cada uma sai do lobby, então as
+	-- duas coisas saem do mesmo laço em vez de uma cadeia de pares
+	for index, zone in ipairs(LobbyZones.ZONES) do
 		BuildIsland(zone, folder)
-	end
-
-	local points = LobbyZones.PathPoints()
-	for index = 1, #points - 1 do
-		BuildBridge(points[index], points[index + 1], index, folder)
+		BuildBridge(zone, index, folder)
 	end
 
 	BuildFallNet(folder)
 
-	print(("LobbyZoneBuilder: %d zonas, %d pontes, %d peças.")
-		:format(#LobbyZones.ZONES, #points - 1, #folder:GetDescendants()))
+	print(("LobbyZoneBuilder: %d zonas, %d pontes, %d peças (só chão, borda e ponte).")
+		:format(#LobbyZones.ZONES, #LobbyZones.ZONES, #folder:GetDescendants()))
 end
 
 -- Atalho pro modo Edit, onde não existe GameStartTrigger rodando pra ordenar as

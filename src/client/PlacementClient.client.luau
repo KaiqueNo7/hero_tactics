@@ -25,22 +25,28 @@ end
 
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local SafeArea = require(ReplicatedStorage.Modules.SafeArea)
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local PlaceHero = ReplicatedStorage.Remotes:WaitForChild("PlaceHero")
 
 local player = Players.LocalPlayer
 local mouse = player:GetMouse()
 
-local HIGHLIGHT_COLOR = Color3.fromRGB(120, 220, 130)
-local HOVER_COLOR = Color3.fromRGB(190, 255, 190)
+-- Verde escuro, e não o verde claro de antes. A casa de largada é pintada com
+-- a cor CHAPADA (não é Neon, não tem luz): o que dava aquele branco estourado
+-- era o verde claro passando do Threshold do Bloom, que baixou pra 1.05 pra
+-- pegar o fogo da lareira. Contra a pedra escura do tabuleiro este tom já
+-- separa a zona de largada de sobra, sem virar lanterna no meio da taverna.
+local HIGHLIGHT_COLOR = Color3.fromRGB(72, 132, 80)
+local HOVER_COLOR = Color3.fromRGB(116, 190, 124)
 local DRAG_THRESHOLD = 8
 
 local activeTweens = {}
 
 -- cor base caso o attribute BaseColor não exista no hexágono (defensivo:
 -- assim uma casa nunca fica travada numa cor errada por falta de attribute)
-local COLOR_A = Color3.fromRGB(120, 170, 220)
-local COLOR_B = Color3.fromRGB(90, 130, 180)
+local COLOR_A = GameConfig.HEX_COLOR_A
+local COLOR_B = GameConfig.HEX_COLOR_B
 
 local function fallbackColor(tile)
 	local col = string.byte(tile.Name, 1) - string.byte("A", 1)
@@ -499,7 +505,7 @@ detailAbilities.TextXAlignment = Enum.TextXAlignment.Left
 detailAbilities.TextYAlignment = Enum.TextYAlignment.Top
 detailAbilities.TextWrapped = true
 detailAbilities.TextSize = 14
-detailAbilities.Font = Enum.Font.Gotham
+detailAbilities.Font = GameConfig.UI_FONT_BODY
 detailAbilities.Parent = detail
 
 local detailHint = Instance.new("TextLabel")
@@ -510,7 +516,7 @@ detailHint.Text = "Arraste a carta até uma casa verde para posicionar"
 detailHint.TextColor3 = Color3.fromRGB(140, 155, 180)
 detailHint.TextXAlignment = Enum.TextXAlignment.Left
 detailHint.TextSize = 13
-detailHint.Font = Enum.Font.SourceSansItalic
+detailHint.Font = GameConfig.UI_FONT_BODY
 detailHint.Parent = detail
 
 local closeButton = Instance.new("TextButton")
@@ -689,11 +695,49 @@ local function makeGhost(data)
 	return ghost
 end
 
+-- Qual casa está sob o dedo/cursor.
+--
+-- NÃO usa mouse.Target, e são dois motivos independentes:
+--
+-- 1. mouse.Target devolve a PRIMEIRA peça no caminho, e o boneco de um herói já
+--    posicionado é uma peça com CanQuery (é assim que a batalha sabe em quem
+--    você clicou). A câmera olha o tabuleiro de lado (elevação 44°): um herói
+--    de ~7 studs de altura tapa ~10 studs de tabuleiro atrás dele, e a coluna
+--    seguinte fica a 9. Como a zona de largada é uma casa POR COLUNA, o
+--    primeiro herói posicionado passava a cobrir parte da casa vizinha — e
+--    largar ali não fazia nada, porque o alvo do raio era o herói, não a casa.
+--    Filtrar pelo folder do tabuleiro faz o raio ignorar herói, túmulo e chama.
+--
+-- 2. mouse.Target segue o mouse do sistema, não o dedo. No celular o arraste
+--    vem em input.Position, e os dois divergem. Aqui o raio sai da posição que
+--    o arraste está usando de verdade — a mesma que posiciona o ghost.
+local hexRayParams = RaycastParams.new()
+hexRayParams.FilterType = Enum.RaycastFilterType.Include
+
+local function hexUnderCursor(screenPosition)
+	local board = currentState and currentState.boardFolder
+	if not board or not board.Parent then return nil end
+
+	-- lido a cada chamada: o CurrentCamera é trocado a cada respawn, e uma
+	-- referência guardada aqui apontaria pra câmera velha depois do primeiro
+	local camera = workspace.CurrentCamera
+	if not camera then return nil end
+
+	hexRayParams.FilterDescendantsInstances = { board }
+
+	-- ScreenPointToRay (e não ViewportPointToRay): input.Position conta a barra
+	-- do topo do Roblox, igual à ScreenGui com IgnoreGuiInset que segura o ghost.
+	local ray = camera:ScreenPointToRay(screenPosition.X, screenPosition.Y)
+	local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, hexRayParams)
+
+	return hit and hit.Instance:GetAttribute("HexId")
+end
+
 local function updateDrag(screenPosition)
 	if not drag then return end
 	drag.ghost.Position = UDim2.fromOffset(screenPosition.X, screenPosition.Y)
 
-	local hexId = mouse.Target and mouse.Target:GetAttribute("HexId")
+	local hexId = hexUnderCursor(screenPosition)
 	if hexId == hoveredHex then return end
 
 	if hoveredHex then
@@ -728,7 +772,12 @@ local function finishDrag()
 	drag = nil
 	destroyStrayGhosts()
 
-	if dropHex and isFreeDeployHex(dropHex) then
+	-- `moved` não é firula: sem ele, um CLIQUE na carta (pra ver a ficha do
+	-- herói) já contava como largada, porque o startDrag semeia o hoveredHex com
+	-- o que estiver atrás da carta — e atrás da carta pode ter uma casa de
+	-- largada livre. O jogador tocava pra ler a passiva e o herói ia pro
+	-- tabuleiro sem ele pedir, gastando uma das escolhas.
+	if moved and dropHex and isFreeDeployHex(dropHex) then
 		PlaceHero:FireServer(dataId, dropHex)
 	elseif not moved then
 		showDetail(HeroData.GetById(dataId))

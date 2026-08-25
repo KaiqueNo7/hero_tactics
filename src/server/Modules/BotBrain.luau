@@ -74,10 +74,8 @@ local SideOf = MatchQuery.SideOf
 
 local BotBrain = {}
 
-
 local TAUNT = GameConfig.ABILITIES.TAUNT
 local RANGED = GameConfig.ABILITIES.RANGED
-end
 
 -- O quanto vale a pena derrubar este inimigo.
 --
@@ -638,6 +636,44 @@ local function BarrelInReach(match, hero)
 	return best
 end
 
+-- A lápide inimiga mais perto de quebrar dentro do alcance.
+--
+-- Quebrar lápide é a ÚNICA forma de negar a Casa de Promoção do outro lado: sem
+-- lápide de pé não existe quem ressuscitar. Sem isto o bot ficava parado ao lado
+-- do túmulo do herói que ele mesmo matou, e o jogador trazia o morto de volta
+-- inteiro — a jogada mais forte da partida, de graça.
+--
+-- Consultado no mesmo lugar do barril (só quando não tem inimigo pra bater),
+-- pela mesma razão: trocar um golpe em herói vivo por um golpe em pedra é
+-- péssimo negócio.
+local function GraveInReach(match, hero, botId)
+	if match.turn.attacked[hero.uid] then return nil end
+
+	local reach = HexGrid.ComputeReach(hero.position, hero.attackRange, FreeChecker(match))
+	local best = nil
+
+	for _, other in pairs(match.heroes) do
+		if other.ownerId ~= botId and not other.isAlive and not other.graveDestroyed
+			and reach[other.position]
+		then
+			-- O golpe que QUEBRA a lápide devolve GRAVE_CURSE_DAMAGE em quem
+			-- bateu. Trocar um herói do próprio time por uma lápide não é
+			-- negação, é suicídio: quem não sobrevive à maldição não dá o
+			-- último golpe (nos anteriores não há maldição, então pode bater).
+			local wouldBreak = (other.graveHitsLeft or 0) <= 1
+			local diesToCurse = hero.currentHp <= GameConfig.GRAVE_CURSE_DAMAGE
+
+			if not (wouldBreak and diesToCurse)
+				and (not best or (other.graveHitsLeft or 0) < (best.graveHitsLeft or 0))
+			then
+				best = other
+			end
+		end
+	end
+
+	return best
+end
+
 -- Melhor jogada de um herói: para onde ir e quem bater
 local function PlanFor(match, hero, ctx)
 	local canMove = not match.turn.moved[hero.uid] and not match.turn.attacked[hero.uid]
@@ -703,5 +739,6 @@ BotBrain.BuildBoardContext = BuildBoardContext
 BotBrain.BuildLineBlocks = BuildLineBlocks
 BotBrain.PlanFor = PlanFor
 BotBrain.BarrelInReach = BarrelInReach
+BotBrain.GraveInReach = GraveInReach
 
 return BotBrain

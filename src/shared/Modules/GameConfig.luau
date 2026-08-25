@@ -230,19 +230,64 @@ GameConfig.RESURRECT_HP = 5
 GameConfig.PLAYER_STAND_OUTSET_HEXES = 1 -- casas de folga entre a borda do tabuleiro e o competidor
 GameConfig.PLAYER_STAND_SCALE = 2.2 -- tamanho dos personagens nas posições de espera (1 = normal)
 
+-- ===== FONTE DE TEXTO CORRIDO =====
+-- Vale pro que se LÊ: passo de tutorial, descrição de habilidade, aviso.
+-- Título e número continuam na Gotham (Black/Bold) — a hierarquia vem do peso,
+-- e trocar tudo de família só pra unificar mexeria em dezenas de rótulos que
+-- não têm problema nenhum de leitura.
+--
+-- BuilderSans é a fonte de interface da própria Roblox: altura-x maior que a
+-- Gotham no MESMO TextSize, então a mesma frase em 14px fica com letra
+-- visivelmente maior sem estourar caixa nenhuma. A Gotham é geométrica, boa em
+-- título grande e ruim em parágrafo pequeno sobre fundo escuro, que é
+-- exatamente onde este jogo põe texto explicativo.
+--
+-- Medium, e não Regular: sobre painel escuro o traço fino da Regular some.
+GameConfig.UI_FONT_BODY = Enum.Font.BuilderSansMedium
+
+-- ===== COR DAS CASAS =====
+-- O xadrez do tabuleiro. Moram aqui, e não no BoardSpawner, porque os DOIS
+-- clientes também precisam deles: quando um destaque sai (fim do arraste, fim
+-- da seleção), a casa volta pro attribute BaseColor, e a cor daqui é a rede de
+-- segurança pra quando esse attribute faltar. Eram três cópias literais do
+-- mesmo par de RGB em três arquivos — o tipo de coisa que só se descobre
+-- desencontrada depois que alguém muda uma.
+--
+-- Pedra quente, não azul. O azul claro original nasceu com a arena aberta e
+-- clara; dentro da taverna fechada, iluminada só por fogo e janela, ele era a
+-- coisa mais clara da cena inteira e estourava de branco — o tabuleiro virava
+-- uma mancha luminosa no meio de um ambiente âmbar. Pedra em tom de terra fica
+-- abaixo do brilho do piso, e é ela que faz os heróis destacarem.
+--
+-- Os dois tons são bem separados de propósito. A luz da taverna bate forte no
+-- tabuleiro (lustre em cima e os feixes das janelas), e um par de tons próximos
+-- lava até virar uma laje só — o xadrez, que é o que deixa contar distância de
+-- bate-pronto, simplesmente desaparecia.
+GameConfig.HEX_COLOR_A = Color3.fromRGB(108, 90, 74)
+GameConfig.HEX_COLOR_B = Color3.fromRGB(74, 61, 50)
+
 -- ===== ARENAS SIMULTÂNEAS =====
 -- Cada partida ocupa uma arena própria, lado a lado no eixo X. A taverna mede
--- ~100 studs de largura, então 200 de espaçamento deixa um corredor vazio entre
--- elas — nem a luz das tochas (Range 34) alcança a vizinha.
--- O Y não é zero porque a taverna foi levantada para ~660 studs no place, longe
--- do lobby. A conta que amarra os dois: o BoardSpawner encosta o topo do piso da
--- taverna em ARENA_ORIGIN.Y - 0.5, então o piso atual (topo em 663.5) pede
--- Y = 664. X e Z centralizam o tabuleiro no piso.
+-- ~141 studs de largura, então 200 de espaçamento deixa um corredor vazio entre
+-- elas.
 --
--- Se um dia a taverna for movida à mão de novo, é este vetor que tem que
--- acompanhar — senão o tabuleiro nasce no vazio, longe do cenário, e a partida
--- roda normalmente só que sem chão nenhum embaixo.
-GameConfig.ARENA_ORIGIN = Vector3.new(304, 664, 313)
+-- ESTE VETOR É A ORIGEM DO TABULEIRO, NÃO O CENTRO DELE. O centro cai em
+-- origem + (18, 0, 25.98) — conta que sai do HexGrid (5 colunas de 9 studs, e
+-- de C0 a C7 no eixo Z, mais meia peça de margem). Pra centralizar o tabuleiro
+-- numa taverna nova: pegue o centro do INTERIOR (face interna das paredes) e
+-- subtraia esse (18, 0, 25.98).
+--
+-- Taverna atual (medida no place, faces internas):
+--   X  -285.4 .. -146.0  -> centro -215.70  -> origem X = -233.70
+--   Z   -28.9 ..   97.2  -> centro   34.15  -> origem Z =    8.17
+--   piso com topo em 499.5, e o BoardSpawner encosta o piso em ORIGIN.Y - 0.5
+--                                            -> origem Y =  500
+--
+-- Se a taverna for movida à mão de novo, é este vetor que tem que acompanhar —
+-- senão o tabuleiro nasce no vazio, longe do cenário, e a partida roda
+-- normalmente só que sem chão nenhum embaixo. O BoardSpawner avisa no output
+-- quando os dois se desencontram.
+GameConfig.ARENA_ORIGIN = Vector3.new(-233.7, 500, 8.17)
 GameConfig.ARENA_SPACING = 200
 
 -- Cada arena comporta 2 jogadores, então este número TEM que acompanhar o

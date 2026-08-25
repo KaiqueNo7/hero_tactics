@@ -2,18 +2,19 @@
 	LobbyZones.lua
 	ModuleScript — ReplicatedStorage/Modules/LobbyZones
 
-	A TRILHA DO LOBBY: uma ilhota temática por grupo da campanha, ligadas em fila
-	por pontes. O jogador não abre um menu pra ver o que falta — ele ANDA até lá,
-	e cada trecho novo do caminho é um bioma diferente.
+	AS ILHAS DO LOBBY: uma ilhota por grupo da campanha, em CRUZ em volta do
+	lobby, cada uma ligada a ele por uma ponte. O jogador não abre um menu pra
+	ver o que falta — ele ANDA até lá.
 
-	Por que uma fila e não quatro ilhas em volta do lobby: o lobby é uma tigela
-	com UMA abertura, a leste (o resto é penhasco e árvore, medido com raycast
-	antes desta lista existir). Furar o anel em mais três lugares seria mexer no
-	cenário à mão de quem construiu; sair pela porta que já existe não é.
+	Já foi uma fila (lobby -> zona 1 -> zona 2 -> ...), porque na época o lobby
+	era uma tigela fechada com uma única abertura a leste. O lobby foi reaberto à
+	mão no Studio e a estrela passou a caber: agora toda ilha fica a uma ponte de
+	casa, em vez de obrigar a atravessar as três anteriores pra chegar na quarta.
 
-	E o formato combina com a regra: a campanha é uma ESCADA (Campaign.FIGHTS,
-	campo `group`), cada grupo só abre quando o anterior fecha. Uma trilha linear
-	é a mesma ideia desenhada no chão — andar mais fundo é progredir.
+	SÓ CHÃO, BORDA E PONTE. O construtor não planta mais nada — nem árvore, nem
+	pedra, nem brasa. Aquilo era gerado por código e destoava de tudo que fosse
+	montado à mão. O cenário é do Studio; daqui sai a superfície e o encaixe dos
+	quadrados, e nada mais.
 
 	QUEM MANDA NAS COORDENADAS É ESTE ARQUIVO
 	Mesma política do LightingSetup: o construtor reposiciona os quadrados da
@@ -42,15 +43,26 @@ LobbyZones.ISLAND_THICKNESS = 8
 LobbyZones.BRIDGE_WIDTH = 16
 LobbyZones.BRIDGE_THICKNESS = 1.5
 
--- Onde a primeira ponte encosta no lobby. z = -16 não é chute: é o meio da
--- única faixa que sai limpa pro leste (de z=-28 a z=-4, conferida com raycast
--- rasante). Em z=0 tem penhasco a x=88.
-LobbyZones.LOBBY_EXIT = Vector2.new(104, -16)
+-- ===== O LOBBY NO CENTRO =====
+-- Medidos do GrassFloor do place: centro (1, -2), 195 x 185. As pontes saem da
+-- BORDA dele, não do centro — daí precisar do meio-lado.
+--
+-- O traçado é uma ESTRELA, não uma fila: cada ilha liga direto ao lobby, e não
+-- à anterior. Foi assim que o lobby acabou sendo montado à mão no Studio, e é
+-- melhor mesmo — numa fila, chegar na quarta zona obrigava atravessar as três
+-- primeiras; aqui toda ilha fica a uma ponte de distância de casa.
+LobbyZones.LOBBY_CENTER = Vector2.new(1, -2)
+LobbyZones.LOBBY_HALF = Vector2.new(97.5, 92.5)
 
 -- ===== AS ZONAS =====
--- `center` no plano XZ. O traçado desvia do platô que já existe no place
--- (X[59..160] Z[-120..-56]) — daí o S: a trilha sai a leste, sobe pelo lado de
--- fora dele e volta pra dentro no fim.
+-- `center` no plano XZ, MEDIDO do lobby montado à mão no Studio: as quatro
+-- ilhas ficam em CRUZ em volta do centro, cada uma a uma ponte de casa. Quem
+-- manda nestes números continua sendo este arquivo (o construtor reposiciona
+-- tudo a cada boot) — mas eles vieram do layout real, não o contrário.
+--
+-- NÃO existe `props`. As ilhas nascem só com chão e borda: a vegetação era
+-- gerada por código e ficava suja ao lado de qualquer coisa feita à mão.
+-- Cenário é do Studio; o construtor entrega a superfície e sai da frente.
 --
 -- `group` amarra a zona à campanha. Não existe segunda lista de "quais heróis
 -- moram aqui": os pads daquele grupo são os de Campaign.FIGHTS, e mudar um
@@ -65,16 +77,9 @@ LobbyZones.ZONES = {
 		group = 1,
 		name = "Clareira Verde",
 		blurb = "Onde os primeiros desafiantes acampam.",
-		center = Vector2.new(168, -16),
+		center = Vector2.new(169, 50),
 		ground = { color = Color3.fromRGB(106, 170, 90), material = Enum.Material.Grass },
 		rim = Color3.fromRGB(94, 72, 48),
-		props = {
-			kind = "conifer",
-			count = 9,
-			trunk = Color3.fromRGB(94, 66, 44),
-			foliage = { Color3.fromRGB(58, 132, 62), Color3.fromRGB(74, 152, 76) },
-			rock = Color3.fromRGB(126, 130, 124),
-		},
 		ambience = {
 			Ambient = Color3.fromRGB(38, 44, 38),
 			OutdoorAmbient = Color3.fromRGB(132, 146, 128),
@@ -89,16 +94,9 @@ LobbyZones.ZONES = {
 		group = 2,
 		name = "Bosque Sombrio",
 		blurb = "As árvores aqui já morreram. Alguma coisa continua andando.",
-		center = Vector2.new(238, -110),
+		center = Vector2.new(49, -154),
 		ground = { color = Color3.fromRGB(58, 54, 68), material = Enum.Material.Ground },
 		rim = Color3.fromRGB(40, 36, 48),
-		props = {
-			kind = "dead",
-			count = 11,
-			trunk = Color3.fromRGB(46, 40, 52),
-			foliage = { Color3.fromRGB(66, 52, 82), Color3.fromRGB(52, 44, 68) },
-			rock = Color3.fromRGB(62, 58, 74),
-		},
 		ambience = {
 			Ambient = Color3.fromRGB(28, 24, 38),
 			OutdoorAmbient = Color3.fromRGB(72, 66, 92),
@@ -113,16 +111,9 @@ LobbyZones.ZONES = {
 		group = 3,
 		name = "Geleira",
 		blurb = "O gelo do Kor não é metáfora: aqui ele é o chão.",
-		center = Vector2.new(238, -216),
+		center = Vector2.new(-165, -51),
 		ground = { color = Color3.fromRGB(222, 236, 246), material = Enum.Material.Snow },
 		rim = Color3.fromRGB(158, 190, 212),
-		props = {
-			kind = "shard",
-			count = 10,
-			trunk = Color3.fromRGB(176, 214, 236),
-			foliage = { Color3.fromRGB(198, 230, 248), Color3.fromRGB(164, 206, 234) },
-			rock = Color3.fromRGB(206, 224, 236),
-		},
 		ambience = {
 			Ambient = Color3.fromRGB(46, 56, 68),
 			OutdoorAmbient = Color3.fromRGB(166, 190, 210),
@@ -137,16 +128,9 @@ LobbyZones.ZONES = {
 		group = 4,
 		name = "Forja de Brasa",
 		blurb = "Pedra, fogo e o que sobrou de quem chegou antes.",
-		center = Vector2.new(168, -300),
+		center = Vector2.new(-54, 160),
 		ground = { color = Color3.fromRGB(64, 52, 50), material = Enum.Material.Basalt },
 		rim = Color3.fromRGB(42, 34, 33),
-		props = {
-			kind = "ember",
-			count = 10,
-			trunk = Color3.fromRGB(52, 42, 40),
-			foliage = { Color3.fromRGB(214, 96, 38), Color3.fromRGB(240, 140, 52) },
-			rock = Color3.fromRGB(74, 62, 58),
-		},
 		ambience = {
 			Ambient = Color3.fromRGB(48, 30, 24),
 			OutdoorAmbient = Color3.fromRGB(120, 82, 66),
@@ -222,15 +206,26 @@ function LobbyZones.PadSlots(zone, count)
 	return slots
 end
 
--- A fila de travessia: lobby -> zona 1 -> zona 2 -> ... Cada par vira uma ponte.
--- Devolve pontos de CENTRO; quem recorta as bordas é o construtor, que é quem
--- sabe o tamanho da ilha.
-function LobbyZones.PathPoints()
-	local points = { LobbyZones.LOBBY_EXIT }
-	for _, zone in ipairs(LobbyZones.ZONES) do
-		table.insert(points, zone.center)
-	end
-	return points
+-- Por onde a ponte desta zona sai do LOBBY: o ponto em que a reta centro-a-centro
+-- cruza a borda do retângulo do lobby.
+--
+-- Retângulo e não círculo porque o lobby é retangular (195 x 185): num círculo,
+-- a ponte pro norte nasceria dentro da grama e a ponte pro leste nasceria no ar.
+-- `t` é o quanto dá pra andar na direção da zona antes de furar cada lado; o
+-- menor dos dois é a saída.
+function LobbyZones.LobbyEdgeToward(zoneCenter)
+	local c, half = LobbyZones.LOBBY_CENTER, LobbyZones.LOBBY_HALF
+	local dx, dz = zoneCenter.X - c.X, zoneCenter.Y - c.Y
+
+	local length = math.sqrt(dx * dx + dz * dz)
+	if length < 1 then return c end
+	dx, dz = dx / length, dz / length
+
+	local tx = (math.abs(dx) > 1e-6) and (half.X / math.abs(dx)) or math.huge
+	local tz = (math.abs(dz) > 1e-6) and (half.Y / math.abs(dz)) or math.huge
+	local t = math.min(tx, tz)
+
+	return Vector2.new(c.X + dx * t, c.Y + dz * t)
 end
 
 return LobbyZones
