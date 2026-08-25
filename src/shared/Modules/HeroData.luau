@@ -57,45 +57,45 @@ function HeroData.GetPoisonStageIndex(durationRemaining)
 end
 
 HeroData.CATALOG = {
-	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true, sprite = "103777626179081" },
-	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 21, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90), sprite = "83438666758571" },
-	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), sprite = "86297729820057" },
-	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165), sprite = "78689016224804" },
-	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true, sprite = "87491587460698" },
-	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true, sprite = "73241918809413" },
-	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110), sprite = "132874639832051" },
-	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "109962159828363" },
-	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "111573115536769" },
+	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true, sprite = "136396565767790" },
+	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 21, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90), sprite = "122742882947541" },
+	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), sprite = "139532054857999" },
+	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165), sprite = "100992479929680" },
+	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true, sprite = "76020534312617" },
+	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true, sprite = "125070102363421" },
+	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110), sprite = "126479088125110" },
+	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "98874918804932" },
+	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "97869309543381" },
 
 	{ id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged",
 		abilities = { "iceEffect", "iceStorm" },
 		color = Color3.fromRGB(150, 210, 240),
-		sprite = "117920404008708" 
+		sprite = "127914513925837" 
 	},
 
 	{ id = 11, name = "Merlin", attack = 1, hp = 17, ability = nil,
 		abilities = { "bloodScent", "frenzy" },
 		color = Color3.fromRGB(150, 70, 60),
-		sprite = "71212181858232" 
+		sprite = "85377589727040" 
 	},
 
 	{ id = 12, name = "Karo", attack = 2, hp = 19, ability = nil,
 		abilities = { "flamePath", "flameStrike", "flameFury" },
 		color = Color3.fromRGB(255, 140, 70),
-		sprite = "106340673286109" },
+		sprite = "73283114537576" },
 
 	{ id = 13, name = "Nash", attack = 2, hp = 14, ability = "Sprint",
 		abilities = { "stealth", "stealthHeal", "ambush" },
 		color = Color3.fromRGB(80, 90, 120),
-		sprite = "76145370522288" },
+		sprite = "95643253305726" },
 
 	{ id = 14, name = "Golem", attack = 1, hp = 40, ability = "Taunt",
 		abilities = { "shatter" },
 		color = Color3.fromRGB(140, 140, 140),
-		sprite = "130313080668622" },
+		sprite = "95596148134035" },
 }
 
-local MINI_GOLEM_SPRITE = "95023163743619"
+local MINI_GOLEM_SPRITE = "125545602412754"
 local MINI_GOLEM_SCALE = 0.6
 
 HeroData.SUMMONS = {
