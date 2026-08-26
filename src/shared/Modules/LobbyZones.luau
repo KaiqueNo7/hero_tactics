@@ -157,6 +157,34 @@ LobbyZones.ZONES = {
 			Brightness = 2.0,
 		},
 	},
+
+	-- A quinta ilha NÃO é braço da cruz: os quatro braços (N/S/L/O) já estão
+	-- ocupados e mexer neles desfaria o alinhamento feito à mão. Esta sai na
+	-- diagonal sudeste, no vão entre a Clareira e a Forja — é o único lugar em
+	-- que a ponte continua saindo direto da borda do lobby, sem precisar
+	-- atravessar ilha de ninguém.
+	--
+	-- Fica ao lado da Forja de propósito: a Lucy é irmã do Karo e divide o fogo
+	-- com ele (o mesmo match.flames), mas o payoff dela é curar em vez de bater.
+	-- Por isso a paleta é a brasa MORNA — cinza clara e luz alta — e não o
+	-- basalto escuro do irmão.
+	{
+		id = "santuario",
+		group = 5,
+		name = "Santuário de Brasa",
+		blurb = "A mesma chama da Forja, do lado que aquece em vez de queimar.",
+		center = Vector2.new(135, 158),
+		rotation = 39.9,
+		ground = { color = Color3.fromRGB(158, 128, 108), material = Enum.Material.Sand },
+		rim = Color3.fromRGB(96, 72, 58),
+		ambience = {
+			Ambient = Color3.fromRGB(52, 38, 30),
+			OutdoorAmbient = Color3.fromRGB(148, 114, 90),
+			Atmosphere = { Density = 0.30, Haze = 1.5, Color = Color3.fromRGB(232, 188, 152), Decay = Color3.fromRGB(122, 84, 62) },
+			Tint = Color3.fromRGB(255, 244, 232),
+			Brightness = 2.3,
+		},
+	},
 }
 
 -- ===== CONSULTAS =====

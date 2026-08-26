@@ -49,6 +49,12 @@ local FOLDER_NAME = "LobbyTrail"
 -- mão manda em tudo, quadrado incluído.
 local adopted = false
 
+-- Zonas levantadas NESTA chamada. Numa trilha adotada, é o que separa "esta ilha
+-- é sua, não encosto" de "esta ilha eu acabei de criar, então os quadrados dela
+-- também são meus". Sem isso, um grupo novo na campanha nasce com a ilha no
+-- lugar certo e o quadrado largado no chão do lobby.
+local built = {}
+
 -- ===== PEÇAS =====
 local function NewPart(name, size, cframe, color, material, parent)
 	local part = Instance.new("Part")
@@ -215,11 +221,6 @@ end
 -- LobbyZones: quem manda na coordenada é a planta, não o Explorer — e
 -- `KeepPosition` no pad é a saída pra travar um quadrado no lugar.
 function LobbyZoneBuilder.PlacePads()
-	if adopted then
-		print("LobbyZoneBuilder: trilha adotada do place — quadrados mantidos onde estão.")
-		return
-	end
-
 	local byGroup = {}
 	for _, fight in ipairs(Campaign.FIGHTS) do
 		byGroup[fight.group] = byGroup[fight.group] or {}
@@ -230,7 +231,10 @@ function LobbyZoneBuilder.PlacePads()
 
 	for group, fights in pairs(byGroup) do
 		local zone = LobbyZones.ForGroup(group)
-		if zone then
+
+		-- Numa trilha adotada só mexe nos quadrados das ilhas que ACABARAM de
+		-- nascer; o resto está onde o Studio deixou, e é lá que fica.
+		if zone and (not adopted or built[zone.id]) then
 			local slots = LobbyZones.PadSlots(zone, #fights)
 
 			for index, fight in ipairs(fights) do
@@ -265,12 +269,28 @@ function LobbyZoneBuilder.BuildTerrain(force)
 
 	if existing and not force then
 		adopted = true
-		print(("LobbyZoneBuilder: %s já montado no place (%d peças) — trilha adotada, nada reconstruído.")
-			:format(FOLDER_NAME, #existing:GetDescendants()))
+		built = {}
+
+		-- Adotar não é ignorar: zona da planta que ainda NÃO tem chão no place é
+		-- grupo novo da campanha, e essa precisa nascer. Busca recursiva porque
+		-- o place agrupa ilha e ponte em Models feitos à mão.
+		local novas = 0
+		for index, zone in ipairs(LobbyZones.ZONES) do
+			if not existing:FindFirstChild(zone.id .. "_Floor", true) then
+				BuildIsland(zone, existing)
+				BuildBridge(zone, index, existing)
+				built[zone.id] = true
+				novas += 1
+			end
+		end
+
+		print(("LobbyZoneBuilder: %s já montado no place (%d peças) — trilha adotada, %d ilha(s) nova(s) levantada(s).")
+			:format(FOLDER_NAME, #existing:GetDescendants(), novas))
 		return
 	end
 
 	adopted = false
+	built = {}
 	if existing then existing:Destroy() end
 
 	local folder = Instance.new("Folder")
@@ -282,6 +302,7 @@ function LobbyZoneBuilder.BuildTerrain(force)
 	for index, zone in ipairs(LobbyZones.ZONES) do
 		BuildIsland(zone, folder)
 		BuildBridge(zone, index, folder)
+		built[zone.id] = true
 	end
 
 	BuildFallNet(folder)

@@ -216,6 +216,11 @@ local TEXT_STYLES = {
 	heal   = { color = Color3.fromRGB(105, 240, 130), font = Enum.Font.GothamBlack,  size = 40, rise = 3.1 },
 	buff   = { color = Color3.fromRGB(120, 215, 255), font = Enum.Font.GothamBlack,  size = 34, rise = 2.8 },
 	debuff = { color = Color3.fromRGB(255, 175, 75),  font = Enum.Font.GothamBlack,  size = 34, rise = 2.8 },
+	-- Lucy — dano que o emberShield dela absorveu por um aliado perto. Violeta
+	-- de propósito: não é "damage" (vermelho, ela não tomou o golpe) nem "heal"
+	-- (verde, não é vida entrando) — é a terceira coisa, dano que deixou de
+	-- acontecer. Mesmo corpo/animação/tempo dos outros, só a cor muda.
+	absorb = { color = Color3.fromRGB(190, 160, 255), font = Enum.Font.GothamBlack,  size = 34, rise = 2.8 },
 	info   = DEFAULT_STYLE,
 }
 
@@ -312,6 +317,7 @@ local SKILL_SOUNDS = {
 	ambush = "SkillAmbush",
 	stealth = "SkillStealth", -- Nash: entrando na sombra
 	shatter = "SkillShatter", -- Golem: partindo em dois
+	iceStorm = "SkillIceStorm", -- Kor: a nevasca da morte dele
 }
 
 function HeroView.PlaySkillSound(key, view)
@@ -967,6 +973,113 @@ function HeroView.DestroyFlame(view, hexId)
 	end
 
 	Debris:AddItem(part, 1.2)
+end
+
+-- Quanto tempo o brilho de alcance do Karo fica na casa — só um telegraph
+-- visual, não um efeito de jogo (não mora em match.flames, ninguém pisa
+-- "nele"), então some rápido em vez dos 2 turnos do fogo de verdade.
+local ATTACK_RANGE_FLASH_LIFETIME = 0.5
+
+-- Karo: brilho rápido nas casas a distância 1 dele, sincronizado com o golpe
+-- giratório do Soco de Chamas — mostra ONDE o golpe alcança antes/durante o
+-- impacto, mesmo nas casas vazias que GetEnemiesInRange nem chega a marcar
+-- (só quem está lá dentro leva efeito de acerto). Mesma construção do
+-- CreateFlame (âncora fina rente ao topo da casa, mesma paleta laranja do
+-- Karo) — pra ficar reconhecível como "o mesmo fogo dele", só que num pulso
+-- só em vez de rastro persistente.
+function HeroView.FlashAttackRange(view, hexIds, coreColor, edgeColor)
+	if not view then return end
+
+	local size = HexGrid.GetHexSize()
+	coreColor = coreColor or FLAME_CORE
+	edgeColor = edgeColor or FLAME_COLOR
+
+	for _, hexId in ipairs(hexIds) do
+		local center = HexGrid.GetWorldPosition(hexId, view.origin)
+
+		local part = Instance.new("Part")
+		part.Name = "RangeFlash_" .. hexId
+		part.Size = Vector3.new(size * 0.9, 0.2, size * 0.9)
+		part.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y, 0))
+		part.Transparency = 1
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanQuery = false -- não pode roubar o clique da casa embaixo, mesma regra da chama
+		part.CastShadow = false
+		part.Parent = view.heroesFolder
+
+		local attachment = Instance.new("Attachment")
+		attachment.Parent = part
+
+		local emitter = Instance.new("ParticleEmitter")
+		emitter.Name = "Emitter"
+		emitter.Texture = FX_SPARK
+		emitter.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, coreColor),
+			ColorSequenceKeypoint.new(1, edgeColor),
+		})
+		emitter.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.2),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		-- cresce pra preencher a casa e desaparece — o "anel" da área de
+		-- alcance, não fumaça subindo (isso já é a linguagem visual do rastro)
+		emitter.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, size * 0.7),
+			NumberSequenceKeypoint.new(1, size * 0.95),
+		})
+		emitter.Lifetime = NumberRange.new(ATTACK_RANGE_FLASH_LIFETIME, ATTACK_RANGE_FLASH_LIFETIME)
+		emitter.Rate = 0
+		emitter.Speed = NumberRange.new(0, 0)
+		emitter.EmissionDirection = Enum.NormalId.Top
+		emitter.LightEmission = 0.9
+		emitter.LightInfluence = 0
+		emitter.Parent = attachment
+		emitter:Emit(1)
+
+		Debris:AddItem(part, ATTACK_RANGE_FLASH_LIFETIME + 0.2)
+	end
+end
+
+local ICE_CORE = Color3.fromRGB(236, 252, 255)
+local ICE_EDGE = Color3.fromRGB(120, 200, 245)
+local ICE_STORM_TIME = 0.7
+
+function HeroView.PlayIceStorm(view, hexId)
+	if not view then return end
+
+	local size = HexGrid.GetHexSize()
+	local center = HexGrid.GetWorldPosition(hexId, view.origin)
+
+	local hexIds = {}
+	for _, hex in ipairs(HexGrid.GetNeighbors(hexId)) do
+		table.insert(hexIds, hex.id)
+	end
+	table.insert(hexIds, hexId)
+	HeroView.FlashAttackRange(view, hexIds, ICE_CORE, ICE_EDGE)
+
+	local ring = Instance.new("Part")
+	ring.Name = "IceStormRing"
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Size = Vector3.new(0.2, size * 0.6, size * 0.6)
+	ring.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y + 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	ring.Color = ICE_CORE
+	ring.Material = Enum.Material.Neon
+	ring.Transparency = 0.35
+	ring.Anchored = true
+	ring.CanCollide = false
+	ring.CanQuery = false
+	ring.CastShadow = false
+	ring.Parent = view.heroesFolder
+
+	local grow = TweenInfo.new(ICE_STORM_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(ring, grow, {
+		Size = Vector3.new(0.2, size * 4.2, size * 4.2),
+		Transparency = 1,
+		Color = ICE_EDGE,
+	}):Play()
+
+	Debris:AddItem(ring, ICE_STORM_TIME + 0.15)
 end
 
 -- Alguém atravessou a chama: lufada curta pra amarrar o número de dano à casa.

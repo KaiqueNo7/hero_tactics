@@ -226,8 +226,30 @@ local function ResolvePendingGraves(match)
 	end
 end
 
+local LOG_LIMIT = 400
+
+local function LogEvent(match, kind, side, text)
+	local log = match.log
+	if not log then return end
+
+	table.insert(log, {
+		turn = match.turn and match.turn.number or 0,
+		kind = kind,
+		side = side,
+		text = text,
+	})
+
+	if #log > LOG_LIMIT then
+		table.remove(log, 1)
+	end
+end
+
 function KillHero(match, hero, attacker)
 	hero.isAlive = false
+
+	LogEvent(match, "death", hero.sideIndex, attacker and attacker ~= hero
+		and ("%s derrubou %s"):format(attacker.name, hero.name)
+		or ("%s caiu"):format(hero.name))
 
 	-- Abate contabilizado antes de qualquer skill correr: o onDie do Golem
 	-- estilhaça e cria heróis novos, e o onKill do Merlin pode matar de novo em
@@ -381,9 +403,19 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 		for _, key in ipairs(ally.abilities) do
 			local skill = Skills[key]
 			if skill and skill.modifyIncomingDamageNearby then
+				local before = amount
 				amount = skill.modifyIncomingDamageNearby(amount, {
 					hero = hero, ally = ally, attacker = attacker, isCounterAttack = isCounterAttack or false,
 				})
+
+				-- balão SOBRE QUEM ABSORVEU (a Lucy), não sobre quem apanhou — é
+				-- crédito pelo bloqueio, não uma segunda leitura do mesmo golpe.
+				-- "+N" e cor própria (ver TEXT_STYLES.absorb): não é dano dela, é
+				-- dano que deixou de acontecer por causa dela.
+				local absorbed = before - amount
+				if absorbed > 0 then
+					HeroView.Say(ally, "+" .. tostring(absorbed), "absorb")
+				end
 			end
 		end
 	end
@@ -418,6 +450,10 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 	HeroView.PlayAnimation(hero, "hit", attacker == nil)
 	HeroView.Say(hero, "-" .. tostring(amount), "damage")
 
+	LogEvent(match, "damage", attacker and attacker.sideIndex or hero.sideIndex,
+		attacker and ("%s causou %d de dano em %s"):format(attacker.name, amount, hero.name)
+		or ("%s sofreu %d de dano do cenário"):format(hero.name, amount))
+
 	if hero.currentHp <= 0 then
 		KillHero(match, hero, attacker)
 	else
@@ -445,13 +481,30 @@ local function Heal(match, hero, amount, source)
 	HeroView.UpdateStats(hero)
 	HeroView.PlayHealSound(hero)
 	HeroView.Say(hero, "+" .. tostring(amount), "heal")
+
+	local gained = hero.currentHp - before
+	if gained > 0 then
+		LogEvent(match, "heal", healer.sideIndex, healer == hero
+			and ("%s recuperou %d de vida"):format(hero.name, gained)
+			or ("%s curou %d em %s"):format(healer.name, gained, hero.name))
+	end
 end
 
-local function IncreaseAttack(hero, amount)
+local function IncreaseAttack(match, hero, amount)
 	hero.attack += amount
 	HeroView.UpdateStats(hero)
 	HeroView.Say(hero, (amount > 0 and "+" or "") .. tostring(amount) .. " ATK", amount > 0 and "buff" or "debuff")
+
+	LogEvent(match, "buff", hero.sideIndex, amount > 0
+		and ("%s ganhou %d de ataque (agora %d)"):format(hero.name, amount, hero.attack)
+		or ("%s perdeu %d de ataque (agora %d)"):format(hero.name, -amount, hero.attack))
 end
+
+local EFFECT_NAMES = {
+	poison = "envenenado",
+	freeze = "congelado",
+	wound = "ferido",
+}
 
 -- ===================== STATUS EFFECTS =====================
 -- PONTO ÚNICO. Todo efeito do jogo entra por aqui: o veneno da Vic, o gelo do
@@ -459,7 +512,7 @@ end
 -- pelo wrapper da API das skills, o barril chamando direto. É o que torna a
 -- imunidade do Frenesi uma regra só, em vez de um `if` repetido em cada skill
 -- que hoje aplica debuff (e em cada uma que vier depois).
-local function ApplyStatusEffect(hero, effect)
+local function ApplyStatusEffect(match, hero, effect)
 	-- Merlin em Frenesi não pega debuff. A checagem é por TIPO
 	-- (GameConfig.IsNegativeEffect), então o lobo continua recebendo o que é
 	-- bom pra ele: o empréstimo de ataque do barril passa direto.
@@ -475,6 +528,12 @@ local function ApplyStatusEffect(hero, effect)
 
 	table.insert(hero.statusEffects, effect)
 	HeroView.UpdateStats(hero)
+
+	local nome = EFFECT_NAMES[effect.type]
+	if nome then
+		LogEvent(match, "status", hero.sideIndex,
+			("%s ficou %s por %d turno(s)"):format(hero.name, nome, effect.duration or 0))
+	end
 end
 
 local function ClearStatusEffects(hero)
@@ -547,7 +606,7 @@ local function ProcessStatusEffects(match, hero, ownTurnEnding)
 		elseif effect.attackBonus then
 			-- acabou o empréstimo: o bônus temporário do barril é devolvido aqui,
 			-- no mesmo lugar em que o efeito sai da lista
-			IncreaseAttack(hero, -effect.attackBonus)
+			IncreaseAttack(match, hero, -effect.attackBonus)
 		end
 	end
 
@@ -601,6 +660,25 @@ local function TickFlames(match, endingOwner)
 	end
 end
 
+-- Qualquer travessia CONSOME a chama — não é uma zona que fica cobrando de todo
+-- mundo até o prazo natural acabar, é pedágio de UMA passagem só. A chama some
+-- (efeito + som) IMEDIATAMENTE depois, sempre — o que muda entre dono e inimigo
+-- é só se rola DANO junto.
+local function ConsumeFlame(match, hero, hexId)
+	local flame = match.flames[hexId]
+	if not flame then return false, false end
+
+	HeroView.PlayFlameHit(match.view, hexId)
+
+	local own = flame.ownerId == hero.ownerId
+	if not own then
+		ApplyDamage(match, hero, GameConfig.FLAME_DAMAGE, nil, false)
+	end
+
+	ClearFlame(match, hexId)
+	return true, own
+end
+
 -- ===================== MOVIMENTO =====================
 -- Reposiciona sem bookkeeping de turno — usado pelo empurrão do rage
 local function ForceMove(match, hero, hexId)
@@ -610,6 +688,7 @@ local function ForceMove(match, hero, hexId)
 	hero.position = hexId
 	match.occupied[hexId] = hero
 	HeroView.SetPosition(hero, hexId)
+	ConsumeFlame(match, hero, hexId)
 	return true
 end
 
@@ -623,7 +702,7 @@ local function BuildSkillApi(match)
 			ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 		end,
 		Heal = function(hero, amount, source) Heal(match, hero, amount, source) end,
-		IncreaseAttack = IncreaseAttack,
+		IncreaseAttack = function(hero, amount) IncreaseAttack(match, hero, amount) end,
 		GetHeroAt = function(hexId) return GetHeroAt(match, hexId) end,
 		GetAlliesInRange = function(hero, range) return GetAlliesInRange(match, hero, range) end,
 		GetEnemiesInRange = function(hero, range) return GetEnemiesInRange(match, hero, range) end,
@@ -636,7 +715,7 @@ local function BuildSkillApi(match)
 		-- pra não gastar um prazo no mesmo turno em que ele começou
 		ApplyStatusEffect = function(hero, effect)
 			effect.appliedTurnToken = match.turnToken
-			ApplyStatusEffect(hero, effect)
+			ApplyStatusEffect(match, hero, effect)
 		end,
 
 		ClearStatusEffects = ClearStatusEffects,
@@ -672,6 +751,21 @@ local function BuildSkillApi(match)
 		-- MatchManager.MoveHero, que cobra casa por casa em sincronia com o
 		-- passo visual).
 		LightFlame = function(hexId, hero) LightFlame(match, hexId, hero) end,
+
+		-- Karo: brilho só cosmético nas 6 casas a distância 1 do golpe giratório
+		-- — não muda quem é atingido (isso continua sendo GetEnemiesInRange, do
+		-- flameStrike), só deixa o alcance visível antes/durante o impacto.
+		IceStorm = function(hero)
+			HeroView.PlayIceStorm(match.view, hero.position)
+		end,
+
+		FlashAttackRange = function(hero)
+			local hexIds = {}
+			for _, hex in ipairs(HexGrid.GetNeighbors(hero.position)) do
+				table.insert(hexIds, hex.id)
+			end
+			HeroView.FlashAttackRange(match.view, hexIds)
+		end,
 
 		-- Golem: nasce um herói no meio da partida. O primeiro chamado cai na
 		-- própria casa de quem invocou (livre desde o SuppressGrave), e o
@@ -1176,13 +1270,16 @@ local function BreakBarrel(match, barrel, breaker)
 
 	if not (breaker and breaker.isAlive) then return end
 
+	LogEvent(match, "barrel", breaker.sideIndex,
+		("%s quebrou o barril de %s"):format(breaker.name, barrel.position))
+
 	if math.random() < GameConfig.BARREL_HEAL_CHANCE then
 		HeroView.PlaySkillEffect(breaker, "barrelHeal")
 		Heal(match, breaker, GameConfig.BARREL_HEAL)
 	else
 		HeroView.PlaySkillEffect(breaker, "barrelAttack")
-		IncreaseAttack(breaker, GameConfig.BARREL_ATTACK_BONUS)
-		ApplyStatusEffect(breaker, {
+		IncreaseAttack(match, breaker, GameConfig.BARREL_ATTACK_BONUS)
+		ApplyStatusEffect(match, breaker, {
 			type = "attackBuff",
 			duration = GameConfig.BARREL_BUFF_DURATION,
 			attackBonus = GameConfig.BARREL_ATTACK_BONUS, -- devolvido no ProcessStatusEffects
@@ -1216,6 +1313,9 @@ local function AttackBarrel(match, attacker, barrel)
 
 	barrel.hitsLeft -= 1
 	HeroView.PlayBarrelHit(barrel)
+
+	LogEvent(match, "barrel", attacker.sideIndex,
+		("%s bateu no barril de %s (faltam %d golpe(s))"):format(attacker.name, barrel.position, math.max(0, barrel.hitsLeft)))
 
 	if barrel.hitsLeft <= 0 then
 		BreakBarrel(match, barrel, attacker)
@@ -1562,6 +1662,10 @@ function BeginTurn(match, ownerId, number)
 	match.turnToken += 1
 	local token = match.turnToken
 
+	local side = SideOf(match, ownerId)
+	LogEvent(match, "turn", side and side.index,
+		("Turno %d — %s"):format(number, side and side.player and side.player.DisplayName or "Bot"))
+
 	match.turn = {
 		ownerId = ownerId,
 		number = number,
@@ -1702,6 +1806,8 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	if not path then return end
 
 	match.turn.moved[heroUid] = true
+	LogEvent(match, "move", hero.sideIndex,
+		("%s andou de %s para %s"):format(hero.name, hero.position, hexId))
 
 	-- Furor das Chamas (Karo): quantas casas do CAMINHO já estavam em chamas
 	-- DELE antes deste passo. Tem que ler match.flames AGORA — o acender de
@@ -1741,26 +1847,13 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 
 		HeroView.WalkStep(hero, stepHex)
 
-		-- Qualquer travessia CONSOME a chama — não é uma zona que fica
-		-- cobrando de todo mundo até o prazo natural acabar, é pedágio de UMA
-		-- passagem só. A chama some (efeito + som) IMEDIATAMENTE depois,
-		-- sempre — o que muda entre dono e inimigo é só se rola DANO junto.
-		local flame = match.flames[stepHex]
-		if flame then
-			if flame.ownerId ~= hero.ownerId then
-				-- inimigo cruzando o rastro: leva dano além de apagar
-				HeroView.PlayFlameHit(match.view, stepHex)
-				ApplyDamage(match, hero, GameConfig.FLAME_DAMAGE, nil, false)
-				ClearFlame(match, stepHex)
-				if not hero.isAlive then break end
-			else
-				-- o próprio Karo cruzando o rastro dele: sem dano (o bônus de
-				-- ataque do Furor já foi contado ANTES deste loop, em
-				-- enteredFlameCount) — só apaga com o mesmo efeito e som
-				HeroView.PlayFlameHit(match.view, stepHex)
-				ClearFlame(match, stepHex)
-				consumedOwnTiles[stepHex] = true
-			end
+		-- o próprio Karo cruzando o rastro dele: sem dano (o bônus de ataque do
+		-- Furor já foi contado ANTES deste loop, em enteredFlameCount)
+		local _, ownFlame = ConsumeFlame(match, hero, stepHex)
+		if ownFlame then
+			consumedOwnTiles[stepHex] = true
+		elseif not hero.isAlive then
+			break
 		end
 	end
 	match.busy = false
@@ -2360,6 +2453,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
 		-- appliedTurnToken }. Fora de `occupied` de propósito — chama não bloqueia
 		-- passagem, só cobra pedágio de quem atravessa.
 		flames = {},
+		log = {},
 		usedHeroIds = {},
 		placementSide = 1, -- lado 1 escolhe primeiro: 1,2,1,2...
 		starterId = sides[1].id,
@@ -2477,6 +2571,11 @@ function MatchManager.HandlePlayerLeft(player)
 	AwardAbandon(match, side)
 	side.player = nil
 	EndMatch(match)
+end
+
+function MatchManager.GetLog(player)
+	local match = MatchOfPlayer(player)
+	return match and match.log or {}
 end
 
 function MatchManager.ActiveCount()

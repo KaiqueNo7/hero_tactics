@@ -117,6 +117,16 @@ PixelIcons.PATTERNS = {
 		"#..#..#",
 	},
 
+	book = {
+		"#######",
+		"#.#...#",
+		"#.#.#.#",
+		"#.#...#",
+		"#.#.#.#",
+		"#.#...#",
+		"#######",
+	},
+
 	-- RANGED: círculo com os quatro traços e o ponto no centro
 	ranged = {
 		"...#...",
@@ -215,3 +225,4 @@ function PixelIcons.SetColor(holder, color)
 end
 
 return PixelIcons
+

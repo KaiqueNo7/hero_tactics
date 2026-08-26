@@ -557,6 +557,8 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 		MatchManager.Resurrect(player, arg1)
 	elseif action == "leaveMatch" then
 		MatchManager.LeaveMatch(player)
+	elseif action == "matchLog" then
+		GameAction:FireClient(player, "matchLog", MatchManager.GetLog(player))
 	elseif action == "cancelQueue" then
 		LeaveQueue(player, true)
 	elseif action == "fight" then

@@ -308,6 +308,9 @@ Skills.iceEffect = {
 Skills.iceStorm = {
 	triggers = { "onDie" },
 	apply = function(ctx)
+		ctx.api.IceStorm(ctx.hero)
+		ctx.api.PlaySkillSound("iceStorm")
+
 		for _, enemy in ipairs(ctx.api.GetEnemiesInRange(ctx.hero, 1)) do
 			ctx.api.Effect(enemy)
 			Freeze(ctx.api, enemy)
@@ -483,6 +486,9 @@ Skills.flameStrike = {
 	triggers = { "onAttack" },
 	apply = function(ctx)
 		ctx.api.Effect(ctx.hero)
+		-- só cosmético: mostra as 6 casas a distância 1 que o giro alcança,
+		-- não muda quem é atingido (isso é o GetEnemiesInRange logo abaixo)
+		ctx.api.FlashAttackRange(ctx.hero)
 
 		for _, enemy in ipairs(ctx.api.GetEnemiesInRange(ctx.hero, 1)) do
 			-- o alvo principal fica de fora: o dano dele sai do PerformAttack, e
