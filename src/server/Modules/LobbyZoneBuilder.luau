@@ -11,19 +11,26 @@
 	lobby é montado à mão — o construtor entrega a superfície nivelada, o encaixe
 	dos quadrados e a rede anti-queda, e o Studio faz o resto por cima.
 
-	IDEMPOTENTE, e isso não é detalhe. Tudo que ele cria mora dentro de uma pasta
-	só (Workspace.LobbyTrail) e é reconstruído do zero a cada chamada. Rodar duas
-	vezes dá o mesmo lobby, não dois lobbies empilhados — que foi exatamente o
-	risco de construir cenário por script em cima de um place que já existe.
+	O PLACE GANHA DELE. Achando Workspace.LobbyTrail já montado, ele ADOTA o que
+	está lá e não constrói nada — nem ilha, nem ponte, nem reposiciona quadrado.
+	Ele só levanta a trilha num place que ainda não tem uma.
 
-	Nada FORA dessa pasta é tocado, com uma exceção declarada: os quadrados de
-	confronto, que são reposicionados nos encaixes da zona do grupo deles (a
-	política e a saída de emergência estão no cabeçalho do LobbyZones).
+	Isso não é preguiça, é o bug que ele causava: a trilha nasceu por código, foi
+	alinhada à mão no Studio (ilhas giradas pra ficar de esquadro com as pontes,
+	quadrados espalhados pela ilha) e o play seguinte desfazia tudo, em silêncio,
+	de volta pros números da planta. Alinhar pelo Explorer é o fluxo normal deste
+	projeto — o construtor entrega a primeira versão e sai da frente.
+
+	Continua IDEMPOTENTE quando constrói: tudo mora numa pasta só e sai junto,
+	então um rebuild dá o mesmo lobby, nunca dois empilhados.
+
+	Pra jogar fora a montagem do place e voltar pra planta, é explícito:
+
+		require(game.ServerScriptService.Modules.LobbyZoneBuilder).Build(true)
 
 	Igual ao LightingSetup e ao LeaderboardBoardView, dá pra chamar em modo Edit
-	pra ver o resultado sem dar play:
-
-		require(game.ServerScriptService.Modules.LobbyZoneBuilder).Build()
+	pra ver o resultado sem dar play (aqui sem argumento não faz nada, porque a
+	trilha já existe — use Build(true) pra reconstruir de verdade).
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -35,6 +42,12 @@ local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local LobbyZoneBuilder = {}
 
 local FOLDER_NAME = "LobbyTrail"
+
+-- Lembrado entre as duas metades da entrada: BuildTerrain e PlacePads são
+-- chamadas separadas (ver ENTRADA), e quem decide se pode mexer nos quadrados é
+-- o que aconteceu com o terreno lá atrás. Trilha adotada do place = a montagem à
+-- mão manda em tudo, quadrado incluído.
+local adopted = false
 
 -- ===== PEÇAS =====
 local function NewPart(name, size, cframe, color, material, parent)
@@ -60,15 +73,18 @@ local function BuildIsland(zone, parent)
 	local span = LobbyZones.ISLAND_SPAN
 	local thickness = LobbyZones.ISLAND_THICKNESS
 	local center = Vector3.new(zone.center.X, LobbyZones.GROUND_Y, zone.center.Y)
+	-- de esquadro com a ponte, que sai na diagonal: ilha quadrada sem girar
+	-- encontra a ponte torta (ver `rotation` no LobbyZones)
+	local spin = CFrame.Angles(0, math.rad(zone.rotation or 0), 0)
 
 	NewPart(zone.id .. "_Rim",
 		Vector3.new(span + 8, thickness * 1.6, span + 8),
-		CFrame.new(center - Vector3.new(0, thickness * 0.9, 0)),
+		CFrame.new(center - Vector3.new(0, thickness * 0.9, 0)) * spin,
 		zone.rim, Enum.Material.Rock, parent)
 
 	local floor = NewPart(zone.id .. "_Floor",
 		Vector3.new(span, thickness, span),
-		CFrame.new(center - Vector3.new(0, thickness / 2, 0)),
+		CFrame.new(center - Vector3.new(0, thickness / 2, 0)) * spin,
 		zone.ground.color, zone.ground.material, parent)
 
 	-- placa com o nome: é o que transforma "mais uma ilha" em "cheguei na
@@ -199,6 +215,11 @@ end
 -- LobbyZones: quem manda na coordenada é a planta, não o Explorer — e
 -- `KeepPosition` no pad é a saída pra travar um quadrado no lugar.
 function LobbyZoneBuilder.PlacePads()
+	if adopted then
+		print("LobbyZoneBuilder: trilha adotada do place — quadrados mantidos onde estão.")
+		return
+	end
+
 	local byGroup = {}
 	for _, fight in ipairs(Campaign.FIGHTS) do
 		byGroup[fight.group] = byGroup[fight.group] or {}
@@ -239,8 +260,17 @@ end
 -- cria os pads que faltam é o GameStartTrigger, então ele levanta o terreno,
 -- deixa os pads nascerem e só depois manda posicionar. Numa chamada só, o
 -- PlacePads correria antes de o primeiro pad existir e não acharia nada.
-function LobbyZoneBuilder.BuildTerrain()
+function LobbyZoneBuilder.BuildTerrain(force)
 	local existing = Workspace:FindFirstChild(FOLDER_NAME)
+
+	if existing and not force then
+		adopted = true
+		print(("LobbyZoneBuilder: %s já montado no place (%d peças) — trilha adotada, nada reconstruído.")
+			:format(FOLDER_NAME, #existing:GetDescendants()))
+		return
+	end
+
+	adopted = false
 	if existing then existing:Destroy() end
 
 	local folder = Instance.new("Folder")
@@ -262,8 +292,8 @@ end
 
 -- Atalho pro modo Edit, onde não existe GameStartTrigger rodando pra ordenar as
 -- duas metades.
-function LobbyZoneBuilder.Build()
-	LobbyZoneBuilder.BuildTerrain()
+function LobbyZoneBuilder.Build(force)
+	LobbyZoneBuilder.BuildTerrain(force)
 	LobbyZoneBuilder.PlacePads()
 end
 

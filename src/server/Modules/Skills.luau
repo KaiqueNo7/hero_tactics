@@ -243,7 +243,7 @@ Skills.clean = {
 	end,
 }
 
--- Bramm — empurra o alvo 1 casa; se não der, causa ataque +1
+-- Bramm — empurra o alvo 1 casa; se não der, o golpe leva RAGE_BLOCKED_BONUS a mais
 Skills.rage = {
 	triggers = { "onAttack" },
 	apply = function(ctx)
@@ -256,7 +256,8 @@ Skills.rage = {
 			-- sem damageApplied: o alvo ainda leva o dano normal, já empurrado
 		else
 			ctx.api.Effect(ctx.target) -- antes do dano: o golpe pode matar o alvo
-			ctx.api.ApplyDamage(ctx.target, ctx.hero.attack + 1, ctx.hero, ctx.isCounterAttack)
+			ctx.api.ApplyDamage(ctx.target, ctx.hero.attack + GameConfig.RAGE_BLOCKED_BONUS,
+				ctx.hero, ctx.isCounterAttack)
 			ctx.damageApplied = true
 		end
 	end,
@@ -367,6 +368,18 @@ local function SyncWolf(ctx)
 		hero.frenzyHealed = true
 		api.Effect(hero, "frenzy")
 		api.Heal(hero, GameConfig.MERLIN_FRENZY_HEAL)
+	end
+
+	-- A IMUNIDADE COMEÇA LIMPANDO. Bloquear só o que vier depois deixaria o lobo
+	-- "imune" ardendo num veneno pego um turno antes — e a cura de entrada, que
+	-- sai logo acima, seria comida pelo tique do próprio veneno que ele deveria
+	-- estar ignorando. Só na VIRADA (desligado -> ligado): repetir a cada
+	-- gatilho faria o mesmo trabalho à toa quatro vezes por turno.
+	--
+	-- Quem barra o que chega depois é o ApplyStatusEffect, que lê frenzyActive
+	-- logo abaixo — por isso a limpeza vem ANTES de escrever o campo.
+	if frenzy and not hero.frenzyActive then
+		api.ClearNegativeEffects(hero)
 	end
 
 	hero.frenzyActive = frenzy
@@ -530,6 +543,38 @@ Skills.flameFury = {
 		-- reaproveita o efeito de "rise" do próprio rastro em vez de criar um
 		-- novo — combina mais com "carregou energia" do que o "burst" de impacto
 		ctx.api.Effect(ctx.hero, "flamePath")
+	end,
+}
+
+-- ===== LUCY: A IRMÃ DO KARO =====
+-- Mesmo gatilho do flameFury (onMove + enteredFlameCount, já contado pelo
+-- MoveHero pras casas em chamas do PRÓPRIO LADO no caminho andado — Karo e
+-- Lucy compartilham o mesmo fogo por construção, ver match.flames), payoff
+-- oposto: cura em vez de ataque. Mais simples que o espelho dele porque cura
+-- é HP instantâneo, não status que acumula — não tem bônus anterior pra
+-- desfazer antes de somar de novo.
+Skills.flameHeal = {
+	triggers = { "onMove" },
+	apply = function(ctx)
+		if ctx.movedHero ~= ctx.hero then return end
+		if not ctx.enteredFlameCount or ctx.enteredFlameCount <= 0 then return end
+
+		ctx.api.Heal(ctx.hero, ctx.enteredFlameCount * GameConfig.LUCY_FLAME_HEAL)
+		ctx.api.Effect(ctx.hero, "flamePath") -- reaproveita o efeito visual do Karo
+	end,
+}
+
+-- Lucy — aliados adjacentes tomam 1 a menos de dano. Mesmo formato do
+-- autoDefense do Ralph (passive = true, sem trigger), só que a redução vale
+-- pra quem está do LADO dela, não pra ela mesma — por isso o campo se chama
+-- modifyIncomingDamageNearby: quem chama isso (ApplyDamage, em MatchManager)
+-- itera as aliadas perto de quem apanhou, separado do loop que já existe
+-- pras habilidades da própria vítima.
+Skills.emberShield = {
+	passive = true,
+	triggers = {},
+	modifyIncomingDamageNearby = function(amount, info)
+		return math.max(0, amount - 1)
 	end,
 }
 

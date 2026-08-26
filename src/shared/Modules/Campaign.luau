@@ -45,6 +45,8 @@ Campaign.FIGHTS = {
 	{ hero = 14, group = 4, team = { 3, 14, 8 } },   -- Golem:   Mineiro, Golem, Elaria
 	{ hero = 13, group = 4, team = { 10, 7, 13 } },  -- Nash:    Kor, Noctin, Nash
 	{ hero = 12, group = 4, team = { 12, 4, 6 } },   -- Karo:    Karo, Blade, Ceos
+
+	{ hero = 17, group = 5, team = { 17, 12, 14 } }, -- Lucy:    Lucy, Karo, Golem — só abre com o grupo 4 inteiro na mão
 }
 
 -- Quantos heróis abrem o PvP. A condição é a CONTAGEM, não a lista: seis

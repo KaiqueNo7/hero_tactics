@@ -257,7 +257,9 @@ local function EstimateDamage(match, attacker, target, fromPos)
 	end
 	if HasSkill(attacker, "rage") then
 		local behind = HexGrid.GetLineBeyond(fromPos, target.position, 1)[1]
-		if not (behind and IsFree(match, behind)) then damage += 1 end
+		if not (behind and IsFree(match, behind)) then
+			damage += GameConfig.RAGE_BLOCKED_BONUS
+		end
 	end
 
 	-- Emboscada: o golpe que SAI da sombra leva o bônus. Sem isto a IA achava
@@ -375,7 +377,8 @@ local function PushValue(match, attacker, target, fromPos, ctx, damage)
 	if damage >= target.currentHp then return 0 end -- morre no golpe: não há empurrão
 
 	local behind = HexGrid.GetLineBeyond(fromPos, target.position, 1)[1]
-	-- bloqueado não empurra, vira +1 de dano (já contado no EstimateDamage)
+	-- bloqueado não empurra: vira RAGE_BLOCKED_BONUS de dano extra, que o
+	-- EstimateDamage já contou — aqui só interessa o caso em que ele EMPURRA
 	if not (behind and IsFree(match, behind)) then return 0 end
 
 	-- isolar é o ponto: já sozinho, o empurrão não muda a conta de ninguém

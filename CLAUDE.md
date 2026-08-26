@@ -116,17 +116,25 @@ opens the purchase prompt, it never asserts a price.
 ### Lobby layout
 
 `LobbyZones.luau` (shared) is the numeric/color *plan* for the lobby trail (one themed island per
-campaign group, connected by bridges); `LobbyZoneBuilder.server` is the idempotent builder that
-reads that plan and rebuilds `Workspace.LobbyTrail` from scratch on every server start — moving a
-piece by hand in the Explorer doesn't stick, edit the numbers in `LobbyZones` instead (or set the
-`KeepPosition` attribute on a specific pad to exempt it). Several server modules follow this same
+campaign group, connected by bridges); `LobbyZoneBuilder.server` builds `Workspace.LobbyTrail` from
+that plan **only when the place doesn't already have one**. Finding an existing `LobbyTrail`, it
+adopts the place's layout and touches nothing — islands, bridges and fight pads all stay where
+Studio put them, because aligning the trail by hand is the normal workflow here. `Build(true)` from
+the command bar is the explicit opt-out that discards the hand layout and rebuilds from the plan.
+The plan numbers stay live even when adopted (zone-ambience detection in `ZoneAt`, and where a
+brand-new pad is born), so keep them measured from the real lobby. Several server modules follow this same
 "idempotent builder driven by a shared-module plan" pattern: `LightingSetup`, `LeaderboardBoardView`,
 and `LobbyZoneBuilder` can all be re-run from the command bar in Edit mode without duplicating
 what they build.
 
 ### Comment convention
 
-Non-obvious constants and decisions in this codebase are heavily commented with *why*, not *what*
-— especially in `GameConfig.luau` (game balance numbers), `MatchManager.luau`, and `Campaign.luau`.
-Read the header comment of a module before changing it; the reasoning for a specific number or
-architectural choice is usually already written down.
+**Never add comments to code.** Not header blocks, not inline notes, not `--` explanations above a
+constant, not even to justify a non-obvious number. This is absolute and has no exceptions — if the
+reasoning matters, put it in the chat reply, not in the file.
+
+Existing comments are a different matter: leave them alone. Plenty of older modules
+(`GameConfig.luau`, `MatchManager.luau`, `Campaign.luau`, `LobbyZones.luau`) carry heavy *why*
+commentary from before this rule, and they are still worth reading before changing a number or a
+decision. Just don't write more of them. Editing a line whose comment is now wrong means deleting
+or correcting that comment, never expanding it.

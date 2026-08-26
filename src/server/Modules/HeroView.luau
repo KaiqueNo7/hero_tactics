@@ -137,6 +137,27 @@ local ABILITY_BADGES = {
 local SPRITE_HEIGHT = SPRITE_WIDTH * (HeroData.FRAME_HEIGHT / HeroData.FRAME_WIDTH)
 local ANCHOR_LIFT = SPRITE_HEIGHT * 0.4
 
+-- ===== PÉS PLANTADOS COM ScaleType.Fit =====
+-- O SizeOffset lá embaixo planta na casa o pé da MOLDURA. Só que o Fit
+-- centraliza a arte DENTRO da moldura (ver HeroData.GetArtAspect): arte mais
+-- larga que a moldura 165x231 deixa faixa vazia em cima e embaixo, e a de baixo
+-- deixa o desenho boiando no ar. Não é sutil — o Golem é quase o dobro de largo
+-- que a moldura e perdia 21% da altura do quadro só nisso (~2,4 studs). E a
+-- faixa cresce junto com o `scale`, então ampliá-lo piorou o problema.
+--
+-- Fit não aceita alinhamento ("encosta embaixo" não existe), então descontamos a
+-- faixa na mão. Em FRAÇÃO, igual ao 0,5 que ela corrige: assim acompanha o zoom
+-- (a moldura muda de tamanho com a distância, ver PISO EM PIXELS) e o `scale`
+-- de graça, sem recalcular nada.
+local FRAME_ASPECT = HeroData.FRAME_WIDTH / HeroData.FRAME_HEIGHT
+
+local function FootSizeOffset(data)
+	-- altura desenhada / altura da moldura. Dá 1 para arte mais alta que a
+	-- moldura: aí o Fit limita pela altura e não sobra faixa nenhuma.
+	local drawn = math.min(1, FRAME_ASPECT / HeroData.GetArtAspect(data))
+	return 0.5 - (1 - drawn) / 2
+end
+
 -- ===== ORDEM DE DESENHO ENTRE O HERÓI E O CRACHÁ DELE =====
 -- ZIndex NÃO resolve isto: ele só ordena filhos DENTRO de um mesmo BillboardGui,
 -- e o desenho do herói e o crachá são dois BillboardGuis irmãos. Entre eles quem
@@ -1133,10 +1154,11 @@ function HeroView.Create(hero)
 		spriteGui.Size = UDim2.new(
 			SPRITE_WIDTH * scale, SPRITE_PIXEL_FLOOR_W * scale,
 			SPRITE_HEIGHT * scale, SPRITE_PIXEL_FLOOR_H * scale)
-		-- referência no topo da casa; o SizeOffset sobe meio sprite a partir
-		-- dali, então os pés ficam plantados seja qual for o tamanho desenhado
+		-- referência no topo da casa; o SizeOffset sobe a partir dali o bastante
+		-- pra plantar o pé do DESENHO na casa, seja qual for o zoom, o `scale` ou
+		-- a proporção da arte (ver PÉS PLANTADOS COM ScaleType.Fit)
 		spriteGui.StudsOffsetWorldSpace = Vector3.new(0, -ANCHOR_LIFT, 0)
-		spriteGui.SizeOffset = Vector2.new(0, 0.5)
+		spriteGui.SizeOffset = Vector2.new(0, FootSizeOffset(data))
 		-- só profundidade, pra ganhar do próprio crachá no empate (ver
 		-- SPRITE_DEPTH_BIAS). O plantar dos pés continua a cargo das duas linhas
 		-- acima, que são world-space e não mudam.

@@ -373,6 +373,21 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 		end
 	end
 
+	-- passivas de ALIADOS por perto (ex: emberShield da Lucy) — mesmo formato do
+	-- loop acima, mas olhando quem está do lado de quem apanhou, não a própria
+	-- vítima. Primeira aura de dano do jogo; até aqui toda passiva olhava só a
+	-- ficha de quem estava recebendo.
+	for _, ally in ipairs(GetAlliesInRange(match, hero, 1)) do
+		for _, key in ipairs(ally.abilities) do
+			local skill = Skills[key]
+			if skill and skill.modifyIncomingDamageNearby then
+				amount = skill.modifyIncomingDamageNearby(amount, {
+					hero = hero, ally = ally, attacker = attacker, isCounterAttack = isCounterAttack or false,
+				})
+			end
+		end
+	end
+
 	-- efeito 'wound' soma dano extra (mesma regra do hero.js)
 	for _, effect in ipairs(hero.statusEffects) do
 		if effect.type == "wound" then amount += 1 end
@@ -439,7 +454,19 @@ local function IncreaseAttack(hero, amount)
 end
 
 -- ===================== STATUS EFFECTS =====================
+-- PONTO ÚNICO. Todo efeito do jogo entra por aqui: o veneno da Vic, o gelo do
+-- Kor (pelo golpe e pela Tempestade), o Furor do Karo e o bônus do barril — uns
+-- pelo wrapper da API das skills, o barril chamando direto. É o que torna a
+-- imunidade do Frenesi uma regra só, em vez de um `if` repetido em cada skill
+-- que hoje aplica debuff (e em cada uma que vier depois).
 local function ApplyStatusEffect(hero, effect)
+	-- Merlin em Frenesi não pega debuff. A checagem é por TIPO
+	-- (GameConfig.IsNegativeEffect), então o lobo continua recebendo o que é
+	-- bom pra ele: o empréstimo de ataque do barril passa direto.
+	if hero.frenzyActive and GameConfig.IsNegativeEffect(effect.type) then
+		return
+	end
+
 	for index = #hero.statusEffects, 1, -1 do
 		if hero.statusEffects[index].type == effect.type then
 			table.remove(hero.statusEffects, index)
@@ -452,6 +479,29 @@ end
 
 local function ClearStatusEffects(hero)
 	hero.statusEffects = {}
+	HeroView.UpdateStats(hero)
+end
+
+-- Limpa SÓ os debuffs, preservando o resto. Existe pro instante em que o Frenesi
+-- liga: um lobo que já estava envenenado continuaria queimando por três turnos
+-- sob uma habilidade que se anuncia como imunidade, e o jogador leria isso como
+-- bug. Não dá pra reaproveitar o ClearStatusEffects acima — ele leva junto o
+-- bônus de ataque do barril, e aí a "imunidade" custaria caro ao próprio Merlin.
+local function ClearNegativeEffects(hero)
+	local remaining = {}
+	local removeu = false
+
+	for _, effect in ipairs(hero.statusEffects) do
+		if GameConfig.IsNegativeEffect(effect.type) then
+			removeu = true
+		else
+			table.insert(remaining, effect)
+		end
+	end
+
+	if not removeu then return end
+
+	hero.statusEffects = remaining
 	HeroView.UpdateStats(hero)
 end
 
@@ -590,6 +640,7 @@ local function BuildSkillApi(match)
 		end,
 
 		ClearStatusEffects = ClearStatusEffects,
+		ClearNegativeEffects = ClearNegativeEffects,
 
 		-- Contagem no TABULEIRO INTEIRO, não por alcance. O GetAlliesInRange só
 		-- enxerga vizinhança, e o Merlin precisa saber se sobrou alguém do time
@@ -677,8 +728,32 @@ local function Snapshot(match, viewerId)
 	local viewerSide = SideOf(match, viewerId)
 	local opponent = OpponentSide(match, viewerId)
 
-	local heroes = {}
+	-- ===== A ORDEM DA COLUNA SAI DAQUI =====
+	-- `match.heroes` é dicionário, e a ordem de `pairs` muda entre snapshots — a
+	-- coluna de retratos do cliente segue esta lista, então sem ordenar os
+	-- retratos trocavam de lugar sozinhos a cada atualização.
+	--
+	-- Ordena os REGISTROS, não a lista pronta: só o registro tem `sideIndex` e
+	-- `dataId`: o oco do invisível (logo abaixo) nem carrega dataId.
+	--
+	-- Ordenar por uid era um bug: uid é `matchId_dono_dataId`, uma STRING, e
+	-- "1_X_14" < "1_X_2" na comparação textual. O Golem (14) vinha antes do Vic
+	-- (2), e quando ele estilhaçava os três registros dele (14, 15, 16) tomavam
+	-- as três vagas da coluna e os outros heróis do time sumiam da tela.
+	--
+	-- `sideIndex` e não `ownerId`: ownerId é número pro jogador e a string "BOT"
+	-- pro bot, e comparar os dois tipos com `<` estoura.
+	local ordered = {}
 	for _, hero in pairs(match.heroes) do
+		table.insert(ordered, hero)
+	end
+	table.sort(ordered, function(a, b)
+		if a.sideIndex ~= b.sideIndex then return a.sideIndex < b.sideIndex end
+		return a.dataId < b.dataId
+	end)
+
+	local heroes = {}
+	for _, hero in ipairs(ordered) do
 		-- ===== O QUE ESTE ESPECTADOR NÃO PODE VER =====
 		-- Primeiro caso do jogo em que o mesmo herói vai diferente pros dois
 		-- lados. O Shadow invisível chega ao adversário como um registro OCO: a
@@ -747,6 +822,16 @@ local function Snapshot(match, viewerId)
 			graveHitsLeft = (not hero.isAlive) and hero.graveHitsLeft or nil,
 			graveDestroyed = (not hero.isAlive) and hero.graveDestroyed or nil,
 
+			-- Golem: uid do CORPO que gerou este pedaço. O elo já existia aqui
+			-- dentro (`graveOwner`, ver DeferGrave), só não atravessava a rede —
+			-- e sem ele o cliente não tem como saber que os dois pedaços moram no
+			-- card do Golem em vez de gastarem duas vagas próprias.
+			--
+			-- Vai o uid do PAI e não um "sou invocação": o Golem ressuscita pela
+			-- Casa de Promoção e estilhaça de novo, então a pergunta que importa
+			-- não é "este é um pedaço?" e sim "pedaço de QUEM?".
+			summonOf = hero.graveOwner and hero.graveOwner.uid or nil,
+
 			-- O que ele fez na partida. SÓ NO FIM: durante o jogo isto seria uma
 			-- tabela a mais por herói em cada um dos muitos snapshots por turno,
 			-- pra alimentar uma tela que ninguém está vendo ainda.
@@ -773,12 +858,9 @@ local function Snapshot(match, viewerId)
 	end
 	table.sort(barrels, function(a, b) return a.uid < b.uid end)
 
-	-- `match.heroes` é dicionário: a ordem de pairs() muda entre snapshots. Isso
-	-- nunca importou pra pintar o tabuleiro (tudo é lido por hexId), mas a coluna
-	-- de retratos da UI segue esta lista — sem ordenar, os retratos trocavam de
-	-- lugar sozinhos a cada atualização. O uid é matchId_dono_heroi, então
-	-- ordenar por ele agrupa por jogador e mantém a ordem fixa a partida inteira.
-	table.sort(heroes, function(a, b) return a.uid < b.uid end)
+	-- (a ordem dos heróis já foi resolvida lá em cima, antes do laço — ver o
+	-- comentário sobre `ordered`. Ordenar de novo aqui, por uid, era exatamente
+	-- o bug que derrubava metade do time da coluna.)
 
 	local winner = nil
 	if match.winner == "draw" then

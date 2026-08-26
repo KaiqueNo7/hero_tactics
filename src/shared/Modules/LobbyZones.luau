@@ -16,13 +16,23 @@
 	montado à mão. O cenário é do Studio; daqui sai a superfície e o encaixe dos
 	quadrados, e nada mais.
 
-	QUEM MANDA NAS COORDENADAS É ESTE ARQUIVO
-	Mesma política do LightingSetup: o construtor reposiciona os quadrados da
-	campanha nos encaixes calculados aqui toda vez que o servidor sobe. Arrastar
-	um pad no Explorer não se sustenta — ele volta pro lugar no próximo play, sem
-	erro nenhum na saída, que é o pior jeito de descobrir. Mexa nos números daqui.
-	A saída de emergência é o atributo `KeepPosition` no pad: com ele, o
-	construtor não encosta naquele quadrado.
+	QUEM MANDA NAS COORDENADAS É O PLACE, NÃO ESTE ARQUIVO
+	Isto aqui é a planta de PARTIDA: o construtor só levanta a trilha num place
+	que ainda não tem uma (repo recém-clonado). Achando Workspace.LobbyTrail
+	pronto, ele ADOTA o que está lá e não encosta em nada — nem nas ilhas, nem
+	nas pontes, nem nos quadrados. Alinhar tudo à mão no Studio é o fluxo normal,
+	e o ajuste fica.
+
+	Foi o contrário até agora, e era o pior dos mundos: o play desfazia o
+	alinhamento feito à mão sem erro nenhum na saída. Se quiser mesmo jogar fora
+	a montagem do place e voltar pra esta planta, é explícito, pela barra de
+	comando: `require(game.ServerScriptService.Modules.LobbyZoneBuilder).Build(true)`.
+
+	Os números abaixo continuam valendo pra três coisas mesmo com a trilha
+	adotada: onde o ar da zona troca (ZoneAt), onde os quadrados nascem num place
+	virgem (PadSlots) e o que um rebuild forçado reproduz. Por isso eles foram
+	MEDIDOS do lobby montado à mão, e não o contrário — planta e place que
+	discordam viram bug silencioso.
 
 	Este módulo é só a PLANTA (números e paleta). Quem levanta as peças é
 	ServerScriptService.Modules.LobbyZoneBuilder; quem troca o ar quando o
@@ -55,10 +65,14 @@ LobbyZones.LOBBY_CENTER = Vector2.new(1, -2)
 LobbyZones.LOBBY_HALF = Vector2.new(97.5, 92.5)
 
 -- ===== AS ZONAS =====
--- `center` no plano XZ, MEDIDO do lobby montado à mão no Studio: as quatro
--- ilhas ficam em CRUZ em volta do centro, cada uma a uma ponte de casa. Quem
--- manda nestes números continua sendo este arquivo (o construtor reposiciona
--- tudo a cada boot) — mas eles vieram do layout real, não o contrário.
+-- `center` no plano XZ e `rotation` em GRAUS, os dois MEDIDOS do lobby montado
+-- à mão no Studio: as quatro ilhas ficam em CRUZ em volta do centro, cada uma a
+-- uma ponte de casa, e cada uma girada pra ficar de esquadro com a ponte dela.
+--
+-- A rotação existe porque a ponte sai na diagonal (a reta centro-a-centro), e
+-- ilha quadrada sem girar encontra a ponte torta. O construtor só usa isso num
+-- place virgem ou num rebuild forçado — no place montado, ele adota o que já
+-- está lá (ver cabeçalho).
 --
 -- NÃO existe `props`. As ilhas nascem só com chão e borda: a vegetação era
 -- gerada por código e ficava suja ao lado de qualquer coisa feita à mão.
@@ -77,7 +91,8 @@ LobbyZones.ZONES = {
 		group = 1,
 		name = "Clareira Verde",
 		blurb = "Onde os primeiros desafiantes acampam.",
-		center = Vector2.new(169, 50),
+		center = Vector2.new(164.2, 48.4),
+		rotation = 71.8,
 		ground = { color = Color3.fromRGB(106, 170, 90), material = Enum.Material.Grass },
 		rim = Color3.fromRGB(94, 72, 48),
 		ambience = {
@@ -94,7 +109,8 @@ LobbyZones.ZONES = {
 		group = 2,
 		name = "Bosque Sombrio",
 		blurb = "As árvores aqui já morreram. Alguma coisa continua andando.",
-		center = Vector2.new(49, -154),
+		center = Vector2.new(47.8, -150.2),
+		rotation = -17.9,
 		ground = { color = Color3.fromRGB(58, 54, 68), material = Enum.Material.Ground },
 		rim = Color3.fromRGB(40, 36, 48),
 		ambience = {
@@ -111,7 +127,8 @@ LobbyZones.ZONES = {
 		group = 3,
 		name = "Geleira",
 		blurb = "O gelo do Kor não é metáfora: aqui ele é o chão.",
-		center = Vector2.new(-165, -51),
+		center = Vector2.new(-161.1, -50.0),
+		rotation = -14.8,
 		ground = { color = Color3.fromRGB(222, 236, 246), material = Enum.Material.Snow },
 		rim = Color3.fromRGB(158, 190, 212),
 		ambience = {
@@ -128,7 +145,8 @@ LobbyZones.ZONES = {
 		group = 4,
 		name = "Forja de Brasa",
 		blurb = "Pedra, fogo e o que sobrou de quem chegou antes.",
-		center = Vector2.new(-54, 160),
+		center = Vector2.new(-52.3, 155.3),
+		rotation = -20.0,
 		ground = { color = Color3.fromRGB(64, 52, 50), material = Enum.Material.Basalt },
 		rim = Color3.fromRGB(42, 34, 33),
 		ambience = {

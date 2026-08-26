@@ -234,6 +234,12 @@ local DEAD_CARD = Color3.fromRGB(18, 19, 23)
 local STAT_LABEL_SIZE = UDim2.new(0, 26, 0, 13)
 local ATK_TEXT_COLOR = Color3.fromRGB(150, 200, 255)
 
+-- Sub-linha dos pedaços do Golem dentro do card do corpo. 11px de altura é o que
+-- deixa as duas caberem na barriga do card (y 16..38) sem encostar no retrato
+-- nem na faixa do nome; 9pt é o menor tamanho em que dois dígitos ainda se leem.
+local SUB_LINE_H = 11
+local SUB_TEXT_SIZE = 9
+
 -- Atribuída lá embaixo, junto com o modal — o clique do card precisa dela
 -- antes dela existir, então o forward declare mora aqui.
 local showHeroDetail
@@ -373,6 +379,71 @@ local function buildTeamColumn(alignLeft)
 		-- redundante — num card de 54px o selo é pequeno demais pra ser lido de
 		-- relance, que é justamente o que ele precisa ser.
 
+		-- ===== SUB-LINHAS DOS PEDAÇOS (Golem estilhaçado) =====
+		-- O Golem morre e vira dois mini-golens. Eles são heróis de verdade no
+		-- servidor, e antes tomavam uma vaga da coluna cada um — num time de três,
+		-- os três registros do Golem enchiam a coluna e os outros dois heróis
+		-- sumiam da tela. Aqui os dois pedaços dividem o card do CORPO.
+		--
+		-- Cabem na barriga do card: o retrato acaba em y=39 e a faixa do nome
+		-- começa em y=38, então as duas linhas ocupam y 16..38 sem empurrar nada.
+		-- Enquanto o Golem está vivo não existe pedaço nenhum, então não há
+		-- disputa de espaço — elas ficam invisíveis a partida inteira pra todo
+		-- herói que não seja um Golem partido.
+		local subs = {}
+		for subIndex = 1, 2 do
+			local line = Instance.new("Frame")
+			line.Name = "Piece" .. subIndex
+			line.Position = UDim2.new(0, 0, 0, 16 + (subIndex - 1) * (SUB_LINE_H + 1))
+			line.Size = UDim2.new(1, 0, 0, SUB_LINE_H)
+			line.BackgroundColor3 = Color3.fromRGB(10, 11, 16)
+			line.BackgroundTransparency = 0.35
+			line.BorderSizePixel = 0
+			line.ZIndex = 4
+			line.Visible = false
+			line.Parent = card
+
+			-- barra de vida do pedaço: é o próprio fundo da linha preenchido por
+			-- escala, sem instância de trilho separada
+			local fill = Instance.new("Frame")
+			fill.Name = "Fill"
+			fill.Size = UDim2.fromScale(1, 1)
+			fill.BackgroundColor3 = Color3.fromRGB(80, 200, 110)
+			fill.BackgroundTransparency = 0.55
+			fill.BorderSizePixel = 0
+			fill.ZIndex = 4
+			fill.Parent = line
+
+			-- mesma convenção do card grande: ATK à esquerda em azul, vida à
+			-- direita em branco, só reduzida
+			local atk = Instance.new("TextLabel")
+			atk.Name = "Atk"
+			atk.Position = UDim2.new(0, 3, 0, 0)
+			atk.Size = UDim2.new(0, 18, 1, 0)
+			atk.BackgroundTransparency = 1
+			atk.TextXAlignment = Enum.TextXAlignment.Left
+			atk.TextColor3 = ATK_TEXT_COLOR
+			atk.TextSize = SUB_TEXT_SIZE
+			atk.Font = Enum.Font.GothamBlack
+			atk.ZIndex = 5
+			atk.Parent = line
+
+			local hp = Instance.new("TextLabel")
+			hp.Name = "Hp"
+			hp.AnchorPoint = Vector2.new(1, 0)
+			hp.Position = UDim2.new(1, -3, 0, 0)
+			hp.Size = UDim2.new(0, 22, 1, 0)
+			hp.BackgroundTransparency = 1
+			hp.TextXAlignment = Enum.TextXAlignment.Right
+			hp.TextColor3 = Color3.new(1, 1, 1)
+			hp.TextSize = SUB_TEXT_SIZE
+			hp.Font = Enum.Font.GothamBlack
+			hp.ZIndex = 5
+			hp.Parent = line
+
+			subs[subIndex] = { line = line, fill = fill, atk = atk, hp = hp }
+		end
+
 		-- Botão invisível cobrindo o card inteiro: acima da cruz de morte (Z 6),
 		-- pra abrir o detalhe mesmo com o herói morto.
 		local clickCatcher = Instance.new("TextButton")
@@ -388,7 +459,19 @@ local function buildTeamColumn(alignLeft)
 		-- bem depois (é um jogador clicando) — por lá o showHeroDetail já existe.
 		clickCatcher.MouseButton1Click:Connect(function()
 			local hero = rows[index] and rows[index].hero
-			if hero and showHeroDetail then showHeroDetail(hero) end
+			if not hero then return end
+
+			-- Card do Golem partido: abrir a ficha do CORPO mostraria "Abatido" e
+			-- a vida zerada, contradizendo as sub-linhas logo acima. Quem está em
+			-- jogo é o pedaço, então é a ficha dele que abre.
+			for _, piece in ipairs(hero.summons or {}) do
+				if piece.isAlive then
+					hero = piece
+					break
+				end
+			end
+
+			if showHeroDetail then showHeroDetail(hero) end
 		end)
 
 		-- ✕ desenhado com duas barras cruzadas, mesmo motivo do botão fechar do
@@ -421,6 +504,7 @@ local function buildTeamColumn(alignLeft)
 			atkLabel = atkLabel,
 			clickCatcher = clickCatcher,
 			cross = cross,
+			subs = subs,
 			hero = nil,
 		}
 	end
@@ -787,8 +871,21 @@ local function rowSignature(hero)
 	-- interrogação não seja redesenhado a cada snapshot enquanto ele fica na
 	-- sombra.
 	if hero.hidden then return "oculto" end
-	return ("%d|%d|%d|%s|%s"):format(hero.dataId, hero.currentHp, hero.attack,
+
+	local signature = ("%d|%d|%d|%s|%s"):format(hero.dataId, hero.currentHp, hero.attack,
 		tostring(hero.isAlive), tostring(hero.sideIndex))
+
+	-- OS PEDAÇOS ENTRAM NA ASSINATURA. O card do Golem partido é desenhado com
+	-- dados que NÃO estão no herói pai — o corpo já morreu e não muda mais nunca.
+	-- Sem isto a assinatura ficaria constante, o `return` lá embaixo cortaria o
+	-- redesenho e as sub-linhas congelariam no primeiro valor: os pedaços
+	-- apanhariam na tela do jogador sem a vida se mexer.
+	for _, piece in ipairs(hero.summons or {}) do
+		signature ..= ("/%d|%d|%d|%s"):format(piece.dataId, piece.currentHp,
+			piece.attack, tostring(piece.isAlive))
+	end
+
+	return signature
 end
 
 local function renderRow(row, hero)
@@ -834,12 +931,33 @@ local function renderRow(row, hero)
 		row.hpTrack.Visible = false
 		row.hpLabel.Visible = false
 		row.atkLabel.Visible = false
+		-- a vaga pode ter sido de um Golem partido antes de o Shadow sumir nela:
+		-- sem isto, as sub-linhas velhas ficariam penduradas no card de "?"
+		for _, sub in ipairs(row.subs) do
+			sub.line.Visible = false
+		end
 		return
 	end
 
 	local data = HeroData.GetById(hero.dataId)
 	local accent = hero.sideIndex == 2 and SIDE_TWO_COLOR or SIDE_ONE_COLOR
+
+	-- ===== O GOLEM PARTIDO =====
+	-- O corpo morreu, mas os pedaços dele estão em jogo. `broken` é o terceiro
+	-- estado do card, entre vivo e morto: o retrato apaga (o corpo se foi mesmo),
+	-- mas a cruz NÃO aparece — nesta coluna cruz significa "eliminado", e o time
+	-- ainda tem essa peça lutando. Quem conta a história são as sub-linhas.
+	--
+	-- Só pedaço VIVO entra: quando o último cai, `pieces` fica vazia, `broken`
+	-- volta a ser falso e o card cai no caminho de morto de sempre — que é
+	-- exatamente quando a lápide do corpo sobe no servidor.
+	local pieces = {}
+	for _, piece in ipairs(hero.summons or {}) do
+		if piece.isAlive then table.insert(pieces, piece) end
+	end
+
 	local alive = hero.isAlive
+	local broken = (not alive) and #pieces > 0
 
 	row.card.Visible = true
 
@@ -865,17 +983,37 @@ local function renderRow(row, hero)
 
 	row.portrait.ImageColor3 = alive and Color3.new(1, 1, 1) or DEAD_TINT
 	row.portrait.ImageTransparency = alive and 0 or 0.15
-	row.card.BackgroundColor3 = alive and Color3.fromRGB(24, 27, 37) or DEAD_CARD
-	row.stroke.Color = alive and accent or Color3.fromRGB(58, 60, 68)
-	row.stroke.Transparency = alive and 0.15 or 0.5
+	-- partido conta como "em jogo" pro fundo e pra moldura: o card precisa se ler
+	-- como uma peça ativa do time, não como uma baixa
+	row.card.BackgroundColor3 = (alive or broken) and Color3.fromRGB(24, 27, 37) or DEAD_CARD
+	row.stroke.Color = (alive or broken) and accent or Color3.fromRGB(58, 60, 68)
+	row.stroke.Transparency = (alive or broken) and 0.15 or 0.5
 
 	for _, dash in ipairs(row.cross) do
-		dash.Visible = not alive
+		dash.Visible = not alive and not broken
 	end
 
+	-- Os números do topo são do CORPO. Com ele partido quem fala são as
+	-- sub-linhas, e mostrar "0" de vida do Golem ao lado de dois pedaços de pé
+	-- seria a informação errada em cima da certa.
 	row.hpTrack.Visible = alive
 	row.hpLabel.Visible = alive
 	row.atkLabel.Visible = alive
+
+	for subIndex, sub in ipairs(row.subs) do
+		local piece = pieces[subIndex]
+		sub.line.Visible = piece ~= nil
+
+		if piece then
+			local ratio = piece.maxHp > 0 and math.clamp(piece.currentHp / piece.maxHp, 0, 1) or 0
+			sub.fill.Size = UDim2.fromScale(ratio, 1)
+			-- mesmos limiares de cor do card grande, pra vida baixa gritar igual
+			sub.fill.BackgroundColor3 = ratio > 0.5 and Color3.fromRGB(80, 200, 110)
+				or (ratio > 0.25 and Color3.fromRGB(220, 180, 70) or Color3.fromRGB(220, 80, 80))
+			sub.atk.Text = tostring(piece.attack)
+			sub.hp.Text = tostring(math.max(piece.currentHp, 0))
+		end
+	end
 
 	if alive then
 		local ratio = hero.maxHp > 0 and math.clamp(hero.currentHp / hero.maxHp, 0, 1) or 0
@@ -890,11 +1028,45 @@ local function renderRow(row, hero)
 	end
 end
 
+-- Pendura cada invocação no herói que a gerou e devolve só os "pais", que são as
+-- peças que o jogador escolheu no draft. É o que garante que o time continue
+-- ocupando HEROES_PER_PLAYER vagas na coluna, mesmo com o Golem virando três
+-- registros ao estilhaçar.
+--
+-- Pai ausente da lista devolve o filho como card próprio, de propósito: um card
+-- a mais é um problema menor do que um herói vivo invisível na tela.
+--
+-- ZERA `summons` NA ENTRADA, e isso não é zelo à toa. No fim da partida a mesma
+-- tabela `state` é agrupada duas vezes (a coluna e o painel de resultado); sem
+-- limpar, a segunda passada empilharia os pedaços de novo e o painel somaria o
+-- dano deles em dobro.
+local function groupHeroes(list)
+	local byUid = {}
+	for _, hero in ipairs(list) do
+		hero.summons = nil
+		byUid[hero.uid] = hero
+	end
+
+	local parents = {}
+	for _, hero in ipairs(list) do
+		local parent = hero.summonOf and byUid[hero.summonOf]
+		if parent then
+			parent.summons = parent.summons or {}
+			table.insert(parent.summons, hero)
+		else
+			table.insert(parents, hero)
+		end
+	end
+	return parents
+end
+
 local function renderTeams(state)
 	local mine, theirs = {}, {}
 	for _, hero in ipairs(state.heroes or {}) do
 		table.insert(hero.isMine and mine or theirs, hero)
 	end
+
+	mine, theirs = groupHeroes(mine), groupHeroes(theirs)
 
 	myTeam.nameLabel.Text = player.DisplayName
 	theirTeam.nameLabel.Text = state.opponentName or "Adversário"
@@ -1470,14 +1642,44 @@ local function buildResultStat(parent, order, label, value, color)
 	number.Parent = parent
 end
 
+-- Soma o que os pedaços fizeram no número do corpo. O Golem estilhaçado agora
+-- ocupa UM card, então o dano que os mini-golens causaram sairia da tela junto
+-- com os cards deles — e o jogador leria "o Golem não fez nada" sobre uma peça
+-- que lutou a partida inteira em dois corpos.
+--
+-- Copia antes de somar: `state` é o mesmo snapshot que a coluna lateral desenha,
+-- e escrever nele contaminaria o outro render.
+local function mergedStats(hero)
+	local total = table.clone(hero.stats or {})
+	for _, piece in ipairs(hero.summons or {}) do
+		local s = piece.stats
+		if s then
+			total.dealt = (total.dealt or 0) + (s.dealt or 0)
+			total.taken = (total.taken or 0) + (s.taken or 0)
+			total.healed = (total.healed or 0) + (s.healed or 0)
+			total.kills = (total.kills or 0) + (s.kills or 0)
+			-- maior golpe é MÁXIMO, não soma: é "o maior que esta peça deu"
+			total.biggestHit = math.max(total.biggestHit or 0, s.biggestHit or 0)
+		end
+	end
+	return total
+end
+
 local function buildResultCard(hero, badgeKey, order)
 	local data = HeroData.GetById(hero.dataId)
-	local stats = hero.stats or {}
+	local stats = mergedStats(hero)
+
+	-- Um pedaço de pé conta como sobrevivente do card: quem terminou a partida
+	-- com meio Golem em campo não perdeu a peça.
+	local standing = hero.isAlive
+	for _, piece in ipairs(hero.summons or {}) do
+		if piece.isAlive then standing = true break end
+	end
 
 	local card = Instance.new("Frame")
 	card.Name = hero.uid
 	card.Size = UDim2.new(0, RESULT_CARD_W, 0, RESULT_CARD_H)
-	card.BackgroundColor3 = hero.isAlive and Color3.fromRGB(26, 30, 42) or DEAD_CARD
+	card.BackgroundColor3 = standing and Color3.fromRGB(26, 30, 42) or DEAD_CARD
 	card.BorderSizePixel = 0
 	card.LayoutOrder = order
 	card.Parent = resultTeam
@@ -1527,7 +1729,7 @@ local function buildResultCard(hero, badgeKey, order)
 		portrait.ImageRectSize = HeroData.GetFrameSize(data)
 		portrait.ImageRectOffset = HeroData.GetFrameOffset(data)
 		-- morto fica dessaturado, mas reconhecível: mesma regra da coluna lateral
-		portrait.ImageColor3 = hero.isAlive and Color3.new(1, 1, 1) or DEAD_TINT
+		portrait.ImageColor3 = standing and Color3.new(1, 1, 1) or DEAD_TINT
 	elseif data then
 		portrait.BackgroundTransparency = 0
 		portrait.BackgroundColor3 = data.color
@@ -1538,19 +1740,30 @@ local function buildResultCard(hero, badgeKey, order)
 	nameLabel.Size = UDim2.new(1, -8, 0, 16)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = hero.name or (data and data.name) or "?"
-	nameLabel.TextColor3 = hero.isAlive and Color3.fromRGB(232, 238, 250) or DEAD_TINT
+	nameLabel.TextColor3 = standing and Color3.fromRGB(232, 238, 250) or DEAD_TINT
 	nameLabel.TextSize = 14
 	nameLabel.Font = Enum.Font.GothamBold
 	nameLabel.Parent = card
+
+	-- Três estados, não dois: o Golem que acabou a partida em pedaços não
+	-- "sobreviveu" nem "caiu" — dizer qualquer um dos dois seria mentira.
+	local pecasVivas = 0
+	for _, piece in ipairs(hero.summons or {}) do
+		if piece.isAlive then pecasVivas += 1 end
+	end
 
 	local statusLabel = Instance.new("TextLabel")
 	statusLabel.Position = UDim2.new(0, 4, 0, 100)
 	statusLabel.Size = UDim2.new(1, -8, 0, 12)
 	statusLabel.BackgroundTransparency = 1
-	statusLabel.Text = hero.isAlive
-		and ("sobreviveu · %d/%d"):format(math.max(hero.currentHp, 0), hero.maxHp)
-		or "caiu em combate"
-	statusLabel.TextColor3 = hero.isAlive
+	if hero.isAlive then
+		statusLabel.Text = ("sobreviveu · %d/%d"):format(math.max(hero.currentHp, 0), hero.maxHp)
+	elseif pecasVivas > 0 then
+		statusLabel.Text = ("em pedaços · %d de pé"):format(pecasVivas)
+	else
+		statusLabel.Text = "caiu em combate"
+	end
+	statusLabel.TextColor3 = standing
 		and Color3.fromRGB(130, 200, 150) or Color3.fromRGB(198, 116, 116)
 	statusLabel.TextSize = 10
 	statusLabel.Font = GameConfig.UI_FONT_BODY
@@ -1586,23 +1799,36 @@ local function renderResultTeam(state)
 		if hero.isMine then table.insert(mine, hero) end
 	end
 
-	-- Ordem de card = ordem do uid, a MESMA da coluna lateral (o servidor já
-	-- ordena assim no Snapshot). Sem isso os cards embaralhariam a cada revanche
-	-- e o jogador perderia a referência de posição que já criou olhando a coluna.
-	table.sort(mine, function(a, b) return a.uid < b.uid end)
+	-- Mesmo agrupamento da coluna lateral: os pedaços do Golem entram no card do
+	-- corpo em vez de virarem cards próprios. A ordem já vem pronta do servidor
+	-- (Snapshot ordena por lado e id), então não se reordena aqui — reordenar por
+	-- uid era o bug que embaralhava a fileira em relação à coluna.
+	mine = groupHeroes(mine)
 
-	-- O painel acompanha a fileira. Normalmente são 3 cards, mas o Golem que
-	-- estilhaça vira três registros (o corpo e os dois pedaços) e o time passa a
-	-- cinco — numa largura fixa, os dois últimos ficavam pendurados pra fora.
+	-- O painel acompanha a fileira. Com o agrupamento são sempre
+	-- HEROES_PER_PLAYER cards, mas a conta fica: um herói invocado cujo pai não
+	-- esteja na lista ainda pode virar card solto (ver groupHeroes).
 	local count = math.max(#mine, 1)
 	local width = 24 + count * RESULT_CARD_W + (count - 1) * RESULT_CARD_GAP
 	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412)
 
+	-- O selo é por uid, e um PEDAÇO pode ter sido o destaque da partida. Sem
+	-- olhar os filhos, o card do Golem ficaria sem faixa nenhuma enquanto o
+	-- resumo do topo anuncia um maior golpe que ninguém na tela reivindica.
+	local function wearsBadge(hero, uid)
+		if not uid then return false end
+		if hero.uid == uid then return true end
+		for _, piece in ipairs(hero.summons or {}) do
+			if piece.uid == uid then return true end
+		end
+		return false
+	end
+
 	for index, hero in ipairs(mine) do
 		local badgeKey = nil
-		if hero.uid == summary.mvpUid then badgeKey = "mvp"
-		elseif hero.uid == summary.protectorUid then badgeKey = "protector"
-		elseif hero.uid == summary.biggestHitUid then badgeKey = "biggest" end
+		if wearsBadge(hero, summary.mvpUid) then badgeKey = "mvp"
+		elseif wearsBadge(hero, summary.protectorUid) then badgeKey = "protector"
+		elseif wearsBadge(hero, summary.biggestHitUid) then badgeKey = "biggest" end
 
 		buildResultCard(hero, badgeKey, index)
 	end
@@ -1952,12 +2178,29 @@ end
 
 -- O tabuleiro vem no snapshot: com várias partidas rodando, procurar "Board"
 -- pelo nome no Workspace acharia a arena de outra dupla.
+--
+-- MISTURA, NÃO SUBSTITUI. Antes o destaque trocava a cor da casa por completo
+-- (verde puro sobre a pedra), e o tabuleiro virava um tapete de adesivos: berrava
+-- mais que os próprios heróis e apagava o xadrez que separa uma casa da vizinha.
+-- Interpolando a partir da cor de base, o destaque vira um TINGIMENTO — a pedra
+-- continua aparecendo por baixo, as casas claras e escuras seguem distinguíveis,
+-- e a leitura de "onde eu posso ir" não se perde.
+--
+-- Vale pros quatro destaques de uma vez (passo, ataque, barril, lápide), porque
+-- todos passam por aqui. HIGHLIGHT_STRENGTH é o único botão: 0 não pinta nada,
+-- 1 volta ao comportamento antigo.
+local HIGHLIGHT_STRENGTH = 0.55
+
 local function paint(hexId, color)
 	local board = state and state.boardFolder
 	local tile = board and board:FindFirstChild(hexId)
 	if tile and tile:IsA("BasePart") then
 		if savedColors[tile] == nil then savedColors[tile] = true end
-		tile.Color = color
+		-- Lê a base do ATRIBUTO, nunca da cor atual: a casa pode já estar pintada
+		-- por outro destaque nesta mesma passada, e partir dela empilharia tinta
+		-- em cima de tinta até saturar.
+		local base = tile:GetAttribute("BaseColor") or fallbackColor(tile)
+		tile.Color = base:Lerp(color, HIGHLIGHT_STRENGTH)
 	end
 end
 

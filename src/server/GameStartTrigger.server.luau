@@ -144,11 +144,11 @@ DecoratePad(pvpPad, Color3.fromRGB(200, 70, 70), "JOGAR CONTRA JOGADOR", "pise p
 local FIGHT_PAD_SIZE = Vector3.new(10, 1, 11)
 local FIGHT_PAD_Y = 712.9 -- mesmo chão dos outros pads do lobby
 
--- Onde um pad NOVO nasce. Antes era uma grade solta ao norte do lobby; agora é
--- o encaixe da zona do grupo dele, na trilha (ver LobbyZones). O
--- LobbyZoneBuilder.PlacePads reposiciona todo mundo logo depois de qualquer
--- jeito — isto só evita que o quadrado pisque no lugar errado no primeiro
--- quadro, e serve de rede se a trilha estiver desligada.
+-- Onde um pad NOVO nasce: o encaixe da zona do grupo dele, na trilha (ver
+-- LobbyZones). Antes era só um anti-piscada, porque o PlacePads reposicionava
+-- todo mundo logo em seguida — mas ele não faz mais isso num place que já tem a
+-- trilha montada à mão. Num place assim, ESTA é a posição final de um quadrado
+-- recém-criado (herói novo na campanha), até alguém arrastá-lo no Studio.
 local function DefaultFightPadPosition(fight)
 	local zone = LobbyZones.ForGroup(fight.group)
 	if not zone then return Vector3.new(0, FIGHT_PAD_Y, -34) end
@@ -499,8 +499,9 @@ for _, fight in ipairs(Campaign.FIGHTS) do
 	end)
 end
 
--- Com todos os quadrados de pé, a trilha os leva pra ilha do grupo deles. Roda
--- DEPOIS do laço acima de propósito — ver o comentário em
+-- Com todos os quadrados de pé, a trilha os leva pra ilha do grupo deles — a
+-- menos que ela tenha sido adotada do place, e aí ninguém encosta neles. Roda
+-- DEPOIS do laço acima de propósito: ver o comentário em
 -- LobbyZoneBuilder.BuildTerrain sobre as duas metades.
 LobbyZoneBuilder.PlacePads()
 

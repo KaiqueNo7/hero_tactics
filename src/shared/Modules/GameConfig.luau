@@ -62,8 +62,28 @@ GameConfig.FREEZE_DAMAGE_MULTIPLIER = 2 -- dano do Kor contra alvo já congelado
 -- moeda da sorte, e pode terminar a partida em 3.
 GameConfig.MERLIN_DEATH_ATTACK_MAX = 2 -- teto do Faro de Sangue (+1 por morte no tabuleiro)
 GameConfig.MERLIN_FRENZY_ATTACK = 2    -- ataque extra enquanto for o último vivo do time
-GameConfig.MERLIN_FRENZY_HEAL = 4      -- cura ao entrar em Frenesi, uma vez por partida
+GameConfig.MERLIN_FRENZY_HEAL = 8      -- cura ao entrar em Frenesi, uma vez por partida
 GameConfig.MERLIN_FRENZY_KILL_HEAL = 2 -- cura por inimigo abatido durante o Frenesi
+
+-- ===== EFEITOS NEGATIVOS =====
+-- Quais tipos de status contam como DEBUFF. Existe por causa da imunidade do
+-- Frenesi do Merlin, que precisa separar "veneno/gelo" de "bônus do barril" —
+-- e os efeitos não carregavam essa distinção.
+--
+-- Lista explícita, e não a dedução `effect.attackBonus == nil`: hoje as duas
+-- respostas coincidem, mas só por acidente (todo buff que existe empresta
+-- ataque). Um buff futuro sem attackBonus — escudo, alcance extra — passaria a
+-- ser bloqueado pela imunidade sem ninguém entender por quê. Aqui, debuff novo
+-- entra nesta lista e ganha a regra; buff novo não precisa saber que ela existe.
+GameConfig.NEGATIVE_EFFECTS = {
+	poison = true,
+	freeze = true,
+	wound = true,
+}
+
+function GameConfig.IsNegativeEffect(effectType)
+	return GameConfig.NEGATIVE_EFFECTS[effectType] == true
+end
 
 -- ===== FOGO (Karo) =====
 -- O fogo do Caminho de Chamas é o primeiro efeito do jogo preso a uma CASA, e
@@ -78,18 +98,42 @@ GameConfig.FLAME_DURATION = 2
 GameConfig.FLAME_DAMAGE = 2
 
 -- Furor das Chamas: pisar numa casa que JÁ estava em chamas (do próprio Karo,
--- de um passo anterior) dá +1 de ATAQUE por casa. É EMPRÉSTIMO, não ficha
+-- de um passo anterior) dá +2 de ATAQUE por casa. É EMPRÉSTIMO, não ficha
 -- nova — mesmo padrão do bônus do barril (attackBonus num status effect,
 -- devolvido sozinho pelo ProcessStatusEffects): dura 1 turno de uso e depois
 -- volta pro normal, não empilha partida afora.
-GameConfig.FLAME_FURY_ATTACK = 1
+GameConfig.FLAME_FURY_ATTACK = 2
 GameConfig.FLAME_FURY_DURATION = 1
 
--- Teto do ATAQUE do Karo com o empréstimo somado. Base 2 + no máximo +2 de
--- Furor: dois passos em fogo aceso já enchem o teto, um terceiro não soma mais
+-- Teto do ATAQUE do Karo com o empréstimo somado. Base 2 + no máximo +4 de
+-- Furor: dois passos em fogo aceso enchem o teto, um terceiro não soma mais
 -- nada. Sem isso, um caminho comprido cruzando várias chamas antigas vira
 -- dano absurdo numa figura de ATK 2.
-GameConfig.FLAME_FURY_MAX_ATTACK = 4
+--
+-- O TETO SOBE JUNTO COM O BÔNUS, e precisa mesmo. Com teto 4 e ficha 2 a folga
+-- era de +2: dobrar o bônus por casa só faria ele encostar no máximo com UMA
+-- casa em vez de duas, sem mexer no pico — buff que não se sente. Este é o
+-- número a mexer primeiro se o Karo ficar forte demais; o bônus por casa é o
+-- segundo.
+GameConfig.FLAME_FURY_MAX_ATTACK = 6
+
+-- ===== LUCY (irmã do Karo) =====
+-- Mesma casa em chamas do Karo (match.flames é por LADO, não por herói — ver
+-- comentário acima), payoff oposto: ele ganha ataque, ela vida. Sem teto/
+-- acúmulo como o Furor: ataque é status que pode empilhar turno a turno, cura é
+-- HP instantâneo — não tem "empréstimo" pra desfazer depois.
+GameConfig.LUCY_FLAME_HEAL = 2 -- vida recuperada por casa em chamas atravessada
+
+-- ===== FÚRIA (Bramm) =====
+-- Dano extra quando o empurrão NÃO acontece (a casa atrás do alvo está ocupada
+-- ou é fora do tabuleiro). É a compensação por perder o reposicionamento, que é
+-- o que a habilidade faz de melhor.
+--
+-- Vive aqui e não solto no Skills porque o número aparece em TRÊS lugares: o
+-- golpe, a estimativa da IA (BotBrain.EstimateDamage — sem ela o bot subestima
+-- o próprio Bramm) e o texto da ficha. Escrito à mão nos três, um ajuste de
+-- balanceamento esquece um e a ficha passa a mentir.
+GameConfig.RAGE_BLOCKED_BONUS = 2
 
 -- ===== FURTIVIDADE (Shadow) =====
 -- Inimigo A ESTA DISTÂNCIA OU MENOS revela o Shadow; a partir de 2 casas ele
