@@ -574,7 +574,7 @@ local function showDetail(data)
 	-- como quadradinho de caractere desconhecido, igual ao "✕" do botão fechar.
 	-- O "•" já é usado no painel de batalha e renderiza normal.
 	if data.ability and HeroData.ABILITY_INFO[data.ability] then
-		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.ABILITY_INFO[data.ability]))
+		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.GetAbilityDescription(data)))
 	end
 	for _, key in ipairs(data.abilities) do
 		local info = HeroData.SKILL_INFO[key]

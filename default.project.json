@@ -34,6 +34,12 @@
       "Store": {
         "$path": "src/server/Store.server.luau"
       },
+      "CoreChecks": {
+        "$path": "src/dev/CoreChecks.server.luau"
+      },
+      "BalanceSim": {
+        "$path": "src/dev/BalanceSim.server.luau"
+      },
       "Modules": {
         "$path": "src/server/Modules"
       }
@@ -43,6 +49,9 @@
       "StarterPlayerScripts": {
         "CameraController": {
           "$path": "src/client/CameraController.client.luau"
+        },
+        "ConnectionStatusClient": {
+          "$path": "src/client/ConnectionStatusClient.client.luau"
         },
         "PlacementClient": {
           "$path": "src/client/PlacementClient.client.luau"

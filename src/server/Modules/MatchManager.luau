@@ -67,6 +67,7 @@ local BOT_ACTION_DELAY = 0.7
 local COUNTER_ATTACK_DELAY = 0.4
 
 local BOT_ID = "BOT"
+local BOT_ONE_ID = "BOT_A"
 
 -- ===== REGISTRO DE PARTIDAS =====
 local matches = {} -- [matchId] = match
@@ -75,7 +76,7 @@ local nextMatchId = 0
 
 -- declaradas cedo porque se chamam entre si
 local BeginTurn, BotPlayTurn, BotPlaceOne, AdvancePlacement, CheckGameOver
-local TryTriggerPromotion, AttackGrave, FindNearestFreeHex
+local TryTriggerPromotion, AttackGrave, FindNearestFreeHex, EndMatch
 
 -- O Estilhaçar do Golem invoca pela API das skills (BuildSkillApi), que é
 -- montada bem antes do CreateHero existir no arquivo.
@@ -120,6 +121,14 @@ end
 -- ===================== CONSULTAS =====================
 local function UnlockedIdsFor(player)
 	return HeroUnlockService.GetPlayableIds(player)
+end
+
+local function AllHeroIds()
+	local ids = {}
+	for _, data in ipairs(HeroData.CATALOG) do
+		ids[data.id] = true
+	end
+	return ids
 end
 
 -- ===================== SKILLS =====================
@@ -1437,10 +1446,16 @@ local function RecordHeroStats(match)
 				matches = 0, wins = 0, losses = 0, draws = 0,
 				damageDealt = 0, damageTaken = 0, healed = 0,
 				kills = 0, deaths = 0, survived = 0,
+				pvpMatches = 0, pvpWins = 0,
 			}
 
 			row.matches += 1
 			row[result] += 1
+
+			if not match.vsBot then
+				row.pvpMatches += 1
+				if result == "wins" then row.pvpWins += 1 end
+			end
 			row.damageDealt += hero.stats.dealt
 			row.damageTaken += hero.stats.taken
 			row.healed += hero.stats.healed
@@ -1451,7 +1466,11 @@ local function RecordHeroStats(match)
 		end
 	end
 
-	HeroStatsService.AddMatch(entries)
+	if match.simulated then
+		if match.onStats then match.onStats(entries) end
+	else
+		HeroStatsService.AddMatch(entries)
+	end
 end
 
 -- ===================== FIM DE JOGO =====================
@@ -1490,6 +1509,16 @@ function CheckGameOver(match)
 	-- Depois de match.winner estar definido nos dois ramos: é dele que sai
 	-- vitória/derrota/empate de cada herói.
 	RecordHeroStats(match)
+
+	local winner = match.winner
+	local noHumans = not (match.sides[1].player or match.sides[2].player)
+	if noHumans or match.onFinish then
+		task.defer(function()
+			if noHumans then EndMatch(match) end
+			if match.onFinish then match.onFinish(winner) end
+		end)
+	end
+
 	return true
 end
 
@@ -1838,6 +1867,7 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	-- e visualmente nunca desaparecia de verdade (o som tocava, a chama
 	-- continuava lá).
 	local consumedOwnTiles = {}
+	local origin = hero.position
 
 	match.busy = true
 	for _, stepHex in ipairs(path) do
@@ -1872,6 +1902,7 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 				TriggerSkills(match, other, "onMove", nil, false, {
 					movedHero = hero,
 					path = path,
+					origin = origin,
 					enteredFlameCount = enteredFlameCount,
 					consumedOwnTiles = consumedOwnTiles,
 				})
@@ -2371,8 +2402,9 @@ end
 -- `fight` é a entrada do Campaign quando a partida é um confronto da campanha:
 -- ela fixa o time do bot e diz qual herói a vitória paga. Sem ela o bot volta a
 -- sortear o time e a partida não vale desbloqueio (treino livre pelo pad).
-function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
-	if not playerOne then return false end
+function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
+	local botVsBot = options ~= nil and options.botVsBot == true
+	if not playerOne and not botVsBot then return false end
 
 	slot = slot or AllocateSlot()
 	if not slot then return false end
@@ -2381,7 +2413,8 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
 	local matchId = nextMatchId
 	local origin = GameConfig.ArenaOrigin(slot)
 
-	local players = { playerOne }
+	local players = {}
+	if playerOne then table.insert(players, playerOne) end
 	if playerTwo then table.insert(players, playerTwo) end
 
 	-- num confronto da campanha, quem fica de pé do outro lado é o herói do
@@ -2391,9 +2424,9 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
 	local sides = {
 		{
 			index = 1,
-			id = tostring(playerOne.UserId),
+			id = playerOne and tostring(playerOne.UserId) or BOT_ONE_ID,
 			player = playerOne,
-			isBot = false,
+			isBot = playerOne == nil,
 			zone = BuildDeployZone(DEPLOY_ZONES[1]),
 			placedCount = 0,
 			promotionUsed = false, -- Casa de Promoção: um uso por jogador na partida inteira
@@ -2414,7 +2447,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
 	-- O bot herda o conjunto do humano (mesma tabela, só leitura) pra partida
 	-- sair simétrica quando ele SORTEIA o time — num confronto da campanha isso
 	-- não vale nada, porque lá o time dele já vem escrito.
-	sides[1].unlockedIds = UnlockedIdsFor(playerOne)
+	sides[1].unlockedIds = playerOne and UnlockedIdsFor(playerOne) or AllHeroIds()
 	sides[2].unlockedIds = playerTwo and UnlockedIdsFor(playerTwo) or sides[1].unlockedIds
 
 	-- Time PRÉ-SELECIONADO do bot, na ordem em que ele põe em campo. Enquanto
@@ -2443,6 +2476,9 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
 		-- partida e sobrevive à revanche, pra quem perdeu poder tentar de novo
 		-- contra o MESMO time.
 		fight = fight,
+		simulated = botVsBot,
+		onFinish = options and options.onFinish or nil,
+		onStats = options and options.onStats or nil,
 		phase = "placement",
 		heroes = {},
 		barrels = {},
@@ -2480,7 +2516,9 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
 
 	-- a câmera do cliente se ancora na arena DESTA partida
 	local hexSize = HexGrid.GetHexSize()
-	BoardReady:FireClient(playerOne, hexSize, origin, 1)
+	if playerOne then
+		BoardReady:FireClient(playerOne, hexSize, origin, 1)
+	end
 	if playerTwo then
 		BoardReady:FireClient(playerTwo, hexSize, origin, 2)
 	end
@@ -2488,11 +2526,19 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight)
 	HeroView.PlayMatchSound(match.view, "MatchStart")
 
 	Broadcast(match)
-	print(("MatchManager: partida %d no slot %d (%s)."):format(matchId, slot, playerTwo and "PvP" or "vs bot"))
+
+	if sides[1].isBot then
+		task.delay(GameConfig.BOT_PLACE_DELAY, function()
+			BotPlaceOne(match)
+		end)
+	end
+
+	local label = playerTwo and "PvP" or (playerOne and "vs bot" or "bot vs bot")
+	print(("MatchManager: partida %d no slot %d (%s)."):format(matchId, slot, label))
 	return true
 end
 
-local function EndMatch(match)
+function EndMatch(match)
 	HeroView.ClearMatch(match.view)
 	HeroView.DestroyView(match.view)
 

@@ -188,6 +188,7 @@ local function BuildFightBillboard(pad, data)
 	billboard.StudsOffset = Vector3.new(0, 3 + 4 * scale, 0)
 	billboard.AlwaysOnTop = true
 	billboard.MaxDistance = 160
+	billboard.Enabled = false
 	billboard.Parent = pad
 
 	local portrait = Instance.new("ImageLabel")

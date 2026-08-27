@@ -14,7 +14,7 @@
 	ONDE O CARTÃO FICA. Rodapé central: é a faixa que sobra entre o botão de
 	desistir (canto inferior esquerdo) e o de encerrar turno (canto inferior
 	direito), longe da coluna de retratos (esquerda) e do painel de turno (topo).
-	DisplayOrder 40 põe ele acima da partida (0) e abaixo do overlay do lobby
+	DisplayOrder 40 põe ele acima da partida (5) e abaixo do overlay do lobby
 	(50), pra tela de carregamento continuar cobrindo tudo.
 ]]
 

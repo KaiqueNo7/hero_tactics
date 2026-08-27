@@ -604,6 +604,189 @@ end
 closeButton.MouseButton1Click:Connect(closeModal)
 backdrop.MouseButton1Click:Connect(closeModal)
 
+-- ===================== DESBLOQUEIO DE HERÓI (REVEAL) =====================
+-- O RosterUpdate já manda `unlocked` (ver HeroUnlockService.Push) sempre que um
+-- confronto da campanha paga um herói novo — mas isso acontece em PLENA
+-- partida, às vezes antes mesmo do fim de jogo aparecer na tela. A tela de
+-- comemoração só pode aparecer quando o MatchUpdate confirmar phase == "lobby",
+-- senão ela cobre a batalha ou o placar de fim de partida. Por isso a fila:
+-- guarda os ids que chegaram e só desenrola quando o jogador está mesmo aqui.
+local UNLOCK_GREEN = Color3.fromRGB(90, 235, 150)
+
+local inLobbyNow = true
+local pendingUnlockIds = {}
+local showNextReward
+
+local rewardGui = Instance.new("ScreenGui")
+rewardGui.Name = "HeroRewardGui"
+rewardGui.ResetOnSpawn = false
+rewardGui.IgnoreGuiInset = true
+rewardGui.DisplayOrder = 70 -- acima do modal de abas (60): a comemoração vence qualquer painel aberto
+rewardGui.Enabled = false
+rewardGui.Parent = playerGui
+
+local rewardBackdrop = Instance.new("TextButton")
+rewardBackdrop.Name = "Backdrop"
+rewardBackdrop.Size = UDim2.fromScale(1, 1)
+rewardBackdrop.BackgroundColor3 = Color3.fromRGB(4, 6, 8)
+rewardBackdrop.BackgroundTransparency = 0.25
+rewardBackdrop.BorderSizePixel = 0
+rewardBackdrop.Text = ""
+rewardBackdrop.AutoButtonColor = false
+rewardBackdrop.Parent = rewardGui
+
+local rewardPanel = Instance.new("Frame")
+rewardPanel.Name = "Panel"
+rewardPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+rewardPanel.Position = UDim2.fromScale(0.5, 0.5)
+rewardPanel.Size = UDim2.new(0.7, 0, 0.6, 0)
+rewardPanel.BackgroundColor3 = PANEL_BG
+rewardPanel.BorderSizePixel = 0
+rewardPanel.Parent = rewardGui
+corner(rewardPanel, 16)
+
+local rewardPanelSize = Instance.new("UISizeConstraint")
+rewardPanelSize.MaxSize = Vector2.new(320, 380)
+rewardPanelSize.MinSize = Vector2.new(220, 280)
+rewardPanelSize.Parent = rewardPanel
+
+local rewardStroke = stroke(rewardPanel, UNLOCK_GREEN, 3, 0)
+
+local rewardGlow = Instance.new("Frame")
+rewardGlow.Name = "Glow"
+rewardGlow.AnchorPoint = Vector2.new(0.5, 0)
+rewardGlow.Position = UDim2.new(0.5, 0, 0, 34)
+rewardGlow.Size = UDim2.new(0, 150, 0, 150)
+rewardGlow.BackgroundColor3 = UNLOCK_GREEN
+rewardGlow.BackgroundTransparency = 0.55
+rewardGlow.BorderSizePixel = 0
+rewardGlow.Parent = rewardPanel
+corner(rewardGlow, 999)
+
+local rewardPortraitHolder = Instance.new("Frame")
+rewardPortraitHolder.Name = "PortraitHolder"
+rewardPortraitHolder.AnchorPoint = Vector2.new(0.5, 0)
+rewardPortraitHolder.Position = UDim2.new(0.5, 0, 0, 24)
+rewardPortraitHolder.Size = UDim2.new(0, 160, 0, 160)
+rewardPortraitHolder.BackgroundTransparency = 1
+rewardPortraitHolder.ZIndex = 2
+rewardPortraitHolder.Parent = rewardPanel
+
+local rewardTitle = Instance.new("TextLabel")
+rewardTitle.Name = "Title"
+rewardTitle.AnchorPoint = Vector2.new(0.5, 0)
+rewardTitle.Position = UDim2.new(0.5, 0, 0, 196)
+rewardTitle.Size = UDim2.new(1, -20, 0, 26)
+rewardTitle.BackgroundTransparency = 1
+rewardTitle.Text = "HERÓI DESBLOQUEADO!"
+rewardTitle.TextColor3 = UNLOCK_GREEN
+rewardTitle.TextStrokeColor3 = UNLOCK_GREEN
+rewardTitle.TextStrokeTransparency = 0.5
+rewardTitle.TextScaled = true
+rewardTitle.Font = Enum.Font.GothamBlack
+rewardTitle.ZIndex = 2
+rewardTitle.Parent = rewardPanel
+
+local rewardTitleLimit = Instance.new("UITextSizeConstraint")
+rewardTitleLimit.MaxTextSize = 20
+rewardTitleLimit.Parent = rewardTitle
+
+local rewardName = Instance.new("TextLabel")
+rewardName.Name = "HeroName"
+rewardName.AnchorPoint = Vector2.new(0.5, 0)
+rewardName.Position = UDim2.new(0.5, 0, 0, 228)
+rewardName.Size = UDim2.new(1, -20, 0, 30)
+rewardName.BackgroundTransparency = 1
+rewardName.Text = ""
+rewardName.TextColor3 = TEXT_MAIN
+rewardName.TextScaled = true
+rewardName.Font = Enum.Font.GothamBold
+rewardName.ZIndex = 2
+rewardName.Parent = rewardPanel
+
+local rewardNameLimit = Instance.new("UITextSizeConstraint")
+rewardNameLimit.MaxTextSize = 24
+rewardNameLimit.Parent = rewardName
+
+local rewardButton = Instance.new("TextButton")
+rewardButton.Name = "Continue"
+rewardButton.AnchorPoint = Vector2.new(0.5, 1)
+rewardButton.Position = UDim2.new(0.5, 0, 1, -18)
+rewardButton.Size = UDim2.new(0.7, 0, 0, 36)
+rewardButton.BackgroundColor3 = UNLOCK_GREEN
+rewardButton.Text = "CONTINUAR"
+rewardButton.TextColor3 = Color3.fromRGB(10, 20, 14)
+rewardButton.Font = Enum.Font.GothamBlack
+rewardButton.TextScaled = true
+rewardButton.BorderSizePixel = 0
+rewardButton.ZIndex = 2
+rewardButton.Parent = rewardPanel
+corner(rewardButton, 8)
+
+local rewardButtonLimit = Instance.new("UITextSizeConstraint")
+rewardButtonLimit.MaxTextSize = 16
+rewardButtonLimit.Parent = rewardButton
+
+-- o brilho pulsa (mesmo truque do ícone de conexão): tamanho e transparência
+-- do halo, e a espessura efetiva da borda via transparência, oscilando sem fim
+local rewardGlowTween = TweenService:Create(rewardGlow,
+	TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+	{ BackgroundTransparency = 0.15, Size = UDim2.new(0, 175, 0, 175) })
+
+local rewardStrokeTween = TweenService:Create(rewardStroke,
+	TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+	{ Transparency = 0.6 })
+
+local function closeReward()
+	rewardGlowTween:Cancel()
+	rewardStrokeTween:Cancel()
+	rewardGui.Enabled = false
+
+	-- outro herói já pode ter chegado enquanto este estava na tela (revanche
+	-- rápida, ou dois confrontos terminando perto um do outro)
+	if #pendingUnlockIds > 0 then
+		task.defer(showNextReward)
+	end
+end
+
+function showNextReward()
+	local dataId = table.remove(pendingUnlockIds, 1)
+	if not dataId then return end
+
+	local data = HeroData.GetById(dataId)
+	if not data then return end
+
+	for _, child in ipairs(rewardPortraitHolder:GetChildren()) do
+		child:Destroy()
+	end
+	local portrait = buildHeroImage(rewardPortraitHolder, data)
+	portrait.Size = UDim2.fromScale(1, 1)
+	portrait.ZIndex = 3
+
+	rewardName.Text = data.name
+
+	rewardGui.Enabled = true
+	rewardPanel.Size = UDim2.new(0.5, 0, 0.4, 0)
+	TweenService:Create(rewardPanel, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Size = UDim2.new(0.7, 0, 0.6, 0),
+	}):Play()
+
+	rewardGlowTween:Play()
+	rewardStrokeTween:Play()
+end
+
+rewardButton.MouseButton1Click:Connect(closeReward)
+rewardBackdrop.MouseButton1Click:Connect(closeReward)
+
+RosterUpdate.OnClientEvent:Connect(function(payload)
+	if not payload.unlocked then return end
+
+	table.insert(pendingUnlockIds, payload.unlocked)
+	if inLobbyNow and not rewardGui.Enabled then
+		showNextReward()
+	end
+end)
+
 local function clearBody()
 	tipBalanceLabel = nil
 	for _, child in ipairs(body:GetChildren()) do
@@ -871,7 +1054,7 @@ local function buildHeroRow(data, order)
 
 	local lines = {}
 	if data.ability and HeroData.ABILITY_INFO[data.ability] then
-		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.ABILITY_INFO[data.ability]))
+		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.GetAbilityDescription(data)))
 	end
 	for _, key in ipairs(data.abilities) do
 		local info = HeroData.SKILL_INFO[key]
@@ -1120,5 +1303,10 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 	menuGui.Enabled = inLobby
 	if not inLobby then
 		closeModal()
+	end
+
+	inLobbyNow = inLobby
+	if inLobby and #pendingUnlockIds > 0 and not rewardGui.Enabled then
+		showNextReward()
 	end
 end)

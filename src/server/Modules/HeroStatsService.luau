@@ -58,6 +58,7 @@ local FIELDS = {
 	"matches", "wins", "losses", "draws",
 	"damageDealt", "damageTaken", "healed",
 	"kills", "deaths", "survived",
+	"pvpMatches", "pvpWins",
 }
 
 local pending = {} -- [dataId] = { campo = delta }
@@ -162,6 +163,7 @@ function HeroStatsService.GetAll()
 		row.tankedPerMatch = (tonumber(row.damageTaken) or 0) / matches
 		row.healedPerMatch = (tonumber(row.healed) or 0) / matches
 		row.survivalRate = (tonumber(row.survived) or 0) / matches
+		row.pvpWinRate = (tonumber(row.pvpWins) or 0) / math.max(tonumber(row.pvpMatches) or 0, 1)
 
 		result[data.id] = row
 	end
@@ -179,13 +181,14 @@ function HeroStatsService.Report()
 	end
 	table.sort(rows, function(a, b) return a.row.winRate > b.row.winRate end)
 
-	local lines = { ("%-10s %7s %7s %8s %8s %8s %8s"):format(
-		"HERÓI", "JOGOS", "VITÓR.", "DANO/J", "TANK/J", "CURA/J", "SOBREV.") }
+	local lines = { ("%-10s %7s %7s %6s %7s %8s %8s %8s %8s"):format(
+		"HERÓI", "JOGOS", "VITÓR.", "PVP-J", "PVP-V.", "DANO/J", "TANK/J", "CURA/J", "SOBREV.") }
 
 	for _, entry in ipairs(rows) do
 		local row = entry.row
-		table.insert(lines, ("%-10s %7d %6.1f%% %8.1f %8.1f %8.1f %7.1f%%"):format(
+		table.insert(lines, ("%-10s %7d %6.1f%% %6d %6.1f%% %8.1f %8.1f %8.1f %7.1f%%"):format(
 			row.name, row.matches or 0, row.winRate * 100,
+			row.pvpMatches or 0, row.pvpWinRate * 100,
 			row.damagePerMatch, row.tankedPerMatch, row.healedPerMatch,
 			row.survivalRate * 100))
 	end

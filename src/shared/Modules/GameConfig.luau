@@ -14,7 +14,7 @@ GameConfig.BASE_MOVE_RANGE = 2
 GameConfig.SPRINT_MOVE_RANGE = 3
 
 GameConfig.BASE_ATTACK_RANGE = 1
-GameConfig.RANGED_ATTACK_RANGE = 3
+GameConfig.RANGED_ATTACK_RANGE = 2
 
 -- "Este herói ataca à distância?" = alcança além do corpo a corpo.
 --
@@ -355,5 +355,9 @@ end
 -- de PvP está a ~33 studs — um respawn azarado caía praticamente em cima do
 -- pad e disparava a fila sozinho. Só valem spawns dentro deste raio.
 GameConfig.LOBBY_SPAWN_RADIUS = 18
+
+-- ===== ÍCONE DE CONEXÃO =====
+GameConfig.PING_WARN_MS = 150
+GameConfig.PING_BAD_MS = 400
 
 return GameConfig

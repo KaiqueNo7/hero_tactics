@@ -436,18 +436,22 @@ Skills.flamePath = {
 	apply = function(ctx)
 		if ctx.movedHero ~= ctx.hero then return end
 
-		-- SÓ AS CASAS ATRAVESSADAS. Nem a de ORIGEM (ele estava de pé nela, não
-		-- passou por ela) nem a de DESTINO (é onde ele parou, não por onde
-		-- andou) pegam fogo: o rastro é o que fica PRA TRÁS no meio do caminho.
-		-- A1 → B1 → C1 → D1 acende B1 e C1, e mais nada.
+		-- AS CASAS ATRAVESSADAS mais a de ORIGEM (ele estava de pé nela e a
+		-- desocupa ao sair) pegam fogo. A de DESTINO fica de fora: é onde ele
+		-- parou, não por onde andou. A1 → B1 → C1 → D1 acende A1, B1 e C1.
 		--
 		-- `ctx.path` (do HexGrid.FindPath) já vem sem a origem e com o destino
-		-- no fim — por isso o laço para em #path - 1. Consequência direta da
-		-- regra: um passo de UMA casa só (path com um elemento) não acende nada,
-		-- porque não houve casa atravessada.
+		-- no fim — por isso o laço para em #path - 1 e a origem entra à parte,
+		-- via `ctx.origin`. Consequência direta da regra: um passo de UMA casa
+		-- só (path com um elemento) acende só a origem, nada no meio.
 		local path = ctx.path or {}
 		local consumed = ctx.consumedOwnTiles
 		local acendeu = false
+
+		if ctx.origin then
+			ctx.api.LightFlame(ctx.origin, ctx.hero)
+			acendeu = true
+		end
 
 		for index = 1, #path - 1 do
 			local hexId = path[index]

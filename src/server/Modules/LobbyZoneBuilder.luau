@@ -165,10 +165,8 @@ end
 -- pra criança isso é castigo por ter explorado. Encostou, volta pra entrada da
 -- trilha e segue andando.
 --
--- A água que ficava aqui saiu: o cenário do vão é de quem edita o place. Esta
--- peça é invisível e só existe pela regra, não pelo visual — ela não atrapalha
--- nada que for construído por cima. Pra desligar, é só não chamar
--- BuildFallNet no BuildTerrain.
+-- A mesma peça é a água do vão: translúcida, sem colisão, logo abaixo da borda
+-- das ilhas. Pra desligar, é só não chamar BuildFallNet no BuildTerrain.
 local function TrailBounds(margin)
 	local min, max = Vector2.new(1e9, 1e9), Vector2.new(-1e9, -1e9)
 	local half = LobbyZones.ISLAND_SPAN / 2 + margin
@@ -187,7 +185,13 @@ local function TrailBounds(margin)
 	return min, max
 end
 
+local NET_TOP_DROP = 16
+local NET_HEIGHT = 80
+
 local function BuildFallNet(folder)
+	local old = folder:FindFirstChild("FallCatcher", true)
+	if old then old:Destroy() end
+
 	-- Margem larga: a rede precisa cobrir bem mais que as ilhas, senão quem
 	-- pula com impulso passa POR FORA dela e cai assim mesmo.
 	local min, max = TrailBounds(180)
@@ -195,11 +199,12 @@ local function BuildFallNet(folder)
 	local center = (min + max) / 2
 
 	local net = NewPart("FallCatcher",
-		Vector3.new(span.X, 4, span.Y),
-		CFrame.new(center.X, LobbyZones.GROUND_Y - 45, center.Y),
-		Color3.fromRGB(0, 0, 0), Enum.Material.SmoothPlastic, folder)
+		Vector3.new(span.X, NET_HEIGHT, span.Y),
+		CFrame.new(center.X, LobbyZones.GROUND_Y - NET_TOP_DROP - NET_HEIGHT / 2, center.Y),
+		Color3.fromRGB(36, 96, 150), Enum.Material.Water, folder)
 	net.CanCollide = false
-	net.Transparency = 1
+	net.Transparency = 0.35
+	net.Reflectance = 0.15
 
 	-- Devolve pro CENTRO do lobby, que agora é o eixo da cruz: de lá toda ilha
 	-- fica a uma ponte, então quem caiu volta pertinho de onde estava indo.
@@ -211,6 +216,7 @@ local function BuildFallNet(folder)
 		local root = character and character:FindFirstChild("HumanoidRootPart")
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		if root and humanoid and humanoid.Health > 0 then
+			root.AssemblyLinearVelocity = Vector3.zero
 			root.CFrame = landing
 		end
 	end)
@@ -283,6 +289,8 @@ function LobbyZoneBuilder.BuildTerrain(force)
 				novas += 1
 			end
 		end
+
+		BuildFallNet(existing)
 
 		print(("LobbyZoneBuilder: %s já montado no place (%d peças) — trilha adotada, %d ilha(s) nova(s) levantada(s).")
 			:format(FOLDER_NAME, #existing:GetDescendants(), novas))

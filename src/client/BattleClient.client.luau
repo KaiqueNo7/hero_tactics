@@ -84,6 +84,7 @@ end
 -- ===== UI =====
 local gui = Instance.new("ScreenGui")
 gui.Name = "BattleGui"
+gui.DisplayOrder = 5
 gui.ResetOnSpawn = false
 gui.Enabled = false
 gui.IgnoreGuiInset = true
@@ -698,7 +699,7 @@ showHeroDetail = function(hero)
 
 	local lines = {}
 	if data.ability and HeroData.ABILITY_INFO[data.ability] then
-		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.ABILITY_INFO[data.ability]))
+		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.GetAbilityDescription(data)))
 	end
 	for _, key in ipairs(data.abilities) do
 		local info = HeroData.SKILL_INFO[key]
@@ -1471,7 +1472,11 @@ confirmBackdrop.MouseButton1Click:Connect(closeConfirm)
 keepPlayingButton.MouseButton1Click:Connect(closeConfirm)
 
 surrenderButton.MouseButton1Click:Connect(function()
-	if not state or state.phase ~= "battle" then return end
+	if not state or (state.phase ~= "battle" and state.phase ~= "placement") then return end
+
+	local placing = state.phase == "placement"
+	confirmTitle.Text = placing and "Abandonar a partida?" or "Desistir da partida?"
+	giveUpButton.Text = placing and "Abandonar" or "Desistir"
 
 	-- O texto muda com o modo porque a consequência muda: contra o bot ninguém
 	-- recebe nada (o AwardAbandon ignora lado sem jogador), em PvP o adversário
@@ -2549,10 +2554,16 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	end
 
 	if state.phase ~= "battle" then
-		gui.Enabled = false
+		local placing = state.phase == "placement"
+
+		gui.Enabled = placing
+		turnPanel.Visible = false
+		timerLabel.Visible = false
+		endTurnButton.Visible = false
+		resultPanel.Visible = false
 		counterBadge.Visible = false
-		surrenderButton.Visible = false
-		closeConfirm()
+		surrenderButton.Visible = placing
+		if not placing then closeConfirm() end
 		hideTeams()
 		clearPromotionHighlights()
 		clearHighlights()

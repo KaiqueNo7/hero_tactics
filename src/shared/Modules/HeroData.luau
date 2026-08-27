@@ -88,10 +88,10 @@ HeroData.CATALOG = {
 	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "98874918804932", spriteSize = Vector2.new(254, 323), scale = 0.85 },
 	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "97869309543381", spriteSize = Vector2.new(358, 319), scale = 1.25 },
 
-	{ id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged",
+	{ id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged", attackRange = 3,
 		abilities = { "iceEffect", "iceStorm" },
 		color = Color3.fromRGB(150, 210, 240),
-		sprite = "127914513925837", spriteSize = Vector2.new(299, 358) 
+		sprite = "127914513925837", spriteSize = Vector2.new(299, 358)
 	},
 
 	{ id = 11, name = "Merlin", attack = 2, hp = 22, ability = nil,
@@ -183,7 +183,7 @@ HeroData.SKILL_INFO = {
 	bloodScent    = { name = "Faro de Sangue", desc = "Ganha +1 de ataque cada vez que um herói morre em campo, até no máximo +2." },
 	frenzy        = { name = "Frenesi",        desc = ("Ao ficar como último herói vivo do time, cura %d e ganha +%d de ataque e Sprint. Fica imune a efeitos negativos e recupera %d de vida a cada inimigo abatido.")
 		:format(GameConfig.MERLIN_FRENZY_HEAL, GameConfig.MERLIN_FRENZY_ATTACK, GameConfig.MERLIN_FRENZY_KILL_HEAL) },
-	flamePath     = { name = "Caminho de Chamas", desc = "Deixa fogo nas casas que atravessa — a de origem e a de destino ficam de fora. O fogo dura 2 turnos e causa 2 de dano em quem pisar nele." },
+	flamePath     = { name = "Caminho de Chamas", desc = "Deixa fogo nas casas que atravessa e na de origem — só a de destino fica de fora. O fogo dura 2 turnos e causa 2 de dano em quem pisar nele." },
 	flameStrike   = { name = "Soco de Chamas",    desc = "O golpe gira: todos os inimigos a uma casa de distância levam o mesmo dano." },
 	flameFury     = { name = "Furor das Chamas",  desc = ("Ao pisar numa casa já em chamas (dele mesmo), ganha +%d de ataque por casa por %d turno. Não acumula, e o ataque não passa de %d.")
 		:format(GameConfig.FLAME_FURY_ATTACK, GameConfig.FLAME_FURY_DURATION, GameConfig.FLAME_FURY_MAX_ATTACK) },
@@ -223,6 +223,13 @@ function HeroData.GetAttackRange(data)
 	return data.ability == GameConfig.ABILITIES.RANGED
 		and GameConfig.RANGED_ATTACK_RANGE
 		or GameConfig.BASE_ATTACK_RANGE
+end
+
+function HeroData.GetAbilityDescription(data)
+	if data.ability == GameConfig.ABILITIES.RANGED then
+		return ("Ataca a até %d casas de distância."):format(HeroData.GetAttackRange(data))
+	end
+	return HeroData.ABILITY_INFO[data.ability]
 end
 
 function HeroData.GetMoveRange(data)

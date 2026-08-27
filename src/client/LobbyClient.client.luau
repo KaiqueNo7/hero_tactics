@@ -466,7 +466,9 @@ end)
 -- eram duas listas pra discordar, e a segunda ficaria velha na primeira vez que
 -- alguém calibrasse o sol.
 local LobbyZones = require(ReplicatedStorage.Modules.LobbyZones)
+local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local Lighting = game:GetService("Lighting")
+local CollectionService = game:GetService("CollectionService")
 
 local ZONE_FADE = TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 local ZONE_POLL = 0.4 -- andar não é um evento; olhar 2x por segundo basta e não pesa
@@ -522,6 +524,17 @@ end
 
 local currentZoneId = nil
 
+local function ShowPadLabels(zoneId)
+	for _, pad in ipairs(CollectionService:GetTagged(Campaign.PAD_TAG)) do
+		local label = pad:FindFirstChild("FightLabel")
+		if label then
+			local fight = Campaign.GetFight(pad:GetAttribute("FightHero"))
+			local zone = fight and LobbyZones.ForGroup(fight.group)
+			label.Enabled = zoneId ~= nil and zone ~= nil and zone.id == zoneId
+		end
+	end
+end
+
 task.spawn(function()
 	while true do
 		task.wait(ZONE_POLL)
@@ -542,6 +555,8 @@ task.spawn(function()
 				currentZoneId = id
 				applyPalette(zone and zone.ambience or lobbyPalette)
 			end
+
+			ShowPadLabels(id)
 		end
 	end
 end)
