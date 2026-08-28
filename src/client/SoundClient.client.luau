@@ -79,14 +79,16 @@ local Arenas = require(ReplicatedStorage.Modules.Arenas)
 
 local MUSIC_FADE = TweenInfo.new(1.2)
 
--- A trilha própria da região é OPCIONAL: enquanto o Sound com o nome do tema não
--- existir em ReplicatedStorage.Sounds, a arena toca esta. É só criar o
--- MusicGeleira (ou o da região que for) que ele passa a valer sozinho, sem
--- mexer em código.
-local DEFAULT_MUSIC = "BattleDefault"
+-- Duas trilhas diferentes, e não uma com fallback: a SELEÇÃO toca sempre esta
+-- (o nome continua `BattleDefault` pra não obrigar a renomear o Sound que já
+-- está no place), e a BATALHA toca a da região. Enquanto o Sound `Music<Regiao>`
+-- não existir em ReplicatedStorage.Sounds, a batalha daquela região fica em
+-- silêncio de propósito — é só criar o Sound com o nome que o tema pede (ver
+-- Arenas) que ele passa a valer sozinho, sem mexer em código.
+local SELECT_MUSIC = "BattleDefault"
 
 local playingName, playingTrack = nil, nil
-local warnedDefault = false
+local warnedSelect = false
 
 local function stopTrack(track)
 	if not track then return end
@@ -98,19 +100,23 @@ local function stopTrack(track)
 	fade:Play()
 end
 
-local function musicTemplate(arenaId)
-	local theme = arenaId and Arenas.ById(arenaId)
+local function musicTemplate(state)
+	if state.phase == "placement" then
+		local pick = Sounds:FindFirstChild(SELECT_MUSIC)
+		if pick and pick:IsA("Sound") then return pick end
+
+		if not warnedSelect then
+			warnedSelect = true
+			warn(("SoundClient: nao achei '%s' em ReplicatedStorage.Sounds — a selecao de herois fica sem trilha."):format(SELECT_MUSIC))
+		end
+
+		return nil
+	end
+
+	local theme = state.arena and Arenas.ById(state.arena)
 	local name = theme and theme.music
 	local own = name and Sounds:FindFirstChild(name)
 	if own and own:IsA("Sound") then return own end
-
-	local fallback = Sounds:FindFirstChild(DEFAULT_MUSIC)
-	if fallback and fallback:IsA("Sound") then return fallback end
-
-	if not warnedDefault then
-		warnedDefault = true
-		warn(("SoundClient: nao achei '%s' em ReplicatedStorage.Sounds — as partidas ficam sem trilha."):format(DEFAULT_MUSIC))
-	end
 
 	return nil
 end
@@ -129,11 +135,11 @@ local function playArenaMusic(template)
 	playingName = template.Name
 end
 
--- Compara a TRILHA, não a arena: enquanto todas caem na padrão, trocar de
--- região não reinicia a música do zero.
+-- Compara a TRILHA, não a fase: a batalha entra logo depois da seleção e as duas
+-- trilhas são diferentes, então a troca acontece sozinha no cruzamento — e um
+-- snapshot a mais da mesma fase não reinicia a música do zero.
 MatchUpdate.OnClientEvent:Connect(function(state)
-	local arenaId = state.phase ~= "lobby" and state.arena or nil
-	local template = arenaId and musicTemplate(arenaId) or nil
+	local template = state.phase ~= "lobby" and musicTemplate(state) or nil
 
 	if (template and template.Name or nil) == playingName then return end
 

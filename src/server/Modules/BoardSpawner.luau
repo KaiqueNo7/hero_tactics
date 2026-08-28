@@ -14,6 +14,7 @@ local LightingSetup = require(script.Parent.LightingSetup)
 local ArenaBuilder = require(script.Parent.ArenaBuilder)
 
 local ServerStorage = game:GetService("ServerStorage")
+local RunService = game:GetService("RunService")
 
 local BoardSpawner = {}
 
@@ -89,6 +90,15 @@ local function CreateHexTile(template, worldPos, color, hexId)
 		clone.CanCollide = true
 	end
 
+	if clone:IsA("BasePart") then
+		clone.CastShadow = false
+	end
+	for _, descendant in ipairs(clone:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.CastShadow = false
+		end
+	end
+
 	clone.Name = hexId
 	clone:SetAttribute("HexId", hexId)
 	clone:SetAttribute("BaseColor", color)
@@ -151,10 +161,21 @@ function BoardSpawner.EnsureArena(slot, theme)
 	return folder
 end
 
+local function FocusInStudio(folder)
+	if not (folder and RunService:IsEdit()) then return end
+
+	local floor = folder:FindFirstChild("Floor", true)
+	local camera = Workspace.CurrentCamera
+	if not (floor and floor:IsA("BasePart") and camera) then return end
+
+	camera.CFrame = CFrame.new(floor.Position + Vector3.new(0, 95, 135), floor.Position)
+end
+
 -- ===== EDITAR UMA ARENA À MÃO =====
 -- Ponto de partida pra trabalhar a região no Studio, em modo Edit:
 --
 --     require(game.ServerScriptService.Modules.BoardSpawner).BuildMaster("geleira")
+--     require(game.ServerScriptService.Modules.BoardSpawner).BuildAllMasters()
 --
 -- Ele levanta o diorama do tema numa área livre (depois do último slot de
 -- partida, pra não cair em cima de ninguém), junto com um tabuleiro de
@@ -164,9 +185,10 @@ end
 -- novo. O alinhamento sai da peça `Floor`, então a arena pode morar em qualquer
 -- canto do Workspace.
 --
--- Rodar de novo DESCARTA o que você editou e volta pro gerado — é a saída
--- explícita, igual ao LobbyZoneBuilder.Build(true).
-function BoardSpawner.BuildMaster(themeId)
+-- Rodar de novo MANTÉM o que você editou e não gera nada por cima, igual ao
+-- LobbyZoneBuilder adotando a trilha do place. `BuildMaster(tema, true)` é a
+-- saída explícita que descarta a mão e volta pro gerado.
+function BoardSpawner.BuildMaster(themeId, force)
 	local theme = Arenas.ById(themeId)
 	if not theme then
 		warn(("BoardSpawner: nao existe tema '%s' em Arenas.THEMES."):format(tostring(themeId)))
@@ -175,6 +197,13 @@ function BoardSpawner.BuildMaster(themeId)
 
 	local masterName = ARENA_MASTER_PREFIX .. theme.id
 	local previous = Workspace:FindFirstChild(masterName)
+	if previous and not force then
+		print(("BoardSpawner: %s ja existe — mantido como esta. BuildMaster('%s', true) descarta e gera de novo.")
+			:format(masterName, theme.id))
+		FocusInStudio(previous)
+		return previous
+	end
+
 	if previous then
 		previous:Destroy()
 		warn(("BoardSpawner: %s anterior descartado — o que estava montado à mão foi junto."):format(masterName))
@@ -189,7 +218,20 @@ function BoardSpawner.BuildMaster(themeId)
 	print(("BoardSpawner: %s pronto em %s. Edite, salve o place, e as partidas da regiao passam a clonar ele. O Board_%d ao lado e so referencia de alinhamento — pode apagar.")
 		:format(masterName, tostring(GameConfig.ArenaOrigin(slot)), slot))
 
+	FocusInStudio(folder)
 	return folder
+end
+
+function BoardSpawner.BuildAllMasters(force)
+	local folders, first = {}, nil
+	for _, theme in ipairs(Arenas.THEMES) do
+		local folder = BoardSpawner.BuildMaster(theme.id, force)
+		folders[theme.id] = folder
+		first = first or folder
+	end
+
+	FocusInStudio(first)
+	return folders
 end
 
 -- ===== O ADVERSÁRIO EM PÉ NO SLOT 2 =====

@@ -261,6 +261,12 @@ local function EstimateDamage(match, attacker, target, fromPos)
 			damage += GameConfig.RAGE_BLOCKED_BONUS
 		end
 	end
+	if HasSkill(attacker, "gustPush") then
+		local behind = HexGrid.GetLineBeyond(fromPos, target.position, 1)[1]
+		if not (behind and IsFree(match, behind)) then
+			damage += GameConfig.ZEFF_PUSH_BLOCKED_BONUS
+		end
+	end
 
 	-- Emboscada: o golpe que SAI da sombra leva o bônus. Sem isto a IA achava
 	-- que o Nash bate por 2 e nunca via o bote — ele vale 6 justamente no

@@ -2296,7 +2296,7 @@ local function selectHero(uid)
 	local isFree = function(hexId) return not blocked[hexId] end
 
 	-- o moveRange já vem descontado do congelamento pelo servidor
-	if not hero.hasMoved and not hero.hasAttacked then
+	if not hero.hasMoved then
 		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.moveRange, isFree)) do
 			if isFree(hexId) then
 				moveTargets[hexId] = true
@@ -2306,17 +2306,9 @@ local function selectHero(uid)
 	end
 
 	if not hero.hasAttacked then
-		-- MESMA escolha que o servidor faz em AttackHero: quem atira em linha de
-		-- visada ignora obstáculo. Divergir aqui pintaria de vermelho um alvo
-		-- que o servidor recusa (ou esconderia um que ele aceita).
-		--
-		-- As habilidades vêm do catálogo pelo dataId, não do snapshot: ele não
-		-- manda `abilities` (e não precisa — é dado fixo de ficha, o cliente já
-		-- tem o HeroData inteiro pra desenhar retrato e descrição).
-		local data = HeroData.GetById(hero.dataId)
-		local attackReach = GameConfig.UsesLineOfSight(data and data.abilities)
-			and HexGrid.ComputeSightReach(hero.position, hero.attackRange, isFree)
-			or HexGrid.ComputeReach(hero.position, hero.attackRange, isFree)
+		-- MESMA regra que o servidor aplica em AttackHero, pro alcance pintado
+		-- não prometer um alvo que o clique não entrega.
+		local attackReach = HexGrid.ComputeReach(hero.position, hero.attackRange, isFree)
 
 		for hexId in pairs(attackReach) do
 			if enemyAt[hexId] then

@@ -179,6 +179,7 @@ local function buildStandPlatform(standPos, groundY)
 	platform.Anchored = true
 	platform.CanCollide = true
 	platform.Transparency = 1
+	platform.CastShadow = false
 	platform.Parent = workspace
 end
 

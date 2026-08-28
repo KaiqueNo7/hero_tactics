@@ -129,6 +129,8 @@ GameConfig.LUCY_FLAME_HEAL = 2 -- vida recuperada por casa em chamas atravessada
 -- ou fora do tabuleiro) — mesmo raciocínio do RAGE_BLOCKED_BONUS do Bramm
 -- logo abaixo: o empurrão vira dano quando não pode virar reposicionamento.
 GameConfig.GUST_BLOCKED_DAMAGE = 1
+GameConfig.ZEFF_PUSH_BLOCKED_BONUS = 2
+GameConfig.WIND_BOOST_MOVE_BONUS = 1
 
 -- ===== WREN (nome de trabalho — a atiradora, ver docs/HeroisFuturos.md) =====
 -- Alcance e teto de dano são o MESMO número de propósito: o dano dela é a
@@ -136,18 +138,6 @@ GameConfig.GUST_BLOCKED_DAMAGE = 1
 -- ficha já limita o dano sozinho — sem isso teria que manter dois números
 -- amarrados à mão e um ajuste de balanceamento esqueceria o outro.
 GameConfig.WREN_RANGE = 5
-
--- Quem mira em LINHA DE VISADA (HexGrid.ComputeSightReach) em vez de caminho
--- livre a pé (HexGrid.ComputeReach). Por HABILIDADE e não por nome de herói,
--- igual a todo o resto do jogo.
---
--- Mora aqui, e não escrito à mão dos dois lados, porque a MESMA pergunta é
--- feita pelo servidor (MatchManager.AttackHero, que autoriza) e pelo cliente
--- (BattleClient, que pinta as casas atacáveis). Divergir aqui é o jogador
--- clicar num alvo pintado de vermelho e o golpe não sair.
-function GameConfig.UsesLineOfSight(abilities)
-	return table.find(abilities or {}, "longShot") ~= nil
-end
 
 -- ===== FÚRIA (Bramm) =====
 -- Dano extra quando o empurrão NÃO acontece (a casa atrás do alvo está ocupada

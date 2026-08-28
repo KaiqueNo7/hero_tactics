@@ -43,8 +43,8 @@ the `Remotes` folder itself is Studio-owned, not Rojo-managed.
 
 Image/sound assets also live outside Rojo's reach: sound names are read from
 `ReplicatedStorage.Sounds` (`Hit`, `SwordSwing`, `Heal`, `PoisonHiss`, `FootstepWood`, `MatchStart`,
-`HeroSelect`, `HeroSelectBattle`; per-arena names too — `BattleDefault` plus the optional
-`Music<Region>` tracks and the object sounds each theme names in `Arenas.luau`); asset IDs (hero spritesheet, poison icon) are constants in
+`HeroSelect`, `HeroSelectBattle`; per-arena names too — `BattleDefault`, which plays only during hero selection, plus the per-region
+`Music<Region>` battle tracks (a region with no such Sound plays silence, no fallback) and the object sounds each theme names in `Arenas.luau`); asset IDs (hero spritesheet, poison icon) are constants in
 `HeroData.luau`.
 
 ## Architecture
@@ -81,7 +81,7 @@ table hung off each hero, because `SoundService` sounds are global-audible other
 props, ambient particles, lights, the board object that replaces the barrel and the hexes it spawns
 on. `ArenaBuilder` rebuilds the theme into a diorama at the slot origin on every match start (or clones a
 hand-built `ArenaMaster_<theme>` folder if the place has one — `BoardSpawner.BuildMaster("geleira")`
-from the command bar generates that folder to start from), and `BoardSpawner` keeps the board rules while
+or `BoardSpawner.BuildAllMasters()` from the command bar generates those folders in Edit mode; re-running keeps whatever you hand-edited, and `BuildMaster(theme, true)` is the explicit discard), and `BoardSpawner` keeps the board rules while
 asking for the arena of the match theme. Campaign fights load their group's region; PvP and free
 training draw one at random. Arena lighting is applied CLIENT-side from the snapshot (`state.arena`),
 like the lobby trail — Lighting is global, so the server can never set it per match.

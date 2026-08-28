@@ -106,7 +106,7 @@ HeroData.CATALOG = {
 		sprite = "73283114537576", spriteSize = Vector2.new(304, 354) },
 
 	{ id = 13, name = "Nash", attack = 2, hp = 14, ability = "Sprint",
-		abilities = { "stealth", "stealthHeal", "ambush" },
+		abilities = { "stealth", "stealthHeal", "ambush", "huntInstinct" },
 		color = Color3.fromRGB(80, 90, 120),
 		sprite = "95643253305726", spriteSize = Vector2.new(312, 306) },
 
@@ -127,7 +127,8 @@ HeroData.CATALOG = {
 		sprite = "108465334355138", spriteSize = Vector2.new(312, 416) },
 
 	-- Zeff — controle de posicionamento, não dano. Empurra os aliados do ALVO
-	-- pra longe dele (não os do próprio Zeff), isolando quem apanhou.
+	-- pra longe dele (não os do próprio Zeff) e o alvo pra longe do Zeff,
+	-- abrindo a formação inteira em vez de recuar uma peça só.
 	--
 	-- `attackRange` aqui é override, não a ability `Ranged` — ele mantém
 	-- `Sprint` (move 3, ficha e texto de UI continuam sendo os do Sprint) e
@@ -144,7 +145,7 @@ HeroData.CATALOG = {
 	-- primeiro, antes de tocar em ataque/vida.
 	{ id = 18, name = "Zeff", attack = 2, hp = 17, ability = "Sprint",
 		attackRange = GameConfig.RANGED_ATTACK_RANGE,
-		abilities = { "gustPush" },
+		abilities = { "gustPush", "tailwind" },
 		color = Color3.fromRGB(150, 230, 220),
 		sprite = "120553491509947", spriteSize = Vector2.new(412, 405), scale = 1.15 },
 
@@ -228,6 +229,7 @@ HeroData.SKILL_INFO = {
 	stealthHeal   = { name = "Sombra Densa", desc = "Recupera 1 de vida a cada turno enquanto estiver invisível." },
 	ambush        = { name = "Emboscada",    desc = ("O ataque que sai da invisibilidade causa +%d de dano e não pode ser revidado, venha ele de onde vier. Revelado, ele volta na hora ao ataque de ficha.")
 		:format(GameConfig.AMBUSH_BONUS_DAMAGE) },
+	huntInstinct  = { name = "Instinto de Caça", desc = "Ao atingir um inimigo isolado sem abatê-lo, pode se mover de novo. Ao abater o alvo, recupera movimento E ataque, e volta à invisibilidade se não sobrar ninguém ao lado — abates em sequência encadeiam sem limite." },
 	shatter       = { name = "Corpo de Pedra", desc = "Ao perder a primeira vida, se parte em dois golens menores: 2 de ataque e 5 de vida cada. Os pedaços não deixam túmulo — o Golem é enterrado uma vez só, quando o último deles cair." },
 
 	-- Lucy
@@ -236,8 +238,10 @@ HeroData.SKILL_INFO = {
 	emberShield = { name = "Chama que Protege", desc = "Aliados adjacentes recebem 1 ponto a menos de dano ao serem atacados." },
 
 	-- Zeff
-	gustPush = { name = "Rajada", desc = ("Ao atacar, empurra 1 casa para longe do alvo todo aliado do alvo que estiver colado nele. O alvo em si não se move e leva o dano normal. Sem pra onde empurrar, causa %d de dano em vez disso.")
-		:format(GameConfig.GUST_BLOCKED_DAMAGE) },
+	gustPush = { name = "Rajada", desc = ("Ao atacar, empurra 1 casa para longe do alvo todo aliado do alvo que estiver colado nele, e o próprio alvo 1 casa para trás. Colado sem para onde ir leva %d de dano; alvo sem para onde ir não se move e o golpe causa +%d.")
+		:format(GameConfig.GUST_BLOCKED_DAMAGE, GameConfig.ZEFF_PUSH_BLOCKED_BONUS) },
+	tailwind = { name = "Vento a Favor", desc = ("Aliados colados em Zeff andam +%d casa no turno.")
+		:format(GameConfig.WIND_BOOST_MOVE_BONUS) },
 
 	-- Wren (nome de trabalho)
 	longShot = { name = "Tiro Longo", desc = ("Causa dano igual à distância até o alvo (mínimo 1, máximo %d) em vez do ataque de ficha. Quanto mais perto o alvo, mais fraco o tiro.")

@@ -817,7 +817,21 @@ local function BuildSkillApi(match)
 				minion.graveOwner = hero
 			end
 		end,
+
+		GrantExtraAction = function(hero, includeAttack)
+			if not match.turn then return end
+			match.turn.bonusMove[hero.uid] = true
+			if includeAttack then
+				match.turn.attacked[hero.uid] = nil
+			end
+		end,
 	}
+end
+
+local function CanMove(match, hero)
+	if not match.turn then return false end
+	if match.turn.bonusMove[hero.uid] then return true end
+	return not (match.turn.moved[hero.uid] or match.turn.attacked[hero.uid])
 end
 
 -- ===================== SNAPSHOT =====================
@@ -925,7 +939,7 @@ local function Snapshot(match, viewerId)
 			-- MESMA cor do anel embaixo do herói no tabuleiro: em PvP quem joga
 			-- de lado 2 é dono dos vermelhos, e colorir por "é meu?" mentiria.
 			sideIndex = hero.sideIndex,
-			hasMoved = match.turn and match.turn.moved[hero.uid] or false,
+			hasMoved = match.turn ~= nil and not CanMove(match, hero),
 			hasAttacked = match.turn and match.turn.attacked[hero.uid] or false,
 
 			-- Só importa quando isAlive=false: quantos golpes a lápide ainda
@@ -1321,11 +1335,7 @@ end
 -- linha são coisas que se fazem a um herói. Também não marca `firstAttack`, pra
 -- não queimar o First Punch do Ralph numa caixa de madeira.
 local function AttackBarrel(match, attacker, barrel)
-	-- mesma regra do AttackHero: quem mira em linha de visada não contorna
-	-- obstáculo pra acertar a caixa também
-	local reach = GameConfig.UsesLineOfSight(attacker.abilities)
-		and HexGrid.ComputeSightReach(attacker.position, attacker.attackRange, FreeChecker(match))
-		or HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[barrel.position] then return end
 
 	-- Taunt NÃO vale aqui. Ele obriga a escolher o provocador em vez de outro
@@ -1560,6 +1570,7 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 	local ctx = {
 		damageApplied = false,
 		attackerWasStealthed = attacker.stealth == true,
+		targetWasAlone = #GetAlliesInRange(match, target, 1) == 0,
 	}
 	TriggerSkills(match, attacker, isCounterAttack and "onCounterAttack" or "onAttack",
 		target, isCounterAttack, ctx)
@@ -1570,6 +1581,11 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 
 	attacker.firstAttack = true
 	HeroView.UpdateStats(attacker)
+
+	if not isCounterAttack then
+		ctx.targetKilled = not target.isAlive
+		TriggerSkills(match, attacker, "onAttackResolved", target, false, ctx)
+	end
 
 	-- Devolve o ctx pra quem chamou saber se este golpe específico não pode
 	-- ser revidado (ver Skills.ambush, que marca suppressCounter).
@@ -1721,6 +1737,7 @@ function BeginTurn(match, ownerId, number)
 		number = number,
 		moved = {},
 		attacked = {},
+		bonusMove = {},
 		counterAttack = false,
 		token = token,
 		startedAt = os.clock(),
@@ -1846,8 +1863,8 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	local hero = match and match.heroes[heroUid]
 	if not AuthorizeAction(match, player, hero) then return end
 
-	-- canMoveHero: não pode ter movido NEM atacado neste turno
-	if match.turn.moved[heroUid] or match.turn.attacked[heroUid] then return end
+	-- canMoveHero: não pode ter movido NEM atacado neste turno, salvo bônus
+	if not CanMove(match, hero) then return end
 	if type(hexId) ~= "string" or not HexGrid.Exists(hexId) then return end
 	if not IsFree(match, hexId) then return end
 
@@ -1855,6 +1872,8 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	local path = HexGrid.FindPath(hero.position, hexId, MoveRangeOf(hero), FreeChecker(match))
 	if not path then return end
 
+	local wasBonusMove = match.turn.bonusMove[heroUid] == true
+	match.turn.bonusMove[heroUid] = nil
 	match.turn.moved[heroUid] = true
 	LogEvent(match, "move", hero.sideIndex,
 		("%s andou de %s para %s"):format(hero.name, hero.position, hexId))
@@ -1922,6 +1941,7 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 			if other.isAlive then
 				TriggerSkills(match, other, "onMove", nil, false, {
 					movedHero = hero,
+					bonusMove = wasBonusMove,
 					path = path,
 					origin = origin,
 					enteredFlameCount = enteredFlameCount,
@@ -1983,12 +2003,11 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	-- cliente adulterado acertaria o Shadow escondido chutando o nome.
 	if target.stealth then return end
 
-	-- alcance + caminho livre até o alvo — MENOS pra quem atira em linha de
-	-- visada (Wren), que ignora obstáculo: a bala não contorna o barril, e é o
-	-- que faz a distância cobrada pelo longShot bater com a que autorizou o tiro
-	local reach = GameConfig.UsesLineOfSight(attacker.abilities)
-		and HexGrid.ComputeSightReach(attacker.position, attacker.attackRange, FreeChecker(match))
-		or HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	-- alcance + caminho livre até o alvo: TODO mundo mira pela mesma regra, e
+	-- quem atira longe (Wren) só tem um attackRange maior. Já houve aqui uma
+	-- exceção de linha de visada pra ela, e o que ela produzia era alcance
+	-- imprevisível — inimigo a duas casas recusado e barril longe aceito.
+	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[target.position] then return end
 
 	-- Taunt: inimigo com Taunt adjacente ao atacante trava o ataque em outro alvo
@@ -2004,8 +2023,8 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 		end
 	end
 
-	local attackCtx = PerformAttack(match, attacker, target, false)
 	match.turn.attacked[attackerUid] = true
+	local attackCtx = PerformAttack(match, attacker, target, false)
 
 	-- contra-ataque: uma vez por turno, se o alvo sobreviveu e alcança o
 	-- atacante. Emboscada do Nash (attackCtx.suppressCounter) pula este golpe

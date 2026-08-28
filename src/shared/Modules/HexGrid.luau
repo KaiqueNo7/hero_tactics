@@ -327,83 +327,37 @@ local function CubeRound(q, r, s)
 	return rq, rr
 end
 
--- Casas atravessadas pela RETA de uma casa até outra, sem as duas pontas.
--- É o traçado de linha clássico do hexágono: interpola em coordenada cúbica e
--- arredonda cada amostra pra casa mais próxima.
+-- O empurrãozinho no traçado não é frescura: uma reta que passa EXATAMENTE na
+-- aresta entre duas casas fica em cima do empate no arredondamento, e sem ele o
+-- desempate cai pro lado que a conta escolher.
+local LINE_NUDGE = 1e-6
+
+-- Continua em linha reta ALÉM de toId, mantendo a direção from->to, UMA casa
+-- por passo. Usada por beyondFront (dano em sequência), rage e gustPush
+-- (empurrão).
 --
--- Serve pra responder "tem alguém na frente do tiro?" — por isso as pontas
--- ficam de fora: a origem é quem atira e o destino é quem leva, e nenhum dos
--- dois bloqueia o próprio disparo.
-function HexGrid.HexLine(fromId, toId)
-	local a, b = hexes[fromId], hexes[toId]
-	if not a or not b then return {} end
-
-	local n = HexGrid.Distance(fromId, toId)
-	if n == math.huge or n < 2 then return {} end
-
-	local result = {}
-	for step = 1, n - 1 do
-		local t = step / n
-
-		-- O empurrãozinho não é frescura: sem ele, uma reta que passa EXATAMENTE
-		-- na aresta entre duas casas fica em cima do empate no arredondamento, e
-		-- o desempate cai pro lado que a conta escolher. Na prática o tiro
-		-- atravessava quem estava bem no meio do caminho, que é justamente o
-		-- caso que esta função existe pra pegar.
-		local q = a.q + (b.q - a.q) * t + 1e-6
-		local r = a.r + (b.r - a.r) * t + 1e-6
-
-		local rq, rr = CubeRound(q, r, -q - r)
-		local id = axialToId[rq .. "," .. rr]
-		if id then
-			table.insert(result, id)
-		end
-	end
-	return result
-end
-
-function HexGrid.ComputeSightReach(originId, maxSteps, isFree)
-	if #hexList == 0 then
-		HexGrid.Generate()
-	end
-
-	local dist = {}
-	for _, hex in ipairs(hexList) do
-		local d = HexGrid.Distance(originId, hex.id)
-		if d > 0 and d <= maxSteps then
-			-- Reta livre até lá? Corpo no meio do caminho para a bala — o tiro
-			-- não contorna (isso é a ComputeReach) nem atravessa.
-			local clear = true
-			if isFree then
-				for _, blockerId in ipairs(HexGrid.HexLine(originId, hex.id)) do
-					if not isFree(blockerId) then
-						clear = false
-						break
-					end
-				end
-			end
-
-			if clear then
-				dist[hex.id] = d
-			end
-		end
-	end
-	return dist
-end
-
--- Continua em linha reta ALÉM de toId, mantendo a direção from->to.
--- Usada por beyondFront (dano em sequência) e rage (empurrão).
+-- A direção é o delta DIVIDIDO pela distância, e não o delta cru. Com o delta
+-- cru, quem ataca de longe empurrava o alvo pela distância inteira do golpe: o
+-- Bramm (alcance 1) funcionava por coincidência, porque ali o delta já é um
+-- passo, e o Zeff (alcance 2) jogava o alvo DUAS casas adiante — quase sempre
+-- fora do tabuleiro ou em cima de alguém, e por isso o empurrão dele nunca
+-- acontecia e virava só o dano de bloqueado.
 function HexGrid.GetLineBeyond(fromId, toId, maxSteps)
 	local from, to = hexes[fromId], hexes[toId]
 	if not from or not to then return {} end
 
-	local dq, dr = to.q - from.q, to.r - from.r
-	local result = {}
-	local q, r = to.q, to.r
+	local distance = HexGrid.Distance(fromId, toId)
+	if distance == 0 or distance == math.huge then return {} end
 
-	for _ = 1, maxSteps do
-		q, r = q + dq, r + dr
-		local id = axialToId[q .. "," .. r]
+	local dq, dr = (to.q - from.q) / distance, (to.r - from.r) / distance
+	local result = {}
+
+	for step = 1, maxSteps do
+		local q = to.q + dq * step + LINE_NUDGE
+		local r = to.r + dr * step + LINE_NUDGE
+
+		local rq, rr = CubeRound(q, r, -q - r)
+		local id = axialToId[rq .. "," .. rr]
 		if not id then break end
 		table.insert(result, id)
 	end

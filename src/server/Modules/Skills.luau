@@ -589,12 +589,15 @@ Skills.emberShield = {
 }
 
 -- ===== ZEFF: O VENTO =====
--- Rajada — empurra os ALIADOS DO ALVO pra longe DELE, não do Zeff. O alvo em
--- si não se move e leva o dano normal; quem estava colado nele é que voa.
--- Mesmo trio de funções que o rage do Bramm já usa (GetLineBeyond + IsFree +
--- ForceMove), só que a origem do empurrão é o alvo, não o atacante — e sem a
--- conversão em dano quando bloqueado: Zeff não é sobre dano, formação
--- apertada demais pra abrir é resposta válida do adversário.
+-- Rajada — sopra em DUAS direções na mesma jogada: os aliados do alvo voam pra
+-- longe DELE (não do Zeff), e o alvo voa pra longe do ZEFF, como no rage do
+-- Bramm. São duas origens de linha diferentes no mesmo golpe, e é isso que
+-- abre a formação em vez de só recuar uma peça.
+--
+-- A ORDEM IMPORTA: os colados saem PRIMEIRO, lidos da posição original do alvo.
+-- Empurrando o alvo antes, o GetAlliesInRange leria a vizinhança da casa nova e
+-- metade da formação nem seria tocada — e a casa atrás do alvo pode ser
+-- justamente a que um colado acabou de desocupar, com o alvo caindo atrás dele.
 Skills.gustPush = {
 	triggers = { "onAttack" },
 	apply = function(ctx)
@@ -616,7 +619,34 @@ Skills.gustPush = {
 				ctx.api.ApplyDamage(other, GameConfig.GUST_BLOCKED_DAMAGE, ctx.hero, ctx.isCounterAttack)
 			end
 		end
-		-- sem damageApplied: o alvo leva o golpe normal
+
+		local behind = ctx.api.GetLineBeyond(ctx.hero.position, ctx.target.position, 1)[1]
+		if behind and ctx.api.IsFree(behind) then
+			ctx.api.ForceMove(ctx.target, behind)
+			ctx.api.Effect(ctx.target)
+		else
+			ctx.api.Effect(ctx.target)
+			ctx.api.ApplyDamage(ctx.target, ctx.hero.attack + GameConfig.ZEFF_PUSH_BLOCKED_BONUS,
+				ctx.hero, ctx.isCounterAttack)
+			ctx.damageApplied = true
+		end
+	end,
+}
+
+Skills.tailwind = {
+	triggers = { "onTurnStart" },
+	apply = function(ctx)
+		for _, ally in ipairs(ctx.api.GetAlliesInRange(ctx.hero, 1)) do
+			if not ctx.api.FindStatusEffect(ally, "windBoost") then
+				ctx.api.Effect(ally)
+			end
+
+			ctx.api.ApplyStatusEffect(ally, {
+				type = "windBoost",
+				duration = 1,
+				ticksEveryTurn = true,
+			})
+		end
 	end,
 }
 
@@ -699,8 +729,8 @@ Skills.stealth = {
 			return
 		end
 
-		-- o próprio passo não conta contra ele (ver comentário do SyncStealth)
-		if ctx.movedHero == ctx.hero then return end
+		-- o próprio passo não conta contra ele, salvo o bônus do Instinto de Caça
+		if ctx.movedHero == ctx.hero and not ctx.bonusMove then return end
 
 		SyncStealth(ctx)
 	end,
@@ -763,6 +793,18 @@ Skills.ambush = {
 		-- match.turn.counterAttack — o alvo ainda pode revidar normalmente se
 		-- outro herói o atacar depois, no mesmo turno.
 		ctx.suppressCounter = true
+	end,
+}
+
+Skills.huntInstinct = {
+	triggers = { "onAttackResolved" },
+	apply = function(ctx)
+		if ctx.targetKilled then
+			ctx.api.GrantExtraAction(ctx.hero, true)
+			SyncStealth(ctx)
+		elseif ctx.targetWasAlone then
+			ctx.api.GrantExtraAction(ctx.hero, false)
+		end
 	end,
 }
 

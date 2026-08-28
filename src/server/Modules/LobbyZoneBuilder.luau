@@ -319,15 +319,17 @@ local function EdgeCFrame(floor, t)
 	return floor.CFrame * CFrame.new(lx, floor.Size.Y / 2, lz)
 end
 
-local function BuildZoneEdge(zone, trail)
+local function BuildZoneEdge(zone, trail, force)
 	local spec = EDGE_THEMES[zone.id]
 	-- Busca recursiva: o place agrupa ilha e ponte em Models feitos à mão, e o
 	-- chão da Forja e do Santuário mora dentro de um deles.
 	local floor = trail:FindFirstChild(zone.id .. "_Floor", true)
 	if not spec or not (floor and floor:IsA("BasePart")) then return 0 end
 
-	-- idempotência: a borda antiga sai inteira antes de a nova entrar
+	-- a borda montada à mão fica: só nasce a que ainda não existe, e `force`
+	-- descarta a de lá pra gerar de novo (mesma regra da trilha inteira)
 	local old = trail:FindFirstChild(zone.id .. "_Edge", true)
+	if old and not force then return 0 end
 	if old then old:Destroy() end
 
 	local folder = Instance.new("Folder")
@@ -364,7 +366,8 @@ end
 -- Separada da BuildTerrain pra poder ser chamada sozinha da barra de comando
 -- enquanto se acerta o visual:
 --   require(game.ServerScriptService.Modules.LobbyZoneBuilder).BuildEdges()
-function LobbyZoneBuilder.BuildEdges()
+--   require(game.ServerScriptService.Modules.LobbyZoneBuilder).BuildEdges(true)
+function LobbyZoneBuilder.BuildEdges(force)
 	local trail = Workspace:FindFirstChild(FOLDER_NAME)
 	if not trail then
 		warn("LobbyZoneBuilder: sem " .. FOLDER_NAME .. " — nada pra decorar.")
@@ -373,10 +376,10 @@ function LobbyZoneBuilder.BuildEdges()
 
 	local total = 0
 	for _, zone in ipairs(LobbyZones.ZONES) do
-		total += BuildZoneEdge(zone, trail)
+		total += BuildZoneEdge(zone, trail, force)
 	end
 
-	print(("LobbyZoneBuilder: borda temática refeita (%d peças em %d ilhas)."):format(total, #LobbyZones.ZONES))
+	print(("LobbyZoneBuilder: borda temática — %d peças novas (as que já existiam ficaram)."):format(total))
 end
 
 -- ===== ENTRADA =====
@@ -406,9 +409,9 @@ function LobbyZoneBuilder.BuildTerrain(force)
 
 		BuildFallNet(existing)
 
-		-- Vale TAMBÉM na trilha adotada, ao contrário de tudo o mais aqui: a
-		-- borda lê a peça de chão que está no place (posição e giro reais), então
-		-- ela acompanha o que foi montado à mão em vez de brigar com isso.
+		-- Vale TAMBÉM na trilha adotada: a borda lê a peça de chão que está no
+		-- place (posição e giro reais), então a ilha nova nasce alinhada com o
+		-- que foi montado à mão. A borda que já existe não é tocada.
 		LobbyZoneBuilder.BuildEdges()
 
 		print(("LobbyZoneBuilder: %s já montado no place (%d peças) — trilha adotada, %d ilha(s) nova(s) levantada(s).")

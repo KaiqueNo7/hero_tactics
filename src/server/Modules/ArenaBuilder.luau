@@ -554,6 +554,7 @@ function ArenaBuilder.CloneMaster(master, theme, origin, folderName)
 	for _, descendant in ipairs(folder:GetDescendants()) do
 		if descendant:IsA("BasePart") then
 			descendant.CFrame = descendant.CFrame + delta
+			descendant.CastShadow = false
 		end
 	end
 

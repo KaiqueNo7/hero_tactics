@@ -153,6 +153,10 @@ end
 function MatchQuery.MoveRangeOf(hero)
 	local range = hero.moveRange
 
+	if MatchQuery.FindStatusEffect(hero, "windBoost") then
+		range += GameConfig.WIND_BOOST_MOVE_BONUS
+	end
+
 	if MatchQuery.FindStatusEffect(hero, "freeze") then
 		range = math.min(range, GameConfig.FREEZE_MOVE_RANGE)
 	end
