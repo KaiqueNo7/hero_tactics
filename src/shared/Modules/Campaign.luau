@@ -46,7 +46,9 @@ Campaign.FIGHTS = {
 	{ hero = 13, group = 4, team = { 10, 7, 13 } },  -- Nash:    Kor, Noctin, Nash
 	{ hero = 12, group = 4, team = { 12, 4, 6 } },   -- Karo:    Karo, Blade, Ceos
 
-	{ hero = 17, group = 5, team = { 17, 12, 14 } }, -- Lucy:    Lucy, Karo, Golem — só abre com o grupo 4 inteiro na mão
+	{ hero = 17, group = 5, team = { 17, 12, 14 } }, -- Lucy: Lucy, Karo, Golem
+	{ hero = 18, group = 5, team = { 18, 7, 13 } },  -- Zeff: Zeff, Noctin, Nash
+	{ hero = 19, group = 5, team = { 19, 6, 9 } },   -- Wren: Wren, Ceos, Bramm — dois Taunt na frente, ela atirando de trás; os três confrontos do grupo 5 só abrem com o grupo 4 inteiro na mão
 }
 
 -- Quantos heróis abrem o PvP. A condição é a CONTAGEM, não a lista: seis

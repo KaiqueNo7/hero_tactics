@@ -43,7 +43,8 @@ the `Remotes` folder itself is Studio-owned, not Rojo-managed.
 
 Image/sound assets also live outside Rojo's reach: sound names are read from
 `ReplicatedStorage.Sounds` (`Hit`, `SwordSwing`, `Heal`, `PoisonHiss`, `FootstepWood`, `MatchStart`,
-`HeroSelect`, `HeroSelectBattle`); asset IDs (hero spritesheet, poison icon) are constants in
+`HeroSelect`, `HeroSelectBattle`; per-arena names too — `BattleDefault` plus the optional
+`Music<Region>` tracks and the object sounds each theme names in `Arenas.luau`); asset IDs (hero spritesheet, poison icon) are constants in
 `HeroData.luau`.
 
 ## Architecture
@@ -53,7 +54,7 @@ Image/sound assets also live outside Rojo's reach: sound names are read from
 - `src/shared/Modules/` (`ReplicatedStorage.Modules`) — pure rules and data both client and server
   need identically: `HexGrid` (axial coordinate topology), `GameConfig` (tunable constants),
   `HeroData` (hero catalog + sprite lookup), `Campaign` (bot-fight ladder → hero unlock mapping),
-  `LobbyZones` (lobby layout plan), `Progression` (level curve), `Monetization` (dev product →
+  `LobbyZones` (lobby layout plan), `Arenas` (arena themes), `Progression` (level curve), `Monetization` (dev product →
   coin catalog), `Tutorial`, `PixelIcons`, `SafeArea`.
 - `src/server/Modules/` (`ServerScriptService.Modules`) — authoritative game state and services.
   The client is never trusted with anything that matters (prices, hero ownership, XP, combat
@@ -76,9 +77,14 @@ why concurrent games can't see or interfere with each other. The same pattern re
 in `HeroView` (all presentation state — folders, sound emitters — lives in a per-match `view`
 table hung off each hero, because `SoundService` sounds are global-audible otherwise).
 
-`BoardSpawner` builds arena N as a positioned clone of the hand-built Arena 1 scenery; the first
-arena is edited by hand in Studio, the rest are code-driven clones so decor changes only need to
-happen once.
+`Arenas` (shared) is the per-region arena catalog — one theme per campaign group: ground, backdrop,
+props, ambient particles, lights, the board object that replaces the barrel and the hexes it spawns
+on. `ArenaBuilder` rebuilds the theme into a diorama at the slot origin on every match start (or clones a
+hand-built `ArenaMaster_<theme>` folder if the place has one — `BoardSpawner.BuildMaster("geleira")`
+from the command bar generates that folder to start from), and `BoardSpawner` keeps the board rules while
+asking for the arena of the match theme. Campaign fights load their group's region; PvP and free
+training draw one at random. Arena lighting is applied CLIENT-side from the snapshot (`state.arena`),
+like the lobby trail — Lighting is global, so the server can never set it per match.
 
 `Skills.luau` holds every named hero ability, ported from `src/heroes/skills.js`. Each skill gets
 a `ctx` (`hero, target, isCounterAttack, api, damageApplied`); setting `ctx.damageApplied = true`

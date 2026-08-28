@@ -22,6 +22,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
 local SoundService = game:GetService("SoundService")
+local InsertService = game:GetService("InsertService")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
@@ -291,6 +292,10 @@ function HeroView.PlayAttackSound(hero)
 		PlaySound("FlameSwing", hero.view) -- Karo
 	elseif table.find(hero.abilities, "ambush") then
 		PlaySound("DaggerSwing", hero.view) -- Nash
+	elseif table.find(hero.abilities, "gustPush") then
+		PlaySound("WindSwing", hero.view) -- Zeff
+	elseif table.find(hero.abilities, "longShot") then
+		PlaySound("RifleShot", hero.view) -- Wren
 	end
 end
 
@@ -401,6 +406,21 @@ local SKILL_EFFECTS = {
 	-- no mesmo peso da Tempestade de Gelo do Kor (o outro "morri e algo grande
 	-- acontece" do elenco).
 	shatter       = { color = Color3.fromRGB(150, 145, 135), texture = FX_SMOKE, shape = "burst", count = 40, size = 3.4, speed = 22 },
+
+	-- ===== ZEFF =====
+	-- A Rajada estoura na hora do golpe — mesmo peso do brokenDefense/
+	-- iceEffect, é o empurrão acontecendo, não uma cura ou buff carregando.
+	gustPush = { color = Color3.fromRGB(150, 235, 220), texture = FX_SPARK, shape = "burst", count = 20, size = 2.6, speed = 15 },
+
+	-- rastro de vento a cada passo: discreto de propósito, mesmo raciocínio do
+	-- bloodScent do Merlin — dispara TODO passo, não pode competir com o golpe
+	windStep      = { color = Color3.fromRGB(170, 235, 225), texture = FX_SMOKE, shape = "rise",  count = 8,  size = 1.8, speed = 5 },
+
+	-- ===== WREN =====
+	-- Estoura NO ALVO (é lá que a skill chama o Effect), não nela: o tiro dela
+	-- já tem a bolinha do ShowRangedAttack cruzando o tabuleiro, e o que falta
+	-- é a marca do impacto na outra ponta. Verde-espectral, a cor dela.
+	longShot = { color = Color3.fromRGB(120, 225, 190), texture = FX_SPARK, shape = "burst", count = 24, size = 2.6, speed = 17 },
 }
 
 -- ===== CORTE DO BLADE (IMAGEM ANIMADA) =====
@@ -625,11 +645,12 @@ end
 
 -- Cada partida tem suas pastas e sua origem no mundo. Chamada uma vez pelo
 -- MatchManager; o resultado vive em match.view e em hero.view.
-function HeroView.CreateView(matchId, origin, players)
+function HeroView.CreateView(matchId, origin, players, theme)
 	return {
 		id = matchId,
 		origin = origin,
 		players = players,
+		theme = theme,
 		heroesFolder = GetFolder("Heroes_" .. matchId),
 		gravesFolder = GetFolder("Graves_" .. matchId),
 	}
@@ -667,9 +688,142 @@ local BARREL_SCALE = 1.45
 
 local BARREL_DUST = Color3.fromRGB(196, 150, 96)
 
+-- O objeto neutro muda de cara com a arena (ver Arenas): barril na clareira,
+-- bloco de gelo na geleira, urna no santuário. A REGRA é a mesma — mesma
+-- contagem de golpes, mesma casa ocupada, mesmo prêmio. Sem tema (simulação de
+-- balanceamento, partida antiga) cai no barril de sempre.
+local function ObjectSpec(view)
+	return view and view.theme and view.theme.object or nil
+end
+
+-- Asset do catálogo, carregado UMA vez e guardado fora da DataModel pra ser
+-- clonado a cada objeto. Antes eu só extraía MeshId/textura pra remontar como
+-- Part + SpecialMesh, e isso só funciona pra asset que É uma malha: o cristal
+-- do gelo é um Model de Parts, então não sobrava nada e o tema caía no cubo de
+-- reserva. Agora vale qualquer modelo — Part, Union ou MeshPart.
+--
+-- Falhou o carregamento (asset privado, sem rede), o tema usa o `part` de
+-- reserva e a partida segue: objeto invisível no tabuleiro seria bem pior.
+local assetModelCache = {}
+
+local function ModelFromAsset(assetId)
+	if assetModelCache[assetId] ~= nil then
+		return assetModelCache[assetId] or nil
+	end
+
+	local ok, container = pcall(function()
+		return InsertService:LoadAsset(assetId)
+	end)
+
+	local template = false
+	if ok and container then
+		local found = container:FindFirstChildWhichIsA("Model") or container:FindFirstChildWhichIsA("BasePart")
+
+		if found and found:IsA("BasePart") then
+			local wrapper = Instance.new("Model")
+			found.Parent = wrapper
+			found = wrapper
+		end
+
+		if found and found:FindFirstChildWhichIsA("BasePart", true) then
+			-- Modelo do catálogo é código de terceiro. Fica só a geometria: script
+			-- dentro de modelo grátis é o vetor de backdoor mais antigo do Roblox, e
+			-- este aqui roda no SERVIDOR.
+			for _, descendant in ipairs(found:GetDescendants()) do
+				if descendant:IsA("LuaSourceContainer") then descendant:Destroy() end
+			end
+
+			-- Parent nil, e não Destroy no container: o molde segue vivo pela
+			-- referência aqui, fora da árvore, sem replicar pra ninguém.
+			found.Parent = nil
+			template = found
+		end
+
+		container:Destroy()
+	end
+
+	if not template then
+		warn(("HeroView: nao consegui carregar o modelo do asset %s — objeto do board no visual de reserva.")
+			:format(tostring(assetId)))
+	end
+
+	assetModelCache[assetId] = template
+	return template or nil
+end
+
+-- Modelo, malha ou peça crua, nessa ordem de preferência.
+local function ObjectVisual(view)
+	local spec = ObjectSpec(view)
+	if not spec then return nil end
+
+	if spec.asset then
+		local template = ModelFromAsset(spec.asset)
+		if template then
+			local extents = template:GetExtentsSize()
+			local scale = spec.height and (spec.height / math.max(extents.Y, 0.001)) or 1
+			return { model = template, scale = scale, size = extents * scale, skin = spec.skin }
+		end
+	elseif spec.mesh then
+		return { mesh = spec.mesh }
+	end
+
+	if spec.part then return { part = spec.part } end
+	return nil
+end
+
+local function ObjectSize(barrel)
+	local visual = ObjectVisual(barrel.view)
+	if visual then
+		if visual.model then return visual.size end
+		if visual.mesh then return visual.mesh.native * visual.mesh.scale end
+		if visual.part then return visual.part.size end
+	end
+	return BARREL_NATIVE * BARREL_SCALE
+end
+
+local function ObjectDust(view)
+	local spec = ObjectSpec(view)
+	return spec and spec.dust or BARREL_DUST
+end
+
+-- Gelo não estala como madeira. O tema pede o som pelo NOME, e o nome tem que
+-- existir em ReplicatedStorage.Sounds — os áudios são do place, como todos os
+-- outros. Faltando, cai no som do barril e avisa UMA vez por nome: silêncio
+-- seria pior, e um aviso por pancada seria spam.
+local warnedSounds = {}
+
+local function ObjectSound(view, key, fallback)
+	local spec = ObjectSpec(view)
+	local name = spec and spec[key]
+	if not name then return fallback end
+
+	if Sounds:FindFirstChild(name) then return name end
+
+	if not warnedSounds[name] then
+		warnedSounds[name] = true
+		warn(("HeroView: som '%s' nao existe em ReplicatedStorage.Sounds — usando '%s'.")
+			:format(name, fallback))
+	end
+
+	return fallback
+end
+
+local function IsLyingCylinder(barrel)
+	local visual = ObjectVisual(barrel.view)
+	return visual ~= nil and visual.part ~= nil and visual.part.shape == Enum.PartType.Cylinder
+end
+
 local function BarrelCFrame(barrel)
-	local size = BARREL_NATIVE * BARREL_SCALE
-	return GroundCFrame(barrel.position, barrel.view.origin) * CFrame.new(0, size.Y / 2, 0)
+	local size = ObjectSize(barrel)
+	local base = GroundCFrame(barrel.position, barrel.view.origin) * CFrame.new(0, size.Y / 2, 0)
+
+	-- Part cilíndrica do Roblox nasce deitada no eixo X: a rotação entra na CFrame
+	-- BASE pra sobreviver aos tweens de pancada.
+	if IsLyingCylinder(barrel) then
+		base = base * CFrame.Angles(0, 0, math.rad(90))
+	end
+
+	return base
 end
 
 -- ===== VIDA DO BARRIL =====
@@ -685,7 +839,7 @@ local function BuildBarrelBadge(part, barrel)
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "BarrelInfo"
 	gui.Size = UDim2.new(0, barrel.hitsLeft * (BARREL_PIP + 3) + 7, 0, BARREL_PIP + 8)
-	gui.StudsOffset = Vector3.new(0, (BARREL_NATIVE.Y * BARREL_SCALE) * 0.72, 0)
+	gui.StudsOffset = Vector3.new(0, ObjectSize(barrel).Y * 0.72, 0)
 	-- sem AlwaysOnTop: nada fica na frente do barril no tabuleiro, e assim ele
 	-- não atravessa cenário nem rouba o clique de quem estiver atrás
 	gui.Parent = part
@@ -752,7 +906,7 @@ function HeroView.UpdateBarrelBadge(barrel)
 end
 
 -- Rajada de lascas/poeira presa ao barril. Usada no golpe e na quebra.
-local function BarrelBurst(part, count, speed)
+local function BarrelBurst(part, count, speed, color)
 	local attachment = part:FindFirstChild("Dust")
 	if not attachment then
 		attachment = Instance.new("Attachment")
@@ -764,7 +918,7 @@ local function BarrelBurst(part, count, speed)
 		emitter.Enabled = false
 		emitter.Rate = 0
 		emitter.Texture = FX_SMOKE
-		emitter.Color = ColorSequence.new(BARREL_DUST)
+		emitter.Color = ColorSequence.new(color or BARREL_DUST)
 		emitter.Transparency = NumberSequence.new({
 			NumberSequenceKeypoint.new(0, 0.2),
 			NumberSequenceKeypoint.new(1, 1),
@@ -790,16 +944,75 @@ local function BarrelBurst(part, count, speed)
 	end
 end
 
+-- Modelo de catálogo vem com a aparência de quem o publicou — o cristal do gelo
+-- é uma Union PRETA, e Union ignora Color enquanto UsePartColor for falso. Aqui
+-- ele veste a pele do tema: cor, material e brilho do gelo, sem textura de
+-- terceiro por cima. Sem `skin` no tema, o modelo fica como veio.
+local function PaintSkin(part, skin)
+	if part:IsA("UnionOperation") then part.UsePartColor = true end
+	if part:IsA("MeshPart") then part.TextureID = "" end
+
+	for _, child in ipairs(part:GetChildren()) do
+		if child:IsA("SurfaceAppearance") or child:IsA("Decal") then child:Destroy() end
+	end
+
+	if skin.color then part.Color = skin.color end
+	if skin.material then part.Material = skin.material end
+	part.Transparency = skin.transparency or 0
+	part.Reflectance = skin.reflectance or 0
+end
+
+-- O modelo do asset vira FILHO da caixa: as peças dele ficam sem âncora e
+-- soldadas nela, que é o que faz o conjunto inteiro acompanhar os tweens de
+-- pancada (a caixa é a raiz ancorada da montagem). Sem colisão e sem query: quem
+-- recebe o clique é a caixa, senão o golpe acertaria uma quina do cristal e o
+-- cliente não acharia o BarrelUid.
+local function AttachObjectModel(part, visual)
+	local model = visual.model:Clone()
+	model.Name = "ObjectModel"
+	model.Parent = part
+
+	if math.abs(visual.scale - 1) > 0.01 then
+		model:ScaleTo(visual.scale)
+	end
+
+	-- leva o CENTRO da caixa delimitadora até a caixa de clique; o pivô do
+	-- modelo pode estar em qualquer canto, e usá-lo direto enterraria metade do
+	-- cristal no chão
+	local boxCFrame = model:GetBoundingBox()
+	model:PivotTo((part.CFrame * boxCFrame:Inverse()) * model:GetPivot())
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = false
+			descendant.CanCollide = false
+			descendant.CanQuery = false
+			descendant.CanTouch = false
+			descendant.Massless = true
+			descendant.CastShadow = false
+
+			if visual.skin then PaintSkin(descendant, visual.skin) end
+
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = part
+			weld.Part1 = descendant
+			weld.Parent = descendant
+		end
+	end
+
+	return model
+end
+
 function HeroView.CreateBarrel(barrel)
-	local size = BARREL_NATIVE * BARREL_SCALE
+	local visual = ObjectVisual(barrel.view)
+	local size = ObjectSize(barrel)
 
 	local part = Instance.new("Part")
 	part.Name = "Barrel_" .. barrel.uid
-	-- A caixa é o que recebe o clique; quem aparece é a malha, que substitui a
-	-- geometria do bloco. NÃO adianta pôr Transparency em 1 achando que esconde
-	-- só o bloco: com SpecialMesh a transparência da peça vale pro desenho todo e
-	-- o barril fica invisível (foi o primeiro erro desta função).
-	part.Size = size
+	-- A caixa é o que recebe o clique. Na arena que usa MALHA é ela quem aparece:
+	-- NÃO adianta pôr Transparency em 1 achando que esconde só o bloco — com
+	-- SpecialMesh a transparência vale pro desenho todo e o objeto some.
+	part.Size = IsLyingCylinder(barrel) and Vector3.new(size.Y, size.X, size.Z) or size
 	part.Transparency = 0
 	part.Anchored = true
 	part.CanCollide = false
@@ -808,12 +1021,24 @@ function HeroView.CreateBarrel(barrel)
 	part:SetAttribute("BarrelUid", barrel.uid)
 	part.Parent = barrel.view.heroesFolder
 
-	local mesh = Instance.new("SpecialMesh")
-	mesh.MeshType = Enum.MeshType.FileMesh
-	mesh.MeshId = BARREL_MESH
-	mesh.TextureId = BARREL_TEXTURE
-	mesh.Scale = Vector3.new(BARREL_SCALE, BARREL_SCALE, BARREL_SCALE)
-	mesh.Parent = part
+	if visual and visual.model then
+		part.Transparency = 1
+		AttachObjectModel(part, visual)
+	elseif visual and visual.part then
+		part.Shape = visual.part.shape or Enum.PartType.Block
+		part.Color = visual.part.color
+		part.Material = visual.part.material
+		part.Transparency = visual.part.transparency or 0
+		part.Reflectance = visual.part.reflectance or 0
+	else
+		local mesh = Instance.new("SpecialMesh")
+		mesh.MeshType = Enum.MeshType.FileMesh
+		mesh.MeshId = (visual and visual.mesh and visual.mesh.id) or BARREL_MESH
+		mesh.TextureId = (visual and visual.mesh and visual.mesh.texture) or BARREL_TEXTURE
+		local scale = (visual and visual.mesh and visual.mesh.scale) or BARREL_SCALE
+		mesh.Scale = Vector3.new(scale, scale, scale)
+		mesh.Parent = part
+	end
 
 	BuildBarrelBadge(part, barrel)
 
@@ -828,8 +1053,8 @@ function HeroView.PlayBarrelHit(barrel)
 	local part = barrel.part
 	if not (part and part.Parent) then return end
 
-	PlaySound("Hit", barrel.view)
-	BarrelBurst(part, 10, 9)
+	PlaySound(ObjectSound(barrel.view, "hitSound", "Hit"), barrel.view)
+	BarrelBurst(part, 10, 9, ObjectDust(barrel.view))
 	HeroView.UpdateBarrelBadge(barrel)
 
 	local base = BarrelCFrame(barrel)
@@ -855,8 +1080,8 @@ function HeroView.BreakBarrel(barrel)
 	-- Som próprio, e não o HeroDeath: barril quebrando é madeira estourando, não
 	-- alguém morrendo. Emprestar o som de morte fazia o jogador olhar pro
 	-- tabuleiro procurando qual herói tinha caído.
-	PlaySound("BarrelBreak", barrel.view)
-	BarrelBurst(part, 30, 20)
+	PlaySound(ObjectSound(barrel.view, "breakSound", "BarrelBreak"), barrel.view)
+	BarrelBurst(part, 30, 20, ObjectDust(barrel.view))
 
 	-- o crachá some junto com o barril, não com o Part: ele ainda vive ~1s pra
 	-- as partículas terminarem, e um placar de vida boiando sobre os cacos seria
@@ -869,6 +1094,17 @@ function HeroView.BreakBarrel(barrel)
 	local mesh = part:FindFirstChildWhichIsA("SpecialMesh")
 	if mesh then
 		TweenService:Create(mesh, TweenInfo.new(0.25), { Scale = Vector3.new(0.1, 0.1, 0.1) }):Play()
+	end
+
+	-- Modelo do asset some por transparência, não por escala: as peças estão
+	-- soldadas, e encolher briga com a solda.
+	local model = part:FindFirstChild("ObjectModel")
+	if model then
+		for _, descendant in ipairs(model:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				TweenService:Create(descendant, TweenInfo.new(0.25), { Transparency = 1 }):Play()
+			end
+		end
 	end
 	part.CanQuery = false
 	Debris:AddItem(part, 1.2)
@@ -1604,7 +1840,17 @@ function HeroView.WalkStep(hero, hexId)
 		{ CFrame = AnchorCFrame(hexId, hero.view.origin) }
 	)
 	tween:Play()
-	PlaySound("FootstepWood", hero.view)
+
+	-- Zeff: passo de vento, som e rastro próprios em vez do FootstepWood
+	-- genérico de todo mundo — mesmo padrão do PlayAttackSound, por
+	-- habilidade e não por nome.
+	if table.find(hero.abilities, "gustPush") then
+		PlaySound("WindStep", hero.view)
+		HeroView.PlaySkillEffect(hero, "windStep")
+	else
+		PlaySound("FootstepWood", hero.view)
+	end
+
 	task.wait(MOVE_STEP_TIME)
 	return true
 end

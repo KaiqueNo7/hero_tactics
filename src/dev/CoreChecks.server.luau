@@ -5,6 +5,8 @@ local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchQuery = require(ServerScriptService.Modules.MatchQuery)
+local Campaign = require(ReplicatedStorage.Modules.Campaign)
+local Arenas = require(ReplicatedStorage.Modules.Arenas)
 local Skills = require(ServerScriptService.Modules.Skills)
 
 local KOR_ID = 10
@@ -270,6 +272,52 @@ if lineA then
 	ctx = { hero = blade, target = front, api = api, damageApplied = false }
 	Skills.beyondFront.apply(ctx)
 	check("corte para no aliado", #log.damage == 0)
+end
+
+do
+	local rows = {}
+	for _, hex in ipairs(hexes) do
+		local letter, row = hex.letter, hex.row
+		rows[letter] = rows[letter] or { min = row, max = row }
+		rows[letter].min = math.min(rows[letter].min, row)
+		rows[letter].max = math.max(rows[letter].max, row)
+	end
+
+	local DEPLOY = {
+		A6 = true, B7 = true, C6 = true, D7 = true, E6 = true,
+		A1 = true, B1 = true, C1 = true, D1 = true, E1 = true,
+	}
+
+	local function mirrorOf(hexId)
+		local letter, row = hexId:match("^(%a)(%d+) )
+		if not letter or not rows[letter] then return nil end
+		return letter .. tostring(rows[letter].min + rows[letter].max - tonumber(row))
+	end
+
+	local groups = {}
+	for _, fight in ipairs(Campaign.FIGHTS) do
+		groups[fight.group] = true
+	end
+
+	for group in pairs(groups) do
+		check("grupo " .. group .. " tem arena", Arenas.ForGroup(group) ~= nil)
+	end
+
+	for _, theme in ipairs(Arenas.THEMES) do
+		local set = {}
+		for _, hexId in ipairs(theme.objectHexes) do set[hexId] = true end
+
+		check(theme.id .. ": paleta montada", type(Arenas.PaletteOf(theme.id)) == "table")
+		check(theme.id .. ": tem objeto de board", theme.object ~= nil)
+
+		for _, hexId in ipairs(theme.objectHexes) do
+			check(theme.id .. ": casa existe", HexGrid.Exists(hexId), hexId)
+			check(theme.id .. ": casa fora da largada", not DEPLOY[hexId], hexId)
+			check(theme.id .. ": casa fora da promocao",
+				GameConfig.PROMOTION_HEX_FOR_SLOT[1] ~= hexId and GameConfig.PROMOTION_HEX_FOR_SLOT[2] ~= hexId, hexId)
+			check(theme.id .. ": disposicao simetrica", set[mirrorOf(hexId)] == true, hexId)
+		end
+	end
 end
 
 if #failures == 0 then

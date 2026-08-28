@@ -124,6 +124,31 @@ GameConfig.FLAME_FURY_MAX_ATTACK = 6
 -- HP instantâneo — não tem "empréstimo" pra desfazer depois.
 GameConfig.LUCY_FLAME_HEAL = 2 -- vida recuperada por casa em chamas atravessada
 
+-- ===== ZEFF (vento) =====
+-- Dano de quem a Rajada tenta empurrar mas não tem pra onde ir (casa ocupada
+-- ou fora do tabuleiro) — mesmo raciocínio do RAGE_BLOCKED_BONUS do Bramm
+-- logo abaixo: o empurrão vira dano quando não pode virar reposicionamento.
+GameConfig.GUST_BLOCKED_DAMAGE = 1
+
+-- ===== WREN (nome de trabalho — a atiradora, ver docs/HeroisFuturos.md) =====
+-- Alcance e teto de dano são o MESMO número de propósito: o dano dela é a
+-- própria distância até o alvo (1 a 5, nunca fora disso), então o range da
+-- ficha já limita o dano sozinho — sem isso teria que manter dois números
+-- amarrados à mão e um ajuste de balanceamento esqueceria o outro.
+GameConfig.WREN_RANGE = 5
+
+-- Quem mira em LINHA DE VISADA (HexGrid.ComputeSightReach) em vez de caminho
+-- livre a pé (HexGrid.ComputeReach). Por HABILIDADE e não por nome de herói,
+-- igual a todo o resto do jogo.
+--
+-- Mora aqui, e não escrito à mão dos dois lados, porque a MESMA pergunta é
+-- feita pelo servidor (MatchManager.AttackHero, que autoriza) e pelo cliente
+-- (BattleClient, que pinta as casas atacáveis). Divergir aqui é o jogador
+-- clicar num alvo pintado de vermelho e o golpe não sair.
+function GameConfig.UsesLineOfSight(abilities)
+	return table.find(abilities or {}, "longShot") ~= nil
+end
+
 -- ===== FÚRIA (Bramm) =====
 -- Dano extra quando o empurrão NÃO acontece (a casa atrás do alvo está ocupada
 -- ou é fora do tabuleiro). É a compensação por perder o reposicionamento, que é
@@ -229,6 +254,11 @@ GameConfig.ABILITIES = {
 }
 
 GameConfig.TURN_TIME_LIMIT = 60 -- segundos por turno; 0 desliga o cronômetro
+
+-- Segundos para escolher CADA herói do time, não para o draft inteiro: a vez
+-- alterna a cada escolha, e quem estourar o prazo recebe um herói sorteado numa
+-- casa livre em vez de travar a partida do outro. 0 desliga.
+GameConfig.PLACEMENT_TIME_LIMIT = 60
 GameConfig.BOT_PLACE_DELAY = 0.8 -- pausa antes do bot escolher, pra dar pra acompanhar
 
 -- ===== CASAS DE PROMOÇÃO =====
@@ -271,7 +301,7 @@ GameConfig.RESURRECT_HP = 5
 -- soltos: mudando o tamanho do hexágono, os dois continuam à mesma distância
 -- relativa do campo. A conta mora no HexGrid.GetStandPosition/GetStandFacing pra
 -- client (jogador local) e server (bonequin do bot) não divergirem.
-GameConfig.PLAYER_STAND_OUTSET_HEXES = 1 -- casas de folga entre a borda do tabuleiro e o competidor
+GameConfig.PLAYER_STAND_OUTSET_HEXES = 0.55 -- casas de folga entre a borda do tabuleiro e o competidor
 GameConfig.PLAYER_STAND_SCALE = 2.2 -- tamanho dos personagens nas posições de espera (1 = normal)
 
 -- ===== FONTE DE TEXTO CORRIDO =====
@@ -311,27 +341,21 @@ GameConfig.HEX_COLOR_A = Color3.fromRGB(108, 90, 74)
 GameConfig.HEX_COLOR_B = Color3.fromRGB(74, 61, 50)
 
 -- ===== ARENAS SIMULTÂNEAS =====
--- Cada partida ocupa uma arena própria, lado a lado no eixo X. A taverna mede
--- ~141 studs de largura, então 200 de espaçamento deixa um corredor vazio entre
--- elas.
+-- Cada partida ocupa uma arena própria, lado a lado no eixo X. A arena mede
+-- ~190 studs de largura com a folga da câmera, então 200 de espaçamento deixa um
+-- corredor entre elas.
 --
 -- ESTE VETOR É A ORIGEM DO TABULEIRO, NÃO O CENTRO DELE. O centro cai em
 -- origem + (18, 0, 25.98) — conta que sai do HexGrid (5 colunas de 9 studs, e
--- de C0 a C7 no eixo Z, mais meia peça de margem). Pra centralizar o tabuleiro
--- numa taverna nova: pegue o centro do INTERIOR (face interna das paredes) e
--- subtraia esse (18, 0, 25.98).
+-- de C0 a C7 no eixo Z, mais meia peça de margem). O ArenaBuilder levanta o
+-- cenário em volta desta origem, então mover daqui leva a arena inteira junto.
 --
--- Taverna atual (medida no place, faces internas):
---   X  -285.4 .. -146.0  -> centro -215.70  -> origem X = -233.70
---   Z   -28.9 ..   97.2  -> centro   34.15  -> origem Z =    8.17
---   piso com topo em 499.5, e o BoardSpawner encosta o piso em ORIGIN.Y - 0.5
---                                            -> origem Y =  500
---
--- Se a taverna for movida à mão de novo, é este vetor que tem que acompanhar —
--- senão o tabuleiro nasce no vazio, longe do cenário, e a partida roda
--- normalmente só que sem chão nenhum embaixo. O BoardSpawner avisa no output
--- quando os dois se desencontram.
-GameConfig.ARENA_ORIGIN = Vector3.new(-233.7, 500, 8.17)
+-- LONGE DA VERTICAL DO LOBBY, e é por isso que o Z é este. As ilhas moram em
+-- y=712, uns 212 studs acima das arenas, e ficando embaixo delas elas PROJETAM
+-- SOMBRA no tabuleiro — uma mancha escura atravessada no meio do jogo, pior
+-- ainda nas arenas claras. O lobby vai até z~230; daqui pra lá sobra mais de mil
+-- studs, folga pra qualquer ângulo de sol.
+GameConfig.ARENA_ORIGIN = Vector3.new(-233.7, 500, -1400)
 GameConfig.ARENA_SPACING = 200
 
 -- Cada arena comporta 2 jogadores, então este número TEM que acompanhar o

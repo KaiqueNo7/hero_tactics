@@ -9,7 +9,11 @@ local Workspace = game:GetService("Workspace")
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
+local Arenas = require(ReplicatedStorage.Modules.Arenas)
 local LightingSetup = require(script.Parent.LightingSetup)
+local ArenaBuilder = require(script.Parent.ArenaBuilder)
+
+local ServerStorage = game:GetService("ServerStorage")
 
 local BoardSpawner = {}
 
@@ -18,18 +22,21 @@ local HEX_RADIUS = 6
 local TILE_FILL = 0.94
 local TILE_THICKNESS = 1
 
--- O cenário mora fora do folder Board (que é destruído a cada partida) e
--- PERSISTE no place. Assim dá pra ver e personalizar a taverna no Studio sem
--- dar play, e o que você editar continua lá — o código só constrói se faltar.
+-- A arena do slot é levantada do zero a cada partida, a partir do tema dela
+-- (ver Arenas). Guardar a montada e reaproveitá-la quando o tema batia
+-- economizava uns milissegundos e cobrava caro: mexer no builder não aparecia
+-- até alguém apagar a pasta na mão.
 --
--- Com várias partidas ao mesmo tempo, a arena do slot 1 é a original (a que
--- você edita à mão) e as dos slots seguintes são CLONES dela, deslocados no X.
--- É de propósito: assim o layout é literalmente o mesmo em todas, e qualquer
--- móvel que você mudar na primeira aparece nas outras na próxima partida.
-local ARENA_FOLDER_NAME = "Arena"
+-- Cenário montado à mão continua ganhando do código: uma pasta chamada
+-- ArenaMaster_<tema> no Workspace é clonada e alinhada no lugar do diorama
+-- gerado. É o mesmo acordo do LobbyZoneBuilder — o construtor entrega a
+-- primeira versão e sai da frente.
+local ARENA_SLOT_PREFIX = "ArenaSlot_"
+local ARENA_MASTER_PREFIX = "ArenaMaster_"
+local LEGACY_STORE = "LegacyArenas"
 
 local function ArenaFolderName(slot)
-	return slot <= 1 and ARENA_FOLDER_NAME or (ARENA_FOLDER_NAME .. "_" .. slot)
+	return ARENA_SLOT_PREFIX .. slot
 end
 
 local function BoardFolderName(slot)
@@ -102,261 +109,85 @@ local function CreateHexTile(template, worldPos, color, hexId)
 	return clone
 end
 
--- ===== CENÁRIO (TAVERNA) =====
--- A câmera fica em +Z olhando pra -Z, acima do tabuleiro. Por isso a taverna
--- não tem teto nem parede da frente: seria tudo entre a câmera e o jogo.
--- É um diorama — três paredes, piso de tábuas e tralha nas bordas.
-local TAVERN_WALL_HEIGHT = 30
-local TAVERN_WALL_THICKNESS = 2
-local TAVERN_MARGIN_LEFT = 34 -- lado onde player e bonequin ficam de pé
-local TAVERN_MARGIN_RIGHT = 18
-local TAVERN_MARGIN_BACK = 18
-local TAVERN_MARGIN_FRONT = 24
+local function ParkLegacyArena(slot)
+	local legacy = Workspace:FindFirstChild(slot <= 1 and "Arena" or ("Arena_" .. slot))
+	if not legacy or legacy:GetAttribute("Theme") then return end
 
-local WOOD_FLOOR = Color3.fromRGB(94, 62, 38)
-local WOOD_DARK = Color3.fromRGB(62, 41, 26)
-local WOOD_TRIM = Color3.fromRGB(126, 86, 50)
-local STONE_GREY = Color3.fromRGB(92, 88, 82)
-
-local function MakePart(props, parent)
-	local part = Instance.new("Part")
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-
-	for key, value in pairs(props) do
-		part[key] = value
+	local store = ServerStorage:FindFirstChild(LEGACY_STORE)
+	if not store then
+		store = Instance.new("Folder")
+		store.Name = LEGACY_STORE
+		store.Parent = ServerStorage
 	end
 
-	part.Parent = parent
-	return part
+	legacy.Parent = store
+	print(("BoardSpawner: %s guardada em ServerStorage.%s — as arenas agora vêm de Arenas.THEMES. Pra usá-la como cenário de uma região, renomeie pra ArenaMaster_<tema> e devolva ao Workspace.")
+		:format(legacy.Name, LEGACY_STORE))
 end
 
--- Cilindro do Roblox nasce deitado no eixo X; girar 90° em Z põe ele de pé
-local function StandingCylinder(props, parent)
-	props.Shape = Enum.PartType.Cylinder
-	props.CFrame = props.CFrame * CFrame.Angles(0, 0, math.rad(90))
-	return MakePart(props, parent)
-end
-
-local function BuildBarrel(parent, position)
-	local height = 5.5
-	local base = CFrame.new(position + Vector3.new(0, height / 2, 0))
-
-	StandingCylinder({
-		Name = "Barrel",
-		Size = Vector3.new(height, 5, 5),
-		CFrame = base,
-		Color = WOOD_DARK,
-		Material = Enum.Material.WoodPlanks,
-	}, parent)
-
-	for _, offset in ipairs({ -1.4, 1.4 }) do
-		StandingCylinder({
-			Name = "BarrelRing",
-			Size = Vector3.new(0.7, 5.3, 5.3),
-			CFrame = base * CFrame.new(0, offset, 0),
-			Color = Color3.fromRGB(68, 60, 50),
-			Material = Enum.Material.Metal,
-		}, parent)
-	end
-end
-
-local function BuildTable(parent, position)
-	StandingCylinder({
-		Name = "TableTop",
-		Size = Vector3.new(0.9, 10, 10),
-		CFrame = CFrame.new(position + Vector3.new(0, 6.5, 0)),
-		Color = WOOD_TRIM,
-		Material = Enum.Material.Wood,
-	}, parent)
-
-	MakePart({
-		Name = "TableLeg",
-		Size = Vector3.new(1.6, 6.5, 1.6),
-		CFrame = CFrame.new(position + Vector3.new(0, 3.25, 0)),
-		Color = WOOD_DARK,
-		Material = Enum.Material.Wood,
-	}, parent)
-
-	MakePart({
-		Name = "TableFoot",
-		Size = Vector3.new(5, 0.6, 5),
-		CFrame = CFrame.new(position + Vector3.new(0, 0.3, 0)),
-		Color = WOOD_DARK,
-		Material = Enum.Material.Wood,
-	}, parent)
-end
-
-local function BuildTorch(parent, position, faceDirection)
-	MakePart({
-		Name = "TorchBracket",
-		Size = Vector3.new(0.8, 4, 0.8),
-		CFrame = CFrame.new(position),
-		Color = Color3.fromRGB(48, 44, 40),
-		Material = Enum.Material.Metal,
-	}, parent)
-
-	local flame = MakePart({
-		Name = "TorchFlame",
-		Shape = Enum.PartType.Ball,
-		Size = Vector3.new(1.8, 1.8, 1.8),
-		CFrame = CFrame.new(position + Vector3.new(0, 2.4, 0) + faceDirection * 0.4),
-		Color = Color3.fromRGB(255, 170, 70),
-		Material = Enum.Material.Neon,
-	}, parent)
-
-	local light = Instance.new("PointLight")
-	light.Color = Color3.fromRGB(255, 176, 96)
-	light.Brightness = 2.4
-	light.Range = 34
-	light.Parent = flame
-
-	local fire = Instance.new("Fire")
-	fire.Heat = 4
-	fire.Size = 4
-	fire.Color = Color3.fromRGB(255, 180, 90)
-	fire.SecondaryColor = Color3.fromRGB(190, 90, 30)
-	fire.Parent = flame
-end
-
-local function BuildTavern(origin)
-	local folder = Instance.new("Folder")
-	folder.Name = ARENA_FOLDER_NAME
-	folder.Parent = Workspace
-
-	local minV, maxV = HexGrid.GetBoardBounds(origin)
-	local floorY = origin.Y - 0.5 -- topo do piso encosta na base dos hexágonos
-
-	local minX = minV.X - TAVERN_MARGIN_LEFT
-	local maxX = maxV.X + TAVERN_MARGIN_RIGHT
-	local minZ = minV.Z - TAVERN_MARGIN_BACK
-	local maxZ = maxV.Z + TAVERN_MARGIN_FRONT
-
-	local width = maxX - minX
-	local depth = maxZ - minZ
-	local centerX = (minX + maxX) / 2
-	local centerZ = (minZ + maxZ) / 2
-
-	MakePart({
-		Name = "Floor",
-		Size = Vector3.new(width, 2, depth),
-		CFrame = CFrame.new(centerX, floorY - 1, centerZ),
-		Color = WOOD_FLOOR,
-		Material = Enum.Material.WoodPlanks,
-		CanCollide = true,
-	}, folder)
-
-	-- três paredes: fundo (-Z) e as duas laterais. A frente fica aberta.
-	local wallY = floorY + TAVERN_WALL_HEIGHT / 2
-	local walls = {
-		{ size = Vector3.new(width, TAVERN_WALL_HEIGHT, TAVERN_WALL_THICKNESS), position = Vector3.new(centerX, wallY, minZ) },
-		{ size = Vector3.new(TAVERN_WALL_THICKNESS, TAVERN_WALL_HEIGHT, depth), position = Vector3.new(minX, wallY, centerZ) },
-		{ size = Vector3.new(TAVERN_WALL_THICKNESS, TAVERN_WALL_HEIGHT, depth), position = Vector3.new(maxX, wallY, centerZ) },
-	}
-
-	for index, wall in ipairs(walls) do
-		MakePart({
-			Name = "Wall" .. index,
-			Size = wall.size,
-			CFrame = CFrame.new(wall.position),
-			Color = WOOD_DARK,
-			Material = Enum.Material.WoodPlanks,
-		}, folder)
-
-		-- rodapé de pedra, quebra a parede lisa
-		MakePart({
-			Name = "Baseboard" .. index,
-			Size = wall.size * Vector3.new(1, 0, 1) + Vector3.new(1, 7, 1),
-			CFrame = CFrame.new(wall.position * Vector3.new(1, 0, 1) + Vector3.new(0, floorY + 3.5, 0)),
-			Color = STONE_GREY,
-			Material = Enum.Material.Slate,
-		}, folder)
-	end
-
-	-- onde os dois competidores ficam de pé: nada de tralha em cima deles
-	local reserved = {}
-	for slot = 1, 2 do
-		local stand = HexGrid.GetStandPosition(slot, floorY, origin)
-		table.insert(reserved, Vector2.new(stand.X, stand.Z))
-	end
-
-	local function isBlocked(x, z)
-		for _, point in ipairs(reserved) do
-			if (Vector2.new(x, z) - point).Magnitude < 12 then return true end
-		end
-		-- nem sobre o tabuleiro
-		return x > minV.X - 4 and x < maxV.X + 4
-			and z > minV.Z - 4 and z < maxV.Z + 4
-	end
-
-	local spots = {}
-	for x = minX + 8, maxX - 8, 13 do
-		table.insert(spots, Vector2.new(x, minZ + 8))
-	end
-	for z = minZ + 20, maxZ - 10, 15 do
-		table.insert(spots, Vector2.new(maxX - 8, z))
-		table.insert(spots, Vector2.new(minX + 8, z))
-	end
-
-	for index, spot in ipairs(spots) do
-		if not isBlocked(spot.X, spot.Y) then
-			local position = Vector3.new(spot.X, floorY, spot.Y)
-			if index % 3 == 0 then
-				BuildTable(folder, position)
-			else
-				BuildBarrel(folder, position)
-			end
-		end
-	end
-
-	-- tochas na parede do fundo, que é a que aparece atrás do tabuleiro
-	for i = 1, 4 do
-		local x = minX + width * (i / 5)
-		BuildTorch(folder, Vector3.new(x, floorY + 14, minZ + 1.5), Vector3.new(0, 0, 1))
-	end
-
-	return folder
-end
-
--- Garante que o cenário existe, sem recriar o que já estiver lá. Pode ser
--- chamado no Studio em modo Edit pra materializar a taverna e personalizar
--- à mão — a partida reaproveita o que estiver salvo no place.
---
--- As arenas ficam montadas mesmo sem partida rodando: são cenário, custam nada
--- parado, e evitam o custo de reconstruir a cada início.
-function BoardSpawner.EnsureArena(slot)
+-- Levanta a arena do TEMA pedido no slot, derrubando a que estiver lá. É o que
+-- faz a partida seguinte no mesmo slot acontecer noutra região.
+function BoardSpawner.EnsureArena(slot, theme)
 	slot = slot or 1
+	theme = theme or Arenas.THEMES[1]
 
 	HexGrid.SetHexSize(HEX_RADIUS)
 	HexGrid.Generate()
 
+	ParkLegacyArena(slot)
+
 	local name = ArenaFolderName(slot)
-	local folder = Workspace:FindFirstChild(name)
+	local existing = Workspace:FindFirstChild(name)
+	if existing then existing:Destroy() end
 
-	if not folder then
-		if slot <= 1 then
-			folder = BuildTavern(GameConfig.ArenaOrigin(1))
-		else
-			-- clona a arena original em vez de reconstruir: o layout tem que ser
-			-- idêntico, inclusive o que foi editado à mão no Studio
-			local source = BoardSpawner.EnsureArena(1)
-			local delta = GameConfig.ArenaOrigin(slot) - GameConfig.ArenaOrigin(1)
+	local origin = GameConfig.ArenaOrigin(slot)
+	local master = Workspace:FindFirstChild(theme.master or (ARENA_MASTER_PREFIX .. theme.id))
 
-			folder = source:Clone()
-			folder.Name = name
-			for _, descendant in ipairs(folder:GetDescendants()) do
-				if descendant:IsA("BasePart") then
-					descendant.CFrame = descendant.CFrame + delta
-				end
-			end
-			folder.Parent = Workspace
-		end
+	local folder = master and ArenaBuilder.CloneMaster(master, theme, origin, name)
+		or ArenaBuilder.Build(theme, origin, name)
+
+	LightingSetup.LightArena(folder)
+
+	return folder
+end
+
+-- ===== EDITAR UMA ARENA À MÃO =====
+-- Ponto de partida pra trabalhar a região no Studio, em modo Edit:
+--
+--     require(game.ServerScriptService.Modules.BoardSpawner).BuildMaster("geleira")
+--
+-- Ele levanta o diorama do tema numa área livre (depois do último slot de
+-- partida, pra não cair em cima de ninguém), junto com um tabuleiro de
+-- referência pra alinhar decoração, e deixa a pasta como ArenaMaster_<tema>.
+-- Dali em diante é seu: mova, apague, acrescente o que quiser e SALVE O PLACE —
+-- toda partida daquela região passa a clonar o que ficou lá em vez de gerar de
+-- novo. O alinhamento sai da peça `Floor`, então a arena pode morar em qualquer
+-- canto do Workspace.
+--
+-- Rodar de novo DESCARTA o que você editou e volta pro gerado — é a saída
+-- explícita, igual ao LobbyZoneBuilder.Build(true).
+function BoardSpawner.BuildMaster(themeId)
+	local theme = Arenas.ById(themeId)
+	if not theme then
+		warn(("BoardSpawner: nao existe tema '%s' em Arenas.THEMES."):format(tostring(themeId)))
+		return nil
 	end
 
-	-- Fora do `if`: a arena montada à mão no place chega aqui pelo caminho do
-	-- `FindFirstChild` e precisa de luz igual. O LightArena é idempotente.
-	LightingSetup.LightArena(folder)
+	local masterName = ARENA_MASTER_PREFIX .. theme.id
+	local previous = Workspace:FindFirstChild(masterName)
+	if previous then
+		previous:Destroy()
+		warn(("BoardSpawner: %s anterior descartado — o que estava montado à mão foi junto."):format(masterName))
+	end
+
+	local slot = GameConfig.MAX_SIMULTANEOUS_MATCHES + (table.find(Arenas.THEMES, theme) or 1)
+	BoardSpawner.SpawnBoard(slot, false, nil, theme)
+
+	local folder = Workspace:FindFirstChild(ArenaFolderName(slot))
+	if folder then folder.Name = masterName end
+
+	print(("BoardSpawner: %s pronto em %s. Edite, salve o place, e as partidas da regiao passam a clonar ele. O Board_%d ao lado e so referencia de alinhamento — pode apagar.")
+		:format(masterName, tostring(GameConfig.ArenaOrigin(slot)), slot))
 
 	return folder
 end
@@ -444,7 +275,7 @@ local function SpawnBotDummy(boardFolder, origin, botDataId)
 	-- ele flutuando. A caixa é medida DEPOIS do ScaleTo — medir antes plantaria
 	-- os pés na altura do tamanho velho e o boneco afundaria no piso.
 	local _, size = dummy:GetBoundingBox()
-	local floorY = origin.Y - 0.5 -- mesmo piso que o BuildTavern usa
+	local floorY = origin.Y - 0.5 -- mesmo piso que a arena usa
 	local standPos = HexGrid.GetStandPosition(2, floorY + size.Y / 2, origin)
 	local lookAt = HexGrid.GetStandFacing(2, standPos)
 	dummy:PivotTo(CFrame.new(standPos, lookAt))
@@ -487,8 +318,9 @@ end
 -- nome, que com várias partidas seria ambíguo.
 -- `botDataId` é o herói do confronto da campanha: é ele que fica de pé do outro
 -- lado. Sem ele (treino livre, PvP) o slot 2 recebe o boneco genérico ou nada.
-function BoardSpawner.SpawnBoard(slot, withBotDummy, botDataId)
+function BoardSpawner.SpawnBoard(slot, withBotDummy, botDataId, theme)
 	slot = slot or 1
+	theme = theme or Arenas.THEMES[1]
 
 	local template = ReplicatedStorage:FindFirstChild("HexTile")
 	if not template then
@@ -509,14 +341,21 @@ function BoardSpawner.SpawnBoard(slot, withBotDummy, botDataId)
 	boardFolder.Name = BoardFolderName(slot)
 	boardFolder.Parent = Workspace
 
+	-- O xadrez veste a região: a Geleira é pedra clara e fria, a Forja é basalto
+	-- quente. Só o PAR muda — os dois tons continuam bem separados, senão o
+	-- tabuleiro vira uma laje só e ninguém conta distância de bate-pronto.
+	local tiles = theme.tiles
+	local colorA = tiles and tiles.a or COLOR_A
+	local colorB = tiles and tiles.b or COLOR_B
+
 	local allHexes = HexGrid.GetAllHexes()
 	for _, hex in ipairs(allHexes) do
 		local worldPos = HexGrid.GetWorldPosition(hex.id, origin)
-		local color = (hex.col % 2 == 0) and COLOR_A or COLOR_B
+		local color = (hex.col % 2 == 0) and colorA or colorB
 		CreateHexTile(template, worldPos, color, hex.id).Parent = boardFolder
 	end
 
-	local arena = BoardSpawner.EnsureArena(slot)
+	local arena = BoardSpawner.EnsureArena(slot, theme)
 	WarnIfOffTheFloor(arena, origin)
 
 	if withBotDummy then

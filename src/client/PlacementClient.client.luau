@@ -90,6 +90,28 @@ title.TextScaled = true
 title.Font = Enum.Font.GothamBold
 title.Parent = gui
 
+-- O prazo é POR HERÓI (GameConfig.PLACEMENT_TIME_LIMIT), e vale pros dois lados:
+-- ver o relógio do adversário correndo é o que explica por que o time dele vai
+-- aparecer sozinho se ele sumir. O servidor manda os segundos que faltam em cada
+-- snapshot; entre um e outro a contagem corre aqui, senão o número travaria.
+local titleBase = ""
+local titleColor = Color3.new(1, 1, 1)
+local placementDeadline = nil
+
+local function renderTitle()
+	local left = placementDeadline and math.max(0, math.ceil(placementDeadline - os.clock())) or nil
+
+	title.Text = left and ("%s  —  %ds"):format(titleBase, left) or titleBase
+	title.TextColor3 = (left and left <= 10) and Color3.fromRGB(255, 140, 120) or titleColor
+end
+
+task.spawn(function()
+	while true do
+		task.wait(0.25)
+		if gui.Enabled and placementDeadline then renderTitle() end
+	end
+end)
+
 -- ===== "ESPERE SUA VEZ" (mesmo flash da batalha) =====
 local waitFlashLabel = Instance.new("TextLabel")
 waitFlashLabel.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -902,12 +924,15 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 
 	local myTurn = state.isMyPlacement
 	if myTurn then
-		title.Text = ("Sua vez  —  %d/%d posicionados"):format(state.placedCount, state.heroesPerPlayer)
-		title.TextColor3 = Color3.new(1, 1, 1)
+		titleBase = ("Sua vez  —  %d/%d posicionados"):format(state.placedCount, state.heroesPerPlayer)
+		titleColor = Color3.new(1, 1, 1)
 	else
-		title.Text = ("%s escolhendo..."):format(state.opponentName or "Adversário")
-		title.TextColor3 = Color3.fromRGB(255, 175, 175)
+		titleBase = ("%s escolhendo..."):format(state.opponentName or "Adversário")
+		titleColor = Color3.fromRGB(255, 175, 175)
 	end
+
+	placementDeadline = state.placementSecondsLeft and (os.clock() + state.placementSecondsLeft) or nil
+	renderTitle()
 
 	for id, entry in pairs(heroCards) do
 		local used = usedHeroIdSet[id] == true

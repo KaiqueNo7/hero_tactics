@@ -23,6 +23,7 @@ local Workspace = game:GetService("Workspace")
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local Arenas = require(ReplicatedStorage.Modules.Arenas)
 local Skills = require(ServerScriptService.Modules.Skills)
 local HeroView = require(ServerScriptService.Modules.HeroView)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
@@ -716,6 +717,7 @@ local function BuildSkillApi(match)
 		GetAlliesInRange = function(hero, range) return GetAlliesInRange(match, hero, range) end,
 		GetEnemiesInRange = function(hero, range) return GetEnemiesInRange(match, hero, range) end,
 		GetLineBeyond = HexGrid.GetLineBeyond,
+		Distance = HexGrid.Distance,
 		IsFree = function(hexId) return IsFree(match, hexId) end,
 		ForceMove = function(hero, hexId) return ForceMove(match, hero, hexId) end,
 		FindStatusEffect = FindStatusEffect,
@@ -823,6 +825,14 @@ local function TurnSecondsLeft(match)
 	if not match.turn or GameConfig.TURN_TIME_LIMIT <= 0 then return nil end
 	local elapsed = os.clock() - match.turn.startedAt
 	return math.max(0, math.floor(GameConfig.TURN_TIME_LIMIT - elapsed))
+end
+
+local function PlacementSecondsLeft(match)
+	if match.phase ~= "placement" or not match.placementStartedAt then return nil end
+	if GameConfig.PLACEMENT_TIME_LIMIT <= 0 then return nil end
+
+	local elapsed = os.clock() - match.placementStartedAt
+	return math.max(0, math.floor(GameConfig.PLACEMENT_TIME_LIMIT - elapsed))
 end
 
 -- O estado é montado por espectador: quem olha precisa saber o que é dele,
@@ -1094,12 +1104,17 @@ local function Snapshot(match, viewerId)
 		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,
 		turnSecondsLeft = TurnSecondsLeft(match),
 		turnTimeLimit = GameConfig.TURN_TIME_LIMIT,
+		placementSecondsLeft = PlacementSecondsLeft(match),
+		placementTimeLimit = GameConfig.PLACEMENT_TIME_LIMIT,
 		suddenDeath = match.turn and match.turn.number >= GameConfig.SUDDEN_DEATH_START_TURN or false,
 
 		-- O contra-ataque é UM por turno, valendo pros dois lados: quem defende
 		-- revida no primeiro golpe do turno e ninguém mais revida até o turno
 		-- virar. O cliente mostra isso como um selo aceso/apagado.
 		counterAttackUsed = match.turn and match.turn.counterAttack or false,
+
+		arena = match.theme and match.theme.id or nil,
+		arenaName = match.theme and match.theme.name or nil,
 
 		winner = winner,
 		message = match.message,
@@ -1254,7 +1269,9 @@ end
 -- Nasce no início da partida, antes do draft: os dois jogadores já escolhem os
 -- heróis olhando pro tabuleiro que vão jogar, barris incluídos.
 local function SpawnBarrels(match)
-	for _, hexId in ipairs(GameConfig.BARREL_HEXES) do
+	local hexes = match.theme and match.theme.objectHexes or GameConfig.BARREL_HEXES
+
+	for _, hexId in ipairs(hexes) do
 		if not HexGrid.Exists(hexId) then
 			warn("MatchManager: casa de barril inexistente: " .. tostring(hexId))
 		elseif IsFree(match, hexId) then
@@ -1304,7 +1321,11 @@ end
 -- linha são coisas que se fazem a um herói. Também não marca `firstAttack`, pra
 -- não queimar o First Punch do Ralph numa caixa de madeira.
 local function AttackBarrel(match, attacker, barrel)
-	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	-- mesma regra do AttackHero: quem mira em linha de visada não contorna
+	-- obstáculo pra acertar a caixa também
+	local reach = GameConfig.UsesLineOfSight(attacker.abilities)
+		and HexGrid.ComputeSightReach(attacker.position, attacker.attackRange, FreeChecker(match))
+		or HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[barrel.position] then return end
 
 	-- Taunt NÃO vale aqui. Ele obriga a escolher o provocador em vez de outro
@@ -1962,8 +1983,12 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	-- cliente adulterado acertaria o Shadow escondido chutando o nome.
 	if target.stealth then return end
 
-	-- alcance + caminho livre até o alvo
-	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	-- alcance + caminho livre até o alvo — MENOS pra quem atira em linha de
+	-- visada (Wren), que ignora obstáculo: a bala não contorna o barril, e é o
+	-- que faz a distância cobrada pelo longShot bater com a que autorizou o tiro
+	local reach = GameConfig.UsesLineOfSight(attacker.abilities)
+		and HexGrid.ComputeSightReach(attacker.position, attacker.attackRange, FreeChecker(match))
+		or HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[target.position] then return end
 
 	-- Taunt: inimigo com Taunt adjacente ao atacante trava o ataque em outro alvo
@@ -2261,6 +2286,29 @@ local function AllPlaced(match)
 	return true
 end
 
+-- Cronômetro do draft: reiniciado a cada vez que a escolha troca de lado. O
+-- token invalida o relógio anterior — sem ele, a contagem de uma escolha já
+-- feita ainda dispararia o sorteio automático da seguinte.
+--
+-- Só corre contra JOGADOR: o bot tem o BOT_PLACE_DELAY dele e nunca demora.
+local function StartPlacementClock(match)
+	match.placementToken += 1
+	match.placementStartedAt = os.clock()
+
+	local token = match.placementToken
+	local side = match.sides[match.placementSide]
+	if side.isBot or GameConfig.PLACEMENT_TIME_LIMIT <= 0 then return end
+
+	task.delay(GameConfig.PLACEMENT_TIME_LIMIT, function()
+		if not (MatchIsLive(match) and match.phase == "placement" and match.placementToken == token) then return end
+
+		-- Escolhe por ele em vez de pular a vez: pular deixaria o time incompleto
+		-- pro resto da partida, que é punição bem maior que a demora.
+		Broadcast(match, "⏱ Tempo esgotado!")
+		BotPlaceOne(match, true)
+	end)
+end
+
 function AdvancePlacement(match)
 	if AllPlaced(match) then
 		match.phase = "battle"
@@ -2274,6 +2322,7 @@ function AdvancePlacement(match)
 		nextIndex = match.placementSide
 	end
 	match.placementSide = nextIndex
+	StartPlacementClock(match)
 
 	Broadcast(match)
 
@@ -2284,11 +2333,11 @@ function AdvancePlacement(match)
 	end
 end
 
-function BotPlaceOne(match)
+function BotPlaceOne(match, force)
 	if not MatchIsLive(match) or match.phase ~= "placement" then return end
 
 	local side = match.sides[match.placementSide]
-	if not side.isBot then return end
+	if not (side.isBot or force) then return end
 
 	local free = FreeHexesIn(match, side.zone)
 
@@ -2419,7 +2468,8 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 
 	-- num confronto da campanha, quem fica de pé do outro lado é o herói do
 	-- confronto (o mesmo do quadrado do lobby), e não o boneco genérico
-	local boardFolder = BoardSpawner.SpawnBoard(slot, playerTwo == nil, fight and fight.hero)
+	local theme = (options and options.theme) or Arenas.ForMatch(fight)
+	local boardFolder = BoardSpawner.SpawnBoard(slot, playerTwo == nil, fight and fight.hero, theme)
 
 	local sides = {
 		{
@@ -2467,7 +2517,8 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		slot = slot,
 		origin = origin,
 		boardFolder = boardFolder,
-		view = HeroView.CreateView(matchId, origin, players),
+		view = HeroView.CreateView(matchId, origin, players, theme),
+		theme = theme,
 		sides = sides,
 		sideIndexById = sideIndexById,
 		vsBot = playerTwo == nil,
@@ -2492,6 +2543,8 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		log = {},
 		usedHeroIds = {},
 		placementSide = 1, -- lado 1 escolhe primeiro: 1,2,1,2...
+		placementToken = 0,
+		placementStartedAt = nil,
 		starterId = sides[1].id,
 		turn = nil,
 		turnToken = 0,
@@ -2525,6 +2578,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 
 	HeroView.PlayMatchSound(match.view, "MatchStart")
 
+	StartPlacementClock(match)
 	Broadcast(match)
 
 	if sides[1].isBot then
@@ -2579,7 +2633,7 @@ function MatchManager.Replay(player)
 
 	-- a revanche de um confronto da campanha é contra o MESMO time do bot: quem
 	-- perdeu tenta de novo o mesmo cenário, e vencer ainda paga o herói
-	MatchManager.StartMatch(playerOne, playerTwo, slot, match.fight)
+	MatchManager.StartMatch(playerOne, playerTwo, slot, match.fight, { theme = match.theme })
 end
 
 -- Abandono: quem sai não leva XP; quem ficou recebe como vitória. Só vale pra

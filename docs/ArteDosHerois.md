@@ -173,6 +173,27 @@ pedras soltas e grama. Braços grossos e desproporcionalmente grandes (tanque pu
 só reescalado a 60%**, sem redesenhar (`shatter`). Cor de assinatura: cinza-pedra
 `RGB(140,140,140)`.
 
+### 17. Lucy — suporte de fogo, irmã do Karo (Era 2)
+Cabelo preto em duas chiquinhas, olhos com o mesmo brilho laranja-fogo do Karo (marca de
+família). Roupa mais reservada que o padrão do elenco: manga longa, gola alta, sem
+barriga à mostra. Fogo mais claro/rosado que o do irmão — mesma família, tom mais suave.
+Compartilha o rastro de fogo dele no tabuleiro (`flamePath`), mas onde ele pisar em
+chama acesa ganha ataque, ela cura (`flameHeal`); protege aliados adjacentes reduzindo
+o dano que recebem (`emberShield`). Cor de assinatura: laranja-rosado
+`RGB(240,150,120)`.
+
+### 18. Zeff — controle de vento (Era 2)
+Cabelo liso e caído, branco-prateado, franja repartida caindo sobre a testa (corte tipo
+Light Yagami de *Death Note* — de propósito diferente do espetado do Karo). Pele muito
+clara, quase branca. Olhos ciano pálido sem pupila visível. Roupa em camadas azul-
+acinzentada clara, tipo quimono, com gola muito alta e enrolada cobrindo pescoço e
+queixo, cachecol longo esvoaçando atrás. Faixa preta larga na cintura (obi), panos
+enrolados em antebraços e canelas. Sem arma — uma esfera de vento ciano brilhante flutua
+sobre a palma da mão, com fiapos de vento curvando ao redor dos pés. Ao atacar, empurra
+pra longe do alvo todo aliado colado nele (`gustPush`) — não mata, desmonta formação.
+Cor de assinatura: ciano-esverdeado `RGB(150,230,220)` (não azul-céu — precisa ficar bem
+separado do `RGB(150,210,240)` do Kor na barra de vida e na moldura).
+
 ---
 
 ## Exemplo de prompt completo — Era 1 (Blade)

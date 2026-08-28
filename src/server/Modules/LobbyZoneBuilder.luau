@@ -265,6 +265,120 @@ function LobbyZoneBuilder.PlacePads()
 		:format(moved, kept))
 end
 
+-- ===== BORDA TEMÁTICA DA ILHA =====
+-- Enfeita o PERÍMETRO de cada ilha com peças da cara dela: a beirada deixa de
+-- ser um corte reto de laje e passa a parecer terreno que acaba. Vale só no
+-- lobby — a trilha só existe fora de partida, então não há o que separar.
+--
+-- ISTO REABRE, DE PROPÓSITO, UMA PORTA QUE O LobbyZones FECHOU. Lá está escrito
+-- que ilha nasce só com chão e borda porque vegetação gerada por código ficava
+-- suja ao lado do que é montado à mão. A diferença aqui é o escopo: aquilo
+-- espalhava mato pela ilha INTEIRA, disputando espaço com o cenário do Studio;
+-- isto encosta só na beirada, que é justamente a parte que ninguém decora à mão.
+-- Se voltar a sujar, apagar é uma linha — cada ilha tem a pasta <id>_Edge.
+--
+-- O tema mora AQUI e não no LobbyZones porque é decisão de cenário, não de
+-- planta: o cliente nunca lê isto, só o construtor no servidor.
+local EDGE_THEMES = {
+	clareira  = { kind = "tuft",  color = Color3.fromRGB(86, 146, 70),   material = Enum.Material.LeafyGrass },
+	bosque    = { kind = "spire", color = Color3.fromRGB(56, 48, 52),    material = Enum.Material.Wood },
+	geleira   = { kind = "spire", color = Color3.fromRGB(168, 214, 240), material = Enum.Material.Ice },
+	forja     = { kind = "block", color = Color3.fromRGB(46, 38, 36),    material = Enum.Material.Basalt },
+	santuario = { kind = "block", color = Color3.fromRGB(196, 170, 142), material = Enum.Material.Sandstone },
+}
+
+local EDGE_SHAPES = {
+	tuft  = { width = 4.6, height = 2.2 }, -- moita baixa e larga
+	spire = { width = 2.2, height = 7.0 }, -- tronco/cristal fino e alto
+	block = { width = 4.0, height = 3.0 }, -- lasca de pedra
+}
+
+local EDGE_PIECES = 30
+local EDGE_INSET = 2.5 -- pra dentro da borda, senão a peça fica meio no ar
+
+-- Ponto do perímetro em `t` (0..1 dá a volta completa), no espaço da PEÇA:
+-- multiplicar pelo CFrame do chão real herda a rotação que a ilha ganhou à mão.
+local function EdgeCFrame(floor, t)
+	local halfX = floor.Size.X / 2 - EDGE_INSET
+	local halfZ = floor.Size.Z / 2 - EDGE_INSET
+
+	local side = math.floor(t * 4) % 4
+	local u = (t * 4) % 1
+
+	local lx, lz
+	if side == 0 then
+		lx, lz = -halfX + u * halfX * 2, -halfZ
+	elseif side == 1 then
+		lx, lz = halfX, -halfZ + u * halfZ * 2
+	elseif side == 2 then
+		lx, lz = halfX - u * halfX * 2, halfZ
+	else
+		lx, lz = -halfX, halfZ - u * halfZ * 2
+	end
+
+	return floor.CFrame * CFrame.new(lx, floor.Size.Y / 2, lz)
+end
+
+local function BuildZoneEdge(zone, trail)
+	local spec = EDGE_THEMES[zone.id]
+	-- Busca recursiva: o place agrupa ilha e ponte em Models feitos à mão, e o
+	-- chão da Forja e do Santuário mora dentro de um deles.
+	local floor = trail:FindFirstChild(zone.id .. "_Floor", true)
+	if not spec or not (floor and floor:IsA("BasePart")) then return 0 end
+
+	-- idempotência: a borda antiga sai inteira antes de a nova entrar
+	local old = trail:FindFirstChild(zone.id .. "_Edge", true)
+	if old then old:Destroy() end
+
+	local folder = Instance.new("Folder")
+	folder.Name = zone.id .. "_Edge"
+	folder.Parent = floor.Parent
+
+	local shape = EDGE_SHAPES[spec.kind] or EDGE_SHAPES.block
+	-- semente fixa por zona: reconstruir devolve a MESMA borda, não um sorteio
+	-- novo a cada boot (o jogador reconhece o lugar pela silhueta dele)
+	local rng = Random.new(zone.group * 7919)
+
+	for index = 1, EDGE_PIECES do
+		local t = ((index - 1) / EDGE_PIECES + rng:NextNumber(-0.012, 0.012)) % 1
+		local base = EdgeCFrame(floor, t)
+
+		local width = shape.width * rng:NextNumber(0.7, 1.3)
+		local height = shape.height * rng:NextNumber(0.6, 1.4)
+
+		local piece = NewPart(zone.id .. "_EdgePiece",
+			Vector3.new(width, height, width * rng:NextNumber(0.7, 1.2)),
+			base
+				* CFrame.new(0, height / 2 - 1.2, 0)
+				* CFrame.Angles(math.rad(rng:NextNumber(-9, 9)), rng:NextNumber(0, 6.28), math.rad(rng:NextNumber(-9, 9))),
+			spec.color, spec.material, folder)
+
+		-- Enfeite não é parede: um anel sólido fecharia a boca da ponte e
+		-- prenderia o jogador dentro da própria ilha.
+		piece.CanCollide = false
+	end
+
+	return EDGE_PIECES
+end
+
+-- Separada da BuildTerrain pra poder ser chamada sozinha da barra de comando
+-- enquanto se acerta o visual:
+--   require(game.ServerScriptService.Modules.LobbyZoneBuilder).BuildEdges()
+function LobbyZoneBuilder.BuildEdges()
+	local trail = Workspace:FindFirstChild(FOLDER_NAME)
+	if not trail then
+		warn("LobbyZoneBuilder: sem " .. FOLDER_NAME .. " — nada pra decorar.")
+		return
+	end
+
+	local total = 0
+	for _, zone in ipairs(LobbyZones.ZONES) do
+		total += BuildZoneEdge(zone, trail)
+	end
+
+	print(("LobbyZoneBuilder: borda temática refeita (%d peças em %d ilhas)."):format(total, #LobbyZones.ZONES))
+end
+
 -- ===== ENTRADA =====
 -- Terreno e quadrados são DUAS chamadas de propósito, e a ordem importa: quem
 -- cria os pads que faltam é o GameStartTrigger, então ele levanta o terreno,
@@ -292,6 +406,11 @@ function LobbyZoneBuilder.BuildTerrain(force)
 
 		BuildFallNet(existing)
 
+		-- Vale TAMBÉM na trilha adotada, ao contrário de tudo o mais aqui: a
+		-- borda lê a peça de chão que está no place (posição e giro reais), então
+		-- ela acompanha o que foi montado à mão em vez de brigar com isso.
+		LobbyZoneBuilder.BuildEdges()
+
 		print(("LobbyZoneBuilder: %s já montado no place (%d peças) — trilha adotada, %d ilha(s) nova(s) levantada(s).")
 			:format(FOLDER_NAME, #existing:GetDescendants(), novas))
 		return
@@ -314,8 +433,9 @@ function LobbyZoneBuilder.BuildTerrain(force)
 	end
 
 	BuildFallNet(folder)
+	LobbyZoneBuilder.BuildEdges()
 
-	print(("LobbyZoneBuilder: %d zonas, %d pontes, %d peças (só chão, borda e ponte).")
+	print(("LobbyZoneBuilder: %d zonas, %d pontes, %d peças (chão, borda temática e ponte).")
 		:format(#LobbyZones.ZONES, #LobbyZones.ZONES, #folder:GetDescendants()))
 end
 

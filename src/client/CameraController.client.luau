@@ -38,8 +38,14 @@ local DEFAULT_DISTANCE = 75
 local FRAMING = 1.12
 
 -- ===== ZOOM =====
+-- O teto do zoom não é só gosto: ele decide se a câmera continua DENTRO do
+-- diorama. O afastamento em X é 0.72 * raio (azimute 91°, elevação 44°), e o
+-- piso da arena só vai até ARENA_CAMERA_MARGIN além do tabuleiro. Em 1.8 o raio
+-- ia a 135 e a câmera saía ~73 studs além da borda — de fora, olhando o
+-- cenário de trás, com o vazio preto aparecendo por baixo e pelas laterais.
+-- 1.5 mantém ela dentro da margem nova do ArenaBuilder com folga.
 local ZOOM_STEP = 5
-local ZOOM_MIN_FACTOR, ZOOM_MAX_FACTOR = 0.45, 1.8
+local ZOOM_MIN_FACTOR, ZOOM_MAX_FACTOR = 0.45, 1.5
 
 -- ===== MOVIMENTO NO LOBBY =====
 -- Lidos do StarterPlayer pra devolver exatamente o que o place configurou, em

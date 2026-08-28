@@ -467,6 +467,7 @@ end)
 -- alguém calibrasse o sol.
 local LobbyZones = require(ReplicatedStorage.Modules.LobbyZones)
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
+local Arenas = require(ReplicatedStorage.Modules.Arenas)
 local Lighting = game:GetService("Lighting")
 local CollectionService = game:GetService("CollectionService")
 
@@ -485,6 +486,8 @@ local function capture()
 		Ambient = Lighting.Ambient,
 		OutdoorAmbient = Lighting.OutdoorAmbient,
 		Brightness = Lighting.Brightness,
+		ClockTime = Lighting.ClockTime,
+		Exposure = Lighting.ExposureCompensation,
 		Atmosphere = atmosphere and {
 			Density = atmosphere.Density,
 			Haze = atmosphere.Haze,
@@ -507,22 +510,35 @@ local function zoneTint()
 	return tint
 end
 
+-- A arena preenche mais campos que a ilha (horário do sol, contraste,
+-- saturação), então o que a paleta não disser cai pro valor do lobby em vez de
+-- virar nil no meio do tween.
 local function applyPalette(palette)
+	local base = lobbyPalette or capture()
+
 	TweenService:Create(Lighting, ZONE_FADE, {
-		Ambient = palette.Ambient,
-		OutdoorAmbient = palette.OutdoorAmbient,
-		Brightness = palette.Brightness,
+		Ambient = palette.Ambient or base.Ambient,
+		OutdoorAmbient = palette.OutdoorAmbient or base.OutdoorAmbient,
+		Brightness = palette.Brightness or base.Brightness,
+		ClockTime = palette.ClockTime or base.ClockTime,
+		ExposureCompensation = palette.Exposure or base.Exposure,
 	}):Play()
 
 	local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
-	if atmosphere and palette.Atmosphere then
-		TweenService:Create(atmosphere, ZONE_FADE, palette.Atmosphere):Play()
+	local air = palette.Atmosphere or base.Atmosphere
+	if atmosphere and air then
+		TweenService:Create(atmosphere, ZONE_FADE, air):Play()
 	end
 
-	TweenService:Create(zoneTint(), ZONE_FADE, { TintColor = palette.Tint }):Play()
+	TweenService:Create(zoneTint(), ZONE_FADE, {
+		TintColor = palette.Tint or base.Tint,
+		Contrast = palette.Contrast or 0,
+		Saturation = palette.Saturation or 0,
+	}):Play()
 end
 
 local currentZoneId = nil
+local arenaId = nil
 
 local function ShowPadLabels(zoneId)
 	for _, pad in ipairs(CollectionService:GetTagged(Campaign.PAD_TAG)) do
@@ -545,7 +561,9 @@ task.spawn(function()
 		-- Durante a partida a câmera está na arena, longe de qualquer zona: sem
 		-- esta guarda, entrar em batalha "saía" da trilha e reacendia o lobby no
 		-- meio do tabuleiro.
-		if root and currentState == "idle" then
+		-- Em partida quem manda no ar é a ARENA, não a ilha em que o corpo do
+		-- jogador ficou parado no lobby.
+		if root and currentState == "idle" and not arenaId then
 			lobbyPalette = lobbyPalette or capture()
 
 			local zone = LobbyZones.ZoneAt(root.Position)
@@ -559,4 +577,29 @@ task.spawn(function()
 			ShowPadLabels(id)
 		end
 	end
+end)
+
+-- ===================== AMBIENTAÇÃO DA ARENA =====================
+-- Mesmo motivo da trilha: Lighting é global, e o servidor não pode trocá-la sem
+-- pintar a partida do vizinho. O snapshot diz em QUE região a batalha acontece
+-- (ver Arenas) e cada cliente aplica a paleta dela na própria tela.
+--
+-- Conexão separada da de cima de propósito: esta precisa das funções da seção
+-- de ambientação, que só existem daqui pra baixo.
+MatchUpdate.OnClientEvent:Connect(function(state)
+	if state.phase == "lobby" then
+		if not arenaId then return end
+
+		arenaId = nil
+		-- zera a zona pra travessia seguinte reacender a ilha em que ele está
+		currentZoneId = nil
+		applyPalette(lobbyPalette or capture())
+		return
+	end
+
+	if state.arena == arenaId then return end
+
+	arenaId = state.arena
+	lobbyPalette = lobbyPalette or capture()
+	applyPalette(Arenas.PaletteOf(state.arena) or lobbyPalette)
 end)

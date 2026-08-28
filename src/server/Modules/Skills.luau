@@ -588,6 +588,59 @@ Skills.emberShield = {
 	end,
 }
 
+-- ===== ZEFF: O VENTO =====
+-- Rajada — empurra os ALIADOS DO ALVO pra longe DELE, não do Zeff. O alvo em
+-- si não se move e leva o dano normal; quem estava colado nele é que voa.
+-- Mesmo trio de funções que o rage do Bramm já usa (GetLineBeyond + IsFree +
+-- ForceMove), só que a origem do empurrão é o alvo, não o atacante — e sem a
+-- conversão em dano quando bloqueado: Zeff não é sobre dano, formação
+-- apertada demais pra abrir é resposta válida do adversário.
+Skills.gustPush = {
+	triggers = { "onAttack" },
+	apply = function(ctx)
+		ctx.api.Effect(ctx.hero) -- a rajada saindo dele, além do que acontece em quem é empurrado
+
+		-- aliados do ALVO = inimigos de quem atacou. GetAlliesInRange nunca
+		-- devolve o próprio ctx.target, então ele fica parado sozinho sem
+		-- precisar de exceção escrita à mão (mesma leitura que o
+		-- aloneIsBetter do Noctin já faz pra saber se o alvo está isolado).
+		for _, other in ipairs(ctx.api.GetAlliesInRange(ctx.target, 1)) do
+			local away = ctx.api.GetLineBeyond(ctx.target.position, other.position, 1)[1]
+			if away and ctx.api.IsFree(away) then
+				ctx.api.ForceMove(other, away)
+				ctx.api.Effect(other)
+			else
+				-- sem pra onde ir: o vento vira dano em vez de reposicionar —
+				-- mesmo raciocínio do rage do Bramm quando o empurrão falha
+				ctx.api.Effect(other)
+				ctx.api.ApplyDamage(other, GameConfig.GUST_BLOCKED_DAMAGE, ctx.hero, ctx.isCounterAttack)
+			end
+		end
+		-- sem damageApplied: o alvo leva o golpe normal
+	end,
+}
+
+-- ===== WREN: A ATIRADORA =====
+-- Substitui o dano de ficha pela DISTÂNCIA até o alvo: quanto mais longe
+-- disparou, mais dói. `ctx.hero.attack` nunca é lido aqui de propósito — o
+-- crachá de ataque na UI mostra a ficha dela normalmente (mesmo caso do dobro
+-- do Kor contra alvo congelado: sem prévia por alvo, o número real só aparece
+-- no dano de verdade quando o golpe sai).
+--
+-- `onCounterAttack` também: revidar de perto dói tão pouco quanto atacar de
+-- perto — a fraqueza dela é simétrica, não só na hora de atacar primeiro.
+Skills.longShot = {
+	triggers = { "onAttack", "onCounterAttack" },
+	apply = function(ctx)
+		local distance = ctx.api.Distance(ctx.hero.position, ctx.target.position)
+		local damage = math.clamp(distance, 1, GameConfig.WREN_RANGE)
+
+		ctx.api.Effect(ctx.target)
+		ctx.api.ApplyDamage(ctx.target, damage, ctx.hero, ctx.isCounterAttack)
+		ctx.damageApplied = true
+	end,
+}
+
 -- ===== SHADOW: A FURTIVIDADE =====
 -- Quebra IMEDIATA da sombra, com o visual junto: o `stealth` do herói é o
 -- ÚNICO estado de invisibilidade do jogo (é ele que o Snapshot lê pra esconder

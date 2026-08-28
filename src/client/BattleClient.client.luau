@@ -1887,19 +1887,25 @@ local AIM_ATTACK_COLOR = Color3.fromRGB(255, 62, 52)
 -- de uma reta. Não é a reta "dobrada" na hora de desenhar: a curva é amostrada
 -- e os traços caminham SOBRE ela, cada um girado na tangente do próprio ponto.
 --
--- O ponto de controle sai do meio do caminho deslocado pra UM lado fixo em
--- relação à direção do golpe (a perpendicular no plano do tabuleiro). Fixo, e
--- não escolhido por caso, é o que faz esquerda, direita, cima, baixo e as
--- diagonais curvarem todas do mesmo jeito, sem a curva "virar" quando o cursor
--- cruza um eixo.
+-- O ponto de controle sai do meio do caminho levantado NA VERTICAL. Vertical e
+-- não lateral: é o que faz o traçado ler como projétil lançado (sobe, desce e
+-- cai no alvo) em vez de uma linha que desvia pro lado. Como a direção é sempre
+-- pra cima, esquerda, direita, longe e perto arqueiam todas igual — não existe
+-- o problema antigo da curva "virar de lado" quando o cursor cruzava um eixo.
+-- O desvio é VERTICAL, não lateral: o traçado sobe no meio do caminho e desce
+-- no alvo, como a trajetória de um projétil lançado. O desvio lateral que
+-- existia aqui antes empurrava a linha pro lado no plano do tabuleiro — dava
+-- movimento ao traço, mas lia como "corda torta", não como tiro.
 --
 -- Numa Bézier quadrática a curva passa na METADE do deslocamento do controle,
--- então os números aqui rendem metade disso em desvio real — daí parecerem
--- generosos pra uma curva que é discreta na tela.
+-- então o controle sobe o DOBRO da altura desejada no ápice (ver
+-- aimControlPoint) e estes números são a altura de verdade, não a do controle.
 local AIM_CURVE_SAMPLES = 24 -- segmentos da amostragem; 24 já fica liso nesta escala
-local AIM_CURVE_RATIO = 0.34 -- quanto da distância vira desvio lateral
-local AIM_CURVE_MAX = 13 -- teto pro tiro longo não virar um arco exagerado
-local AIM_CURVE_RISE = 2.6 -- levanta o meio do arco: a linha solta do tabuleiro
+local AIM_ARC_RATIO = 0.18 -- quanto da distância vira altura no ápice
+local AIM_ARC_MAX = 6 -- teto: acima disso o tiro longo some do enquadramento
+-- Piso pra jogada de UMA casa (~10 studs) ainda ler como arco em vez de risco
+-- reto — sem ele, mover pra casa vizinha desenhava uma linha praticamente plana.
+local AIM_ARC_MIN = 1.2
 local AIM_TAIL_FADE = 0.4 -- quanto o começo do traçado escurece (0 = sem gradiente)
 
 -- Ponta da seta: duas farpas abertas a partir do bico. Não é um bico fechado
@@ -1968,23 +1974,23 @@ local AIM_POINT_COUNT = AIM_CURVE_SAMPLES + 1
 local curvePoints = table.create(AIM_POINT_COUNT)
 local curveDistances = table.create(AIM_POINT_COUNT)
 
--- Onde fica o "cotovelo" da curva. Meio do caminho, empurrado pra perpendicular
--- (mesmo lado sempre) e levantado um pouco.
+-- Onde fica o "cotovelo" da curva: no meio do caminho, direto pra cima. É isso
+-- que faz o traçado virar um arco de projétil em vez de desviar pro lado.
 local function aimControlPoint(origin, target)
 	local middle = origin:Lerp(target, 0.5)
 
-	-- só o plano do tabuleiro decide o lado: se o desnível entrasse na conta, um
-	-- alvo mais alto ou mais baixo inclinaria a curva sem motivo
+	-- a altura sai da distância NO PLANO do tabuleiro: um alvo mais alto ou mais
+	-- baixo não deve engordar nem achatar o arco, só inclinar as duas pontas
 	local delta = target - origin
 	local flat = Vector3.new(delta.X, 0, delta.Z)
 	local distance = flat.Magnitude
 	if distance < 0.01 then return middle end
 
-	local direction = flat.Unit
-	local side = Vector3.new(-direction.Z, 0, direction.X)
-	local bend = math.min(distance * AIM_CURVE_RATIO, AIM_CURVE_MAX)
+	local apex = math.clamp(distance * AIM_ARC_RATIO, AIM_ARC_MIN, AIM_ARC_MAX)
 
-	return middle + side * bend + Vector3.new(0, AIM_CURVE_RISE, 0)
+	-- DOBRO do ápice: a Bézier quadrática só chega na metade do deslocamento do
+	-- controle, então subir `apex` aqui daria metade da altura pedida.
+	return middle + Vector3.new(0, apex * 2, 0)
 end
 
 -- Preenche curvePoints/curveDistances e devolve o comprimento do traçado.
@@ -2300,7 +2306,19 @@ local function selectHero(uid)
 	end
 
 	if not hero.hasAttacked then
-		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.attackRange, isFree)) do
+		-- MESMA escolha que o servidor faz em AttackHero: quem atira em linha de
+		-- visada ignora obstáculo. Divergir aqui pintaria de vermelho um alvo
+		-- que o servidor recusa (ou esconderia um que ele aceita).
+		--
+		-- As habilidades vêm do catálogo pelo dataId, não do snapshot: ele não
+		-- manda `abilities` (e não precisa — é dado fixo de ficha, o cliente já
+		-- tem o HeroData inteiro pra desenhar retrato e descrição).
+		local data = HeroData.GetById(hero.dataId)
+		local attackReach = GameConfig.UsesLineOfSight(data and data.abilities)
+			and HexGrid.ComputeSightReach(hero.position, hero.attackRange, isFree)
+			or HexGrid.ComputeReach(hero.position, hero.attackRange, isFree)
+
+		for hexId in pairs(attackReach) do
 			if enemyAt[hexId] then
 				attackTargets[hexId] = enemyAt[hexId]
 				moveTargets[hexId] = nil

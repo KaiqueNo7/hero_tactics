@@ -8,7 +8,8 @@ Nada aqui está implementado. Quando uma ideia vira herói de verdade, ela sai d
 arquivo e vira ficha em [ArteDosHerois.md](ArteDosHerois.md) + entrada no
 `HeroData.CATALOG`.
 
-**Já saiu daqui:** Lucy (irmã do Karo, suporte de fogo) — implementada, id 17.
+**Já saiu daqui:** Lucy (irmã do Karo, suporte de fogo) — implementada, id 17. Zeff
+(controle de posicionamento, `gustPush`) — implementado, id 18.
 
 ---
 
@@ -54,169 +55,7 @@ revide por turno — a detonação leva alguns turnos pra chegar, não é imedia
 
 ---
 
-## 2. Zeff, o do Vento ← **PRÓXIMO A IMPLEMENTAR** (desenho fechado)
-
-**Conceito:** controle de posicionamento. Não mata — desmonta formação.
-
-**Ficha:** ataque **2**, vida **17**, passiva `Sprint`, sem `Ranged`, sem `Taunt`.
-Habilidade única: `gustPush` (Rajada).
-
-### Estética
-
-Referência escolhida: jovem lutador de vento, noite de lua cheia, paleta fria.
-
-- **Cabelo liso e caído**, branco-prateado, franja repartida caindo sobre a testa e
-  mechas emoldurando o rosto — corte tipo Light Yagami (*Death Note*), não espetado.
-  Isso é o que mais o separa do Karo; ver a nota de leitura abaixo.
-- **Pele muito clara**, quase branca. Ele é pálido por inteiro.
-- **Olhos** brilhando num ciano pálido, **sem pupila visível**: dois pontos de luz.
-- **Roupa** em camadas, azul-acinzentada clara, tipo quimono/manto: **gola muito alta e
-  enrolada** cobrindo o pescoço e o queixo, com um **cachecol longo esvoaçando atrás**
-  dele. É o cachecol que carrega o movimento na pose parada.
-- **Faixa preta** amarrada na cintura (obi), pontas soltas.
-- **Panos enrolados** em antebraços e canelas.
-- **Sem arma.** Uma **esfera de vento ciano brilhante** flutua sobre a palma da mão —
-  é o gancho visual da Rajada, o que ele empurra.
-- **Fiapos de vento ciano** curvando ao redor dos pés.
-
-**Cor de assinatura sugerida:** ciano-esverdeado, algo como `RGB(150, 230, 220)` — e
-**não** um azul-céu. Motivo abaixo.
-
-### Nota de leitura (ler antes de gerar a arte)
-
-Ele encosta em dois heróis que já existem, e o jogo mostra esse desenho encolhido na
-carta do draft e no ícone pequeno da UI:
-
-- **Kor** já é branco-e-azul-gelo com olhos brilhando e cor de assinatura
-  `RGB(150,210,240)`. Um azul-céu pro Zeff faria os dois disputarem a mesma cor na barra
-  de vida e na moldura.
-- **Karo** também é branco-prateado de cabelo.
-
-O que separa os três, e precisa ser preservado na arte:
-
-| | Silhueta | Cabelo | Paleta |
-|---|---|---|---|
-| Kor | encapuzado, capa fechada, **cajado** | escondido no capuz | azul-gelo + creme + dourado |
-| Karo | capa esvoaçante, chama na mão | **espetado** | **quente** (vermelho, roxo, laranja) |
-| Zeff | **sem capuz**, gola alta + cachecol, esfera na mão | **liso e caído** | **fria** (ciano, cinza-azulado, preto) |
-
-- **Contra o Karo**, o que separa é o **cabelo** (liso caído × espetado) somado à paleta
-  (fria × quente). Trocar o espetado pelo liso foi ganho — a silhueta da cabeça agora
-  difere de longe, não só a cor.
-- **Contra o Kor**, sobra só a **silhueta**: ele não tem capuz nem cajado, e tem cachecol
-  e esfera. Sem a pele escura pra ajudar, esse contraste de silhueta é o que segura a
-  leitura — vale exagerar a gola alta e o cachecol solto, e **não** dar capa longa a ele.
-
-**Cuidado extra, agora que ele é pálido por inteiro:** pele clara + cabelo branco + manto
-azul-claro é um personagem quase sem contraste interno, e a moldura do tabuleiro é clara.
-Encolhido, ele vira uma mancha branca. A **faixa preta da cintura** deixa de ser detalhe
-e vira âncora — vale mantê-la larga e bem escura, junto com os panos dos antebraços num
-tom mais fechado, pra ele não sumir na carta do draft.
-
-### Prompt de arte (Era 1)
-
-Duas mudanças no prompt-base padrão, de propósito: a paleta vira **fria** (o padrão
-pede "warm") e ele não segura arma nenhuma.
-
-```
-16-bit SNES-style pixel art character sprite, chibi proportions (~2.5-3 heads
-tall, oversized round head, short stocky body, thick short limbs), bold
-uniform black outline, flat cel-shading with only 2 shade tones per surface
-(base color + one hard-edged shadow tone, NO gradients, NO dithering, NO
-soft anti-aliased blending), bright COOL saturated color palette, simple
-minimal facial features, small glossy highlight speck on rounded surfaces,
-chunky rounded boots and hands, standing idle battle-ready pose, slight side
-or 3/4 turn of the head, plain white or transparent background, no scenery,
-no ground shadow gradient, full body, single character centered in frame,
-clean fantasy-RPG game asset —
-young wind fighter, STRAIGHT SILVER-WHITE HAIR falling flat with a parted
-fringe over the forehead and strands framing the face (NOT spiky), very pale
-porcelain skin, glowing pale cyan eyes with no visible pupils, pale blue-gray
-layered robe with a very tall wrapped collar covering the neck and chin, a
-long scarf trailing behind him in the wind, WIDE BLACK SASH tied at the waist
-with loose ends, dark cloth wraps on forearms and shins, no weapon — a small
-glowing cyan orb of swirling wind floating above his open palm, faint cyan
-wind streaks curling around his feet
-```
-
-**Mecânica — uma habilidade só:**
-- **Rajada** (`onAttack`) — ao atacar, todos os **outros** inimigos colados no alvo são
-  empurrados 1 casa **para longe do alvo**. O alvo em si não sai do lugar e leva o dano
-  normal; quem estava em volta dele é que voa.
-- **Empurrão bloqueado** (casa ocupada ou fora do tabuleiro): não acontece nada com
-  aquele herói. Sem conversão em dano — o Bramm faz isso (`RAGE_BLOCKED_BONUS`), mas
-  este herói não é sobre dano, e formação apertada demais pra abrir é uma resposta
-  legítima do adversário.
-
-**Por que ataque 2 e não 1:** todo herói de ataque 1 do elenco tem alguma proteção que
-justifica o número — alcance (Kor, Elaria), vida de tanque (Ceos 33, Bramm 30, Golem 40)
-ou compensação própria (o veneno da Vic). Um corpo a corpo de ataque 1, frágil e sem
-Taunt seria o único sem nenhuma das três: entraria, causaria 1 e sairia. Ataque 2 o
-coloca na faixa de Nash/Karo/Merlin — relevante sem ser ameaça.
-
-**Por que vida 17:** os três heróis com `Sprint` têm as vidas mais baixas do jogo (14,
-14 e 18). Mobilidade se paga com fragilidade, e ele não é exceção — 17 fica entre o Nash
-e o Mineiro.
-
-**Por que sem Ranged:** o contra-ataque não exige adjacência — a regra real é
-`Distance(alvo, atacante) <= alvo.attackRange` (`MatchManager.PerformAttack`). Um herói
-corpo a corpo **não revida** quem o acerta de 3 casas. Com `Ranged`, a Rajada viraria
-desmonte de formação todo turno, de graça, sem risco nenhum. Corpo a corpo ele precisa
-entrar, e paga o revide por isso. O `Sprint` existe pra compensar: ele é rápido pra
-chegar, frágil pra ficar.
-
-**Uma habilidade só é o padrão da casa**, não preguiça: Vic, Blade, Ceos, Bramm e Golem
-também têm exatamente uma.
-
-**Esboço da implementação** (só APIs que já existem em `BuildSkillApi`):
-
-```lua
-Skills.gustPush = {
-	triggers = { "onAttack" },
-	apply = function(ctx)
-		-- ALIADOS DO ALVO, não "inimigos do alvo": quem é aliado do alvo é
-		-- inimigo de quem atacou. Mesma leitura que o aloneIsBetter do Noctin
-		-- já faz pra saber se o alvo está sozinho.
-		-- O GetAlliesInRange nunca devolve o próprio alvo, então ele fica
-		-- parado sozinho, sem precisar de exceção escrita à mão.
-		for _, other in ipairs(ctx.api.GetAlliesInRange(ctx.target, 1)) do
-			-- casa na linha alvo -> empurrado, um passo além: "pra longe do alvo"
-			local away = ctx.api.GetLineBeyond(ctx.target.position, other.position, 1)[1]
-			if away and ctx.api.IsFree(away) then
-				ctx.api.ForceMove(other, away)
-				ctx.api.Effect(other)
-			end
-		end
-		-- sem damageApplied: o alvo leva o golpe normal
-	end,
-}
-```
-
-**Precedente no código:** `Skills.rage` (Bramm) já é esse mesmo trio
-(`GetLineBeyond` + `IsFree` + `ForceMove`) — só muda a origem do empurrão, que aqui é o
-**alvo** em vez do atacante. E `Skills.aloneIsBetter` (Noctin) já usa
-`GetAlliesInRange(ctx.target, 1)` exatamente assim. Trabalho baixo: uma skill nova, uma
-entrada no catálogo, uma no `SKILL_INFO`. Zero mudança em `MatchManager`.
-
-**Por que ele agrega tanto:** o jogo inteiro hoje **premia andar junto** e ninguém pune
-isso. Ele é o primeiro contra-jogo direto a:
-- `emberShield` da Lucy (só protege quem está adjacente a ela)
-- `trustInTeam` do Dante (+1 de ataque com aliados do lado)
-- `health`/`clean` da Elaria (só alcança aliados adjacentes)
-- `flameStrike` do Karo (o giro só compensa com vários inimigos colados)
-- o Homem-Bomba acima — a Rajada tira todo mundo do raio da explosão
-
-**Combo que nasce de graça:** a Rajada **isola** o alvo. E o `aloneIsBetter` do Noctin
-causa o **dobro** de dano em alvo sem nenhum aliado adjacente. Vento abre, Noctin
-executa — sem uma linha de código pra ligar os dois, os dois já se enxergam pela regra
-que existe. É a primeira sinergia de time do jogo que não é entre irmãos.
-
-**Falta só a arte.** Nome, ficha, habilidade e prompt já estão fechados acima — quando o
-sprite estiver no Roblox, é só o asset ID pra implementar.
-
----
-
-## 3. O Invocador (tipo Yorick)
+## 2. O Invocador (tipo Yorick)
 
 **Conceito:** colhe as almas dos que morrem em campo e as põe pra lutar.
 
@@ -243,7 +82,7 @@ morte **de outro herói por perto**. Trabalho médio.
 
 ---
 
-## 4. O Velocista
+## 3. O Velocista
 
 **Conceito:** quanto mais longe corre em linha reta, mais forte o golpe. Sem correr,
 quase não machuca.
@@ -267,7 +106,7 @@ cortar a linha reta.
 
 ---
 
-## 5. O Elétrico
+## 4. O Elétrico
 
 **Conceito:** não mata rápido — rouba o turno do inimigo.
 
@@ -293,7 +132,7 @@ como descartado, não esquecido.
 
 ---
 
-## 6. A Sniper
+## 5. A Sniper
 
 **Conceito:** alcance longo, mas só em linha reta. Quanto mais longe o alvo, mais dano.
 
@@ -326,7 +165,7 @@ progressivo que já existe no jogo tem teto (`FLAME_FURY_MAX_ATTACK`,
 ## Notas gerais
 
 - **Nomes:** todos provisórios. O elenco usa nomes próprios curtos (Ralph, Vic, Kor,
-  Nash, Karo, Lucy), não títulos genéricos.
+  Nash, Karo, Lucy, Zeff), não títulos genéricos.
 - **Nenhum destes tem IA de bot pensada ainda.** Vale lembrar que o próprio Karo já não
   tem — o `BotBrain` não sabe usar o rastro de fogo dele estrategicamente. Então nascer
   sem IA otimizada é o normal da casa, não regressão.

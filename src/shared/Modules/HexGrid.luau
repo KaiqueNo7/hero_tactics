@@ -301,6 +301,96 @@ function HexGrid.ComputeReach(originId, maxSteps, isFree)
 	return dist
 end
 
+-- Mesmo FORMATO da ComputeReach ({ [hexId] = distância }), regra oposta: conta
+-- em LINHA DE VISADA, pela distância axial pura, sem se importar com o que está
+-- no caminho.
+--
+-- Existe porque a ComputeReach é uma BFS que só atravessa casa livre — ela
+-- mede quantos PASSOS a pé, e contorna obstáculo. Pra quem anda isso é certo;
+-- pra quem atira, não: a bala não dá a volta no barril. E a diferença não é só
+-- estética, ela mente no número — com um obstáculo no meio, um alvo a 4 casas
+-- de distância real entra como "5 passos", e uma habilidade que cobra pela
+-- distância (ver Skills.longShot) cobra 4 num tiro que o alcance tratou como 5.
+-- Arredonda um ponto cúbico fracionário pra casa mais próxima. O eixo que mais
+-- errou é recalculado a partir dos outros dois, que é o que mantém q+r+s = 0.
+local function CubeRound(q, r, s)
+	local rq, rr, rs = math.round(q), math.round(r), math.round(s)
+	local dq, dr, ds = math.abs(rq - q), math.abs(rr - r), math.abs(rs - s)
+
+	if dq > dr and dq > ds then
+		rq = -rr - rs
+	elseif dr > ds then
+		rr = -rq - rs
+	else
+		rs = -rq - rr
+	end
+	return rq, rr
+end
+
+-- Casas atravessadas pela RETA de uma casa até outra, sem as duas pontas.
+-- É o traçado de linha clássico do hexágono: interpola em coordenada cúbica e
+-- arredonda cada amostra pra casa mais próxima.
+--
+-- Serve pra responder "tem alguém na frente do tiro?" — por isso as pontas
+-- ficam de fora: a origem é quem atira e o destino é quem leva, e nenhum dos
+-- dois bloqueia o próprio disparo.
+function HexGrid.HexLine(fromId, toId)
+	local a, b = hexes[fromId], hexes[toId]
+	if not a or not b then return {} end
+
+	local n = HexGrid.Distance(fromId, toId)
+	if n == math.huge or n < 2 then return {} end
+
+	local result = {}
+	for step = 1, n - 1 do
+		local t = step / n
+
+		-- O empurrãozinho não é frescura: sem ele, uma reta que passa EXATAMENTE
+		-- na aresta entre duas casas fica em cima do empate no arredondamento, e
+		-- o desempate cai pro lado que a conta escolher. Na prática o tiro
+		-- atravessava quem estava bem no meio do caminho, que é justamente o
+		-- caso que esta função existe pra pegar.
+		local q = a.q + (b.q - a.q) * t + 1e-6
+		local r = a.r + (b.r - a.r) * t + 1e-6
+
+		local rq, rr = CubeRound(q, r, -q - r)
+		local id = axialToId[rq .. "," .. rr]
+		if id then
+			table.insert(result, id)
+		end
+	end
+	return result
+end
+
+function HexGrid.ComputeSightReach(originId, maxSteps, isFree)
+	if #hexList == 0 then
+		HexGrid.Generate()
+	end
+
+	local dist = {}
+	for _, hex in ipairs(hexList) do
+		local d = HexGrid.Distance(originId, hex.id)
+		if d > 0 and d <= maxSteps then
+			-- Reta livre até lá? Corpo no meio do caminho para a bala — o tiro
+			-- não contorna (isso é a ComputeReach) nem atravessa.
+			local clear = true
+			if isFree then
+				for _, blockerId in ipairs(HexGrid.HexLine(originId, hex.id)) do
+					if not isFree(blockerId) then
+						clear = false
+						break
+					end
+				end
+			end
+
+			if clear then
+				dist[hex.id] = d
+			end
+		end
+	end
+	return dist
+end
+
 -- Continua em linha reta ALÉM de toId, mantendo a direção from->to.
 -- Usada por beyondFront (dano em sequência) e rage (empurrão).
 function HexGrid.GetLineBeyond(fromId, toId, maxSteps)

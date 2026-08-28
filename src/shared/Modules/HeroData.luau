@@ -125,6 +125,43 @@ HeroData.CATALOG = {
 		abilities = { "flamePath", "flameHeal", "emberShield" },
 		color = Color3.fromRGB(240, 150, 120),
 		sprite = "108465334355138", spriteSize = Vector2.new(312, 416) },
+
+	-- Zeff — controle de posicionamento, não dano. Empurra os aliados do ALVO
+	-- pra longe dele (não os do próprio Zeff), isolando quem apanhou.
+	--
+	-- `attackRange` aqui é override, não a ability `Ranged` — ele mantém
+	-- `Sprint` (move 3, ficha e texto de UI continuam sendo os do Sprint) e
+	-- ganha o alcance de ataque padrão do Ranged por fora, igual o Kor fazia
+	-- quando atirava mais longe que o resto (ver HeroData.GetAttackRange).
+	-- Escreve `GameConfig.RANGED_ATTACK_RANGE` em vez de número solto porque,
+	-- ao contrário do Kor, este não é um valor PRÓPRIO — é o padrão do jogo,
+	-- e deve acompanhar se ele mudar.
+	--
+	-- O preço que ele pagava por controlar formação era o contra-ataque (o
+	-- revide só exige `Distance <= attackRange do alvo`, não adjacência) —
+	-- com alcance 2 ele empurra sem entrar no alcance de ninguém que não seja
+	-- Ranged também. Se sair forte demais nos testes, é aqui que se mexe
+	-- primeiro, antes de tocar em ataque/vida.
+	{ id = 18, name = "Zeff", attack = 2, hp = 17, ability = "Sprint",
+		attackRange = GameConfig.RANGED_ATTACK_RANGE,
+		abilities = { "gustPush" },
+		color = Color3.fromRGB(150, 230, 220),
+		sprite = "120553491509947", spriteSize = Vector2.new(412, 405), scale = 1.15 },
+
+	-- Wren — atiradora. `ability = "Ranged"` com `attackRange` próprio é o
+	-- mesmo arranjo que o Kor usava quando atirava mais longe que os outros
+	-- Ranged: a passiva diz O QUE ela é (e a ficha na UI lê o alcance real
+	-- dela, não o padrão), o campo diz QUANTO.
+	--
+	-- `attack = 3` é DECORATIVO: o longShot sempre substitui o dano pelo valor
+	-- da distância (damageApplied), então este número nunca é o dano de fato.
+	-- Fica em 3 por ser o meio da faixa que ela causa (1 a 5) — é o palpite
+	-- menos mentiroso pro crachá, que não tem como prever o alvo.
+	{ id = 19, name = "Wren", attack = 3, hp = 15, ability = "Ranged",
+		attackRange = GameConfig.WREN_RANGE,
+		abilities = { "longShot" },
+		color = Color3.fromRGB(100, 210, 180),
+		sprite = "78823127008143", spriteSize = Vector2.new(382, 412) },
 }
 
 -- ===== TAMANHO APARENTE =====
@@ -197,6 +234,14 @@ HeroData.SKILL_INFO = {
 	flameHeal   = { name = "Calor da Família", desc = ("Ao pisar numa casa em chamas (dela ou do Karo), recupera %d de vida por casa.")
 		:format(GameConfig.LUCY_FLAME_HEAL) },
 	emberShield = { name = "Chama que Protege", desc = "Aliados adjacentes recebem 1 ponto a menos de dano ao serem atacados." },
+
+	-- Zeff
+	gustPush = { name = "Rajada", desc = ("Ao atacar, empurra 1 casa para longe do alvo todo aliado do alvo que estiver colado nele. O alvo em si não se move e leva o dano normal. Sem pra onde empurrar, causa %d de dano em vez disso.")
+		:format(GameConfig.GUST_BLOCKED_DAMAGE) },
+
+	-- Wren (nome de trabalho)
+	longShot = { name = "Tiro Longo", desc = ("Causa dano igual à distância até o alvo (mínimo 1, máximo %d) em vez do ataque de ficha. Quanto mais perto o alvo, mais fraco o tiro.")
+		:format(GameConfig.WREN_RANGE) },
 }
 
 HeroData.ABILITY_INFO = {
@@ -229,7 +274,19 @@ function HeroData.GetAbilityDescription(data)
 	if data.ability == GameConfig.ABILITIES.RANGED then
 		return ("Ataca a até %d casas de distância."):format(HeroData.GetAttackRange(data))
 	end
-	return HeroData.ABILITY_INFO[data.ability]
+
+	local base = HeroData.ABILITY_INFO[data.ability]
+
+	-- Alcance por FORA da ability (Zeff: Sprint + `attackRange` avulso, ver
+	-- HeroData.CATALOG) não aparece em lugar nenhum se não somar aqui — a
+	-- frase de cima só fala de alcance quando a ability É Ranged.
+	local range = HeroData.GetAttackRange(data)
+	if range > GameConfig.BASE_ATTACK_RANGE then
+		local rangedText = ("Ataca a até %d casas de distância."):format(range)
+		return base and (base .. " " .. rangedText) or rangedText
+	end
+
+	return base
 end
 
 function HeroData.GetMoveRange(data)
