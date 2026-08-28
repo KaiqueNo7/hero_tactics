@@ -14,6 +14,7 @@ local Debris = game:GetService("Debris")
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local PixelIcons = require(ReplicatedStorage.Modules.PixelIcons)
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 
@@ -22,10 +23,34 @@ local mouse = player:GetMouse()
 
 local MOVE_COLOR = Color3.fromRGB(110, 220, 130)
 local ATTACK_COLOR = Color3.fromRGB(230, 90, 90)
+local BARREL_COLOR = Color3.fromRGB(232, 172, 74) -- alvo neutro: nem inimigo, nem passagem
+
+-- Lápide inimiga: roxo, não o vermelho de herói vivo — mesma cor da moldura que
+-- o HeroView desenha na lápide no servidor. Quebrar isto não é um ataque comum
+-- (não sofre contra-ataque, não revida), e a cor avisa isso antes do clique,
+-- igual o âmbar do barril avisa "isto também não é gente".
+local GRAVE_ATTACK_COLOR = Color3.fromRGB(178, 140, 210)
 
 -- cor base caso o attribute BaseColor não exista (defensivo)
-local COLOR_A = Color3.fromRGB(120, 170, 220)
-local COLOR_B = Color3.fromRGB(90, 130, 180)
+local COLOR_A = GameConfig.HEX_COLOR_A
+local COLOR_B = GameConfig.HEX_COLOR_B
+
+-- ===== CASAS DE PROMOÇÃO (cores por estado) =====
+-- Inativa: escura, quase apagada — ainda não é nada. Liberada: dourado quente,
+-- o mesmo tom da moldura dos crachás (BADGE_GOLD no HeroView), com um pulso
+-- entre os dois tons pra "quase brilhando". Usada: volta pro checkerboard
+-- comum da própria coluna — ela cumpriu o papel e se mistura de novo ao
+-- tabuleiro normal, sem chamar mais atenção.
+--
+-- Os três tons desceram junto com a luz da taverna. O inativo era azul-chumbo,
+-- a única cor FRIA num tabuleiro de pedra quente — lia como casa quebrada, não
+-- como casa apagada; agora é a própria pedra escurecida. E o dourado alto batia
+-- 255 no vermelho: com a lareira e as janelas acesas em cima dele, a casa
+-- passava do Threshold do Bloom e virava um borrão branco a cada pulso, bem no
+-- momento em que ela mais precisa ser lida.
+local PROMOTION_INACTIVE_COLOR = Color3.fromRGB(52, 44, 38)
+local PROMOTION_ACTIVE_COLOR_LOW = Color3.fromRGB(120, 92, 34)
+local PROMOTION_ACTIVE_COLOR_HIGH = Color3.fromRGB(196, 158, 78)
 
 local function fallbackColor(tile)
 	local col = string.byte(tile.Name, 1) - string.byte("A", 1)
@@ -33,6 +58,14 @@ local function fallbackColor(tile)
 end
 
 local state = nil
+
+-- Declarado AQUI, e nao junto da implementacao la embaixo, porque o destaque
+-- azul da Casa de Promocao (renderPromotionResurrect) precisa dele umas 600
+-- linhas antes. Com `local function` no ponto da implementacao o nome virava
+-- global nil aqui em cima. Forward declaration resolve sem ter que mover
+-- funcao nenhuma de lugar.
+local heroByUid
+
 local selectedUid = nil
 local moveTargets, attackTargets, savedColors = {}, {}, {}
 local secondsLeft = nil
@@ -51,10 +84,18 @@ end
 -- ===== UI =====
 local gui = Instance.new("ScreenGui")
 gui.Name = "BattleGui"
+gui.DisplayOrder = 5
 gui.ResetOnSpawn = false
 gui.Enabled = false
 gui.IgnoreGuiInset = true
 gui.Parent = player:WaitForChild("PlayerGui")
+
+-- ===== TOPO DA TELA =====
+-- Aqui NÃO entra margem de segurança contra a barra do Roblox, e é de propósito:
+-- os botões dela ficam na quina esquerda (o TopbarInset mede isso), enquanto
+-- este bloco é centralizado ou colado na direita — nunca chega perto deles.
+-- Descer tudo pra baixo da faixa só empurrava a coluna de heróis contra os
+-- botões de desistir e de passar turno, no rodapé.
 
 -- ===== INDICADOR DE TURNO (centralizado) =====
 local turnPanel = Instance.new("Frame")
@@ -168,11 +209,15 @@ end
 -- ===== RETRATOS DOS DOIS TIMES (colunas nas laterais) =====
 -- Uma coluna por jogador, com o nome dele em cima. O retrato apaga quando o
 -- herói morre — dá pra saber quem ainda está de pé sem varrer o tabuleiro.
-local CARD_SIZE = 48
+-- 54 e não 48: o nome do herói entra numa faixa no pé do card, e com 48 sobrava
+-- retrato de menos pra dar pra reconhecer quem é.
+local CARD_SIZE = 54
 local CARD_GAP = 5
+local NAME_STRIP = 12
 local COLUMN_HEADER = 18
--- Começa abaixo do selo de contra-ataque e termina acima do painel de detalhe
--- (que fica a 112px do rodapé), pra caber até em celular deitado.
+-- Começa abaixo do selo de contra-ataque e termina acima do rodapé, onde ficam
+-- os botões de desistir e de passar turno. É pouco espaço: descer estas colunas
+-- encosta uma coisa na outra.
 local COLUMN_TOP = 78
 
 local SIDE_ONE_COLOR = Color3.fromRGB(70, 150, 255)
@@ -184,10 +229,27 @@ local SIDE_TWO_COLOR = Color3.fromRGB(230, 70, 70)
 local DEAD_TINT = Color3.fromRGB(138, 141, 150)
 local DEAD_CARD = Color3.fromRGB(18, 19, 23)
 
+-- ATK espelha a vida (canto oposto, mesmo tamanho) — o pedido era "perfeitamente
+-- alinhados e do mesmo tamanho", então os dois números usam literalmente o mesmo
+-- Size/TextSize/Font, só o AnchorPoint/Position viram de lado.
+local STAT_LABEL_SIZE = UDim2.new(0, 26, 0, 13)
+local ATK_TEXT_COLOR = Color3.fromRGB(150, 200, 255)
+
+-- Sub-linha dos pedaços do Golem dentro do card do corpo. 11px de altura é o que
+-- deixa as duas caberem na barriga do card (y 16..38) sem encostar no retrato
+-- nem na faixa do nome; 9pt é o menor tamanho em que dois dígitos ainda se leem.
+local SUB_LINE_H = 11
+local SUB_TEXT_SIZE = 9
+
+-- Atribuída lá embaixo, junto com o modal — o clique do card precisa dela
+-- antes dela existir, então o forward declare mora aqui.
+local showHeroDetail
+
 local function buildPortrait(parent)
 	local image = Instance.new("ImageLabel")
 	image.Name = "Portrait"
-	image.Size = UDim2.new(1, -6, 1, -6)
+	-- deixa livre a faixa do nome no pé do card
+	image.Size = UDim2.new(1, -6, 1, -(6 + NAME_STRIP))
 	image.Position = UDim2.new(0, 3, 0, 3)
 	image.BackgroundTransparency = 1
 	image.ScaleType = Enum.ScaleType.Fit
@@ -265,19 +327,153 @@ local function buildTeamColumn(alignLeft)
 		hpFill.ZIndex = 4
 		hpFill.Parent = hpTrack
 
+		-- Faixa do nome no pé do card, logo acima da barra de vida.
+		local heroName = Instance.new("TextLabel")
+		heroName.Name = "HeroName"
+		heroName.AnchorPoint = Vector2.new(0, 1)
+		heroName.Position = UDim2.new(0, 0, 1, -4)
+		heroName.Size = UDim2.new(1, 0, 0, NAME_STRIP)
+		heroName.BackgroundColor3 = Color3.fromRGB(10, 11, 16)
+		heroName.BackgroundTransparency = 0.25
+		heroName.BorderSizePixel = 0
+		heroName.TextColor3 = Color3.fromRGB(232, 238, 250)
+		heroName.TextScaled = true
+		heroName.Font = Enum.Font.GothamBold
+		heroName.Text = ""
+		heroName.ZIndex = 4
+		heroName.Parent = card
+
+		-- Vida no canto de cima à direita, ataque espelhado à esquerda — mesmo
+		-- Size/TextSize/Font dos dois, só o AnchorPoint/Position viram de lado.
+		-- Embaixo agora é o nome, e os dois disputando a mesma faixa de 54px
+		-- deixava tudo ilegível.
 		local hpLabel = Instance.new("TextLabel")
 		hpLabel.Name = "Hp"
-		hpLabel.AnchorPoint = Vector2.new(1, 1)
-		hpLabel.Position = UDim2.new(1, -3, 1, -5)
-		hpLabel.Size = UDim2.new(0, 24, 0, 13)
+		hpLabel.AnchorPoint = Vector2.new(1, 0)
+		hpLabel.Position = UDim2.new(1, -3, 0, 2)
+		hpLabel.Size = STAT_LABEL_SIZE
 		hpLabel.BackgroundTransparency = 1
 		hpLabel.TextColor3 = Color3.new(1, 1, 1)
-		hpLabel.TextStrokeTransparency = 0.2
+		hpLabel.TextStrokeTransparency = 0.15
 		hpLabel.TextXAlignment = Enum.TextXAlignment.Right
 		hpLabel.TextSize = 12
 		hpLabel.Font = Enum.Font.GothamBlack
 		hpLabel.ZIndex = 5
 		hpLabel.Parent = card
+
+		local atkLabel = Instance.new("TextLabel")
+		atkLabel.Name = "Atk"
+		atkLabel.AnchorPoint = Vector2.new(0, 0)
+		atkLabel.Position = UDim2.new(0, 3, 0, 2)
+		atkLabel.Size = STAT_LABEL_SIZE
+		atkLabel.BackgroundTransparency = 1
+		atkLabel.TextColor3 = ATK_TEXT_COLOR
+		atkLabel.TextStrokeTransparency = 0.15
+		atkLabel.TextXAlignment = Enum.TextXAlignment.Left
+		atkLabel.TextSize = 12
+		atkLabel.Font = Enum.Font.GothamBlack
+		atkLabel.ZIndex = 5
+		atkLabel.Parent = card
+
+		-- Sem selos de passiva/veneno/gelo aqui: eles moram no crachá do herói no
+		-- tabuleiro (ver HeroView). Já estiveram nos dois lugares e ficou
+		-- redundante — num card de 54px o selo é pequeno demais pra ser lido de
+		-- relance, que é justamente o que ele precisa ser.
+
+		-- ===== SUB-LINHAS DOS PEDAÇOS (Golem estilhaçado) =====
+		-- O Golem morre e vira dois mini-golens. Eles são heróis de verdade no
+		-- servidor, e antes tomavam uma vaga da coluna cada um — num time de três,
+		-- os três registros do Golem enchiam a coluna e os outros dois heróis
+		-- sumiam da tela. Aqui os dois pedaços dividem o card do CORPO.
+		--
+		-- Cabem na barriga do card: o retrato acaba em y=39 e a faixa do nome
+		-- começa em y=38, então as duas linhas ocupam y 16..38 sem empurrar nada.
+		-- Enquanto o Golem está vivo não existe pedaço nenhum, então não há
+		-- disputa de espaço — elas ficam invisíveis a partida inteira pra todo
+		-- herói que não seja um Golem partido.
+		local subs = {}
+		for subIndex = 1, 2 do
+			local line = Instance.new("Frame")
+			line.Name = "Piece" .. subIndex
+			line.Position = UDim2.new(0, 0, 0, 16 + (subIndex - 1) * (SUB_LINE_H + 1))
+			line.Size = UDim2.new(1, 0, 0, SUB_LINE_H)
+			line.BackgroundColor3 = Color3.fromRGB(10, 11, 16)
+			line.BackgroundTransparency = 0.35
+			line.BorderSizePixel = 0
+			line.ZIndex = 4
+			line.Visible = false
+			line.Parent = card
+
+			-- barra de vida do pedaço: é o próprio fundo da linha preenchido por
+			-- escala, sem instância de trilho separada
+			local fill = Instance.new("Frame")
+			fill.Name = "Fill"
+			fill.Size = UDim2.fromScale(1, 1)
+			fill.BackgroundColor3 = Color3.fromRGB(80, 200, 110)
+			fill.BackgroundTransparency = 0.55
+			fill.BorderSizePixel = 0
+			fill.ZIndex = 4
+			fill.Parent = line
+
+			-- mesma convenção do card grande: ATK à esquerda em azul, vida à
+			-- direita em branco, só reduzida
+			local atk = Instance.new("TextLabel")
+			atk.Name = "Atk"
+			atk.Position = UDim2.new(0, 3, 0, 0)
+			atk.Size = UDim2.new(0, 18, 1, 0)
+			atk.BackgroundTransparency = 1
+			atk.TextXAlignment = Enum.TextXAlignment.Left
+			atk.TextColor3 = ATK_TEXT_COLOR
+			atk.TextSize = SUB_TEXT_SIZE
+			atk.Font = Enum.Font.GothamBlack
+			atk.ZIndex = 5
+			atk.Parent = line
+
+			local hp = Instance.new("TextLabel")
+			hp.Name = "Hp"
+			hp.AnchorPoint = Vector2.new(1, 0)
+			hp.Position = UDim2.new(1, -3, 0, 0)
+			hp.Size = UDim2.new(0, 22, 1, 0)
+			hp.BackgroundTransparency = 1
+			hp.TextXAlignment = Enum.TextXAlignment.Right
+			hp.TextColor3 = Color3.new(1, 1, 1)
+			hp.TextSize = SUB_TEXT_SIZE
+			hp.Font = Enum.Font.GothamBlack
+			hp.ZIndex = 5
+			hp.Parent = line
+
+			subs[subIndex] = { line = line, fill = fill, atk = atk, hp = hp }
+		end
+
+		-- Botão invisível cobrindo o card inteiro: acima da cruz de morte (Z 6),
+		-- pra abrir o detalhe mesmo com o herói morto.
+		local clickCatcher = Instance.new("TextButton")
+		clickCatcher.Name = "ClickCatcher"
+		clickCatcher.Size = UDim2.fromScale(1, 1)
+		clickCatcher.BackgroundTransparency = 1
+		clickCatcher.AutoButtonColor = false
+		clickCatcher.Text = ""
+		clickCatcher.ZIndex = 10
+		clickCatcher.Parent = card
+
+		-- `rows[index]` só é preenchido no fim do loop, mas o clique só acontece
+		-- bem depois (é um jogador clicando) — por lá o showHeroDetail já existe.
+		clickCatcher.MouseButton1Click:Connect(function()
+			local hero = rows[index] and rows[index].hero
+			if not hero then return end
+
+			-- Card do Golem partido: abrir a ficha do CORPO mostraria "Abatido" e
+			-- a vida zerada, contradizendo as sub-linhas logo acima. Quem está em
+			-- jogo é o pedaço, então é a ficha dele que abre.
+			for _, piece in ipairs(hero.summons or {}) do
+				if piece.isAlive then
+					hero = piece
+					break
+				end
+			end
+
+			if showHeroDetail then showHeroDetail(hero) end
+		end)
 
 		-- ✕ desenhado com duas barras cruzadas, mesmo motivo do botão fechar do
 		-- draft: o glifo não existe nas fontes do Roblox
@@ -302,10 +498,15 @@ local function buildTeamColumn(alignLeft)
 			card = card,
 			stroke = stroke,
 			portrait = portrait,
+			heroName = heroName,
 			hpTrack = hpTrack,
 			hpFill = hpFill,
 			hpLabel = hpLabel,
+			atkLabel = atkLabel,
+			clickCatcher = clickCatcher,
 			cross = cross,
+			subs = subs,
+			hero = nil,
 		}
 	end
 
@@ -315,19 +516,384 @@ end
 local myTeam = buildTeamColumn(true)
 local theirTeam = buildTeamColumn(false)
 
-local SPRITE_SHEET_ID = HeroData.GetSpriteId()
+-- O retrato vem do próprio herói: os criados depois da folha original moram em
+-- assets separados, então não dá pra guardar um id só pro catálogo inteiro.
+local function spriteOf(data)
+	return data and HeroData.GetSpriteId(data) or nil
+end
+
+-- ===== MODAL DE DETALHE DO HERÓI =====
+-- Mesmo painel da tela de seleção de heróis (ver PlacementClient), sem a dica
+-- de arrastar — aqui não tem carta pra soltar, só informação pra ler. Abre ao
+-- clicar em qualquer retrato das colunas laterais, vivo ou morto, seu ou do
+-- adversário; fecha pelo X ou clicando fora.
+local detailBackdrop = Instance.new("TextButton")
+detailBackdrop.Name = "HeroDetailBackdrop"
+detailBackdrop.Size = UDim2.fromScale(1, 1)
+detailBackdrop.BackgroundColor3 = Color3.new(0, 0, 0)
+detailBackdrop.BackgroundTransparency = 0.45
+detailBackdrop.AutoButtonColor = false
+detailBackdrop.Text = ""
+detailBackdrop.ZIndex = 35
+detailBackdrop.Visible = false
+detailBackdrop.Parent = gui
+
+local detail = Instance.new("Frame")
+detail.Name = "HeroDetail"
+detail.AnchorPoint = Vector2.new(0.5, 0.5)
+detail.Position = UDim2.fromScale(0.5, 0.5)
+detail.Size = UDim2.new(0, 460, 0, 260)
+detail.BackgroundColor3 = Color3.fromRGB(16, 19, 28)
+detail.BorderSizePixel = 0
+detail.ZIndex = 36
+detail.Visible = false
+detail.Parent = gui
+
+local detailCorner = Instance.new("UICorner")
+detailCorner.CornerRadius = UDim.new(0, 14)
+detailCorner.Parent = detail
+
+local detailStroke = Instance.new("UIStroke")
+detailStroke.Color = Color3.fromRGB(90, 130, 200)
+detailStroke.Thickness = 2
+detailStroke.Parent = detail
+
+local detailPortraitHolder = Instance.new("Frame")
+detailPortraitHolder.Size = UDim2.new(0, 150, 1, -24)
+detailPortraitHolder.Position = UDim2.new(0, 14, 0, 12)
+detailPortraitHolder.BackgroundColor3 = Color3.fromRGB(26, 31, 44)
+detailPortraitHolder.BorderSizePixel = 0
+detailPortraitHolder.ZIndex = 36
+detailPortraitHolder.Parent = detail
+
+local detailHolderCorner = Instance.new("UICorner")
+detailHolderCorner.CornerRadius = UDim.new(0, 10)
+detailHolderCorner.Parent = detailPortraitHolder
+
+local detailPortraitImage = Instance.new("ImageLabel")
+detailPortraitImage.Name = "Portrait"
+detailPortraitImage.Size = UDim2.new(1, -12, 1, -12)
+detailPortraitImage.Position = UDim2.new(0, 6, 0, 6)
+detailPortraitImage.ScaleType = Enum.ScaleType.Fit
+detailPortraitImage.ResampleMode = Enum.ResamplerMode.Pixelated
+detailPortraitImage.ZIndex = 37
+detailPortraitImage.Parent = detailPortraitHolder
+
+local detailName = Instance.new("TextLabel")
+detailName.Size = UDim2.new(1, -190, 0, 34)
+detailName.Position = UDim2.new(0, 176, 0, 14)
+detailName.BackgroundTransparency = 1
+detailName.TextColor3 = Color3.new(1, 1, 1)
+detailName.TextXAlignment = Enum.TextXAlignment.Left
+detailName.TextScaled = true
+detailName.Font = Enum.Font.GothamBlack
+detailName.ZIndex = 36
+detailName.Parent = detail
+
+local detailStats = Instance.new("TextLabel")
+detailStats.Size = UDim2.new(1, -190, 0, 22)
+detailStats.Position = UDim2.new(0, 176, 0, 50)
+detailStats.BackgroundTransparency = 1
+detailStats.TextColor3 = Color3.fromRGB(215, 225, 240)
+detailStats.TextXAlignment = Enum.TextXAlignment.Left
+detailStats.TextScaled = true
+detailStats.Font = Enum.Font.GothamBold
+detailStats.ZIndex = 36
+detailStats.Parent = detail
+
+-- Linha extra que a tela de seleção não tinha: lá o herói ainda não tinha
+-- entrado em campo, aqui ele pode estar buffado, envenenado, congelado ou
+-- abatido — informação que só existe DEPOIS que a partida começa.
+local detailStatus = Instance.new("TextLabel")
+detailStatus.Size = UDim2.new(1, -190, 0, 18)
+detailStatus.Position = UDim2.new(0, 176, 0, 74)
+detailStatus.BackgroundTransparency = 1
+detailStatus.TextColor3 = Color3.fromRGB(150, 210, 255)
+detailStatus.TextXAlignment = Enum.TextXAlignment.Left
+detailStatus.TextSize = 14
+detailStatus.Font = Enum.Font.GothamBold
+detailStatus.Text = ""
+detailStatus.ZIndex = 36
+detailStatus.Parent = detail
+
+local detailAbilities = Instance.new("TextLabel")
+detailAbilities.Size = UDim2.new(1, -196, 1, -122)
+detailAbilities.Position = UDim2.new(0, 176, 0, 96)
+detailAbilities.BackgroundTransparency = 1
+detailAbilities.TextColor3 = Color3.fromRGB(185, 215, 255)
+detailAbilities.TextXAlignment = Enum.TextXAlignment.Left
+detailAbilities.TextYAlignment = Enum.TextYAlignment.Top
+detailAbilities.TextWrapped = true
+detailAbilities.TextSize = 14
+detailAbilities.Font = GameConfig.UI_FONT_BODY
+detailAbilities.ZIndex = 36
+detailAbilities.Parent = detail
+
+local detailCloseButton = Instance.new("TextButton")
+detailCloseButton.Size = UDim2.new(0, 28, 0, 28)
+detailCloseButton.Position = UDim2.new(1, -36, 0, 8)
+detailCloseButton.BackgroundColor3 = Color3.fromRGB(48, 54, 70)
+detailCloseButton.Text = ""
+detailCloseButton.BorderSizePixel = 0
+detailCloseButton.ZIndex = 37
+detailCloseButton.Parent = detail
+
+-- X desenhado com duas barras cruzadas, mesmo motivo do resto do jogo: nem
+-- toda fonte do Roblox tem o glifo "✕" e ele sai como quadradinho.
+for _, angle in ipairs({ 45, -45 }) do
+	local bar = Instance.new("Frame")
+	bar.Name = "Bar"
+	bar.AnchorPoint = Vector2.new(0.5, 0.5)
+	bar.Position = UDim2.fromScale(0.5, 0.5)
+	bar.Size = UDim2.new(0, 14, 0, 2)
+	bar.BackgroundColor3 = Color3.fromRGB(235, 240, 250)
+	bar.BorderSizePixel = 0
+	bar.Rotation = angle
+	bar.ZIndex = 38
+	bar.Parent = detailCloseButton
+end
+
+local detailCloseCorner = Instance.new("UICorner")
+detailCloseCorner.CornerRadius = UDim.new(0, 6)
+detailCloseCorner.Parent = detailCloseButton
+
+local function hideDetail()
+	detail.Visible = false
+	detailBackdrop.Visible = false
+end
+
+detailCloseButton.MouseButton1Click:Connect(hideDetail)
+detailBackdrop.MouseButton1Click:Connect(hideDetail)
+
+showHeroDetail = function(hero)
+	local data = HeroData.GetById(hero.dataId)
+	if not data then return end
+
+	local alive = hero.isAlive
+	local spriteId = spriteOf(data)
+	if spriteId then
+		detailPortraitImage.Image = spriteId
+		detailPortraitImage.ImageRectSize = HeroData.GetFrameSize(data)
+		detailPortraitImage.ImageRectOffset = HeroData.GetFrameOffset(data)
+		detailPortraitImage.BackgroundTransparency = 1
+	else
+		detailPortraitImage.Image = ""
+		detailPortraitImage.BackgroundTransparency = 0
+		detailPortraitImage.BackgroundColor3 = data.color
+	end
+	detailPortraitImage.ImageColor3 = alive and Color3.new(1, 1, 1) or DEAD_TINT
+	detailPortraitImage.ImageTransparency = alive and 0 or 0.15
+
+	detailName.Text = hero.name or data.name
+	detailStats.Text = ("%d ATK   •   %d/%d HP   •   %s")
+		:format(hero.attack, math.max(hero.currentHp, 0), hero.maxHp, hero.ability or "sem passiva")
+
+	local statusBits = {}
+	if not alive then table.insert(statusBits, "Abatido") end
+	if hero.attack > (hero.baseAttack or hero.attack) then table.insert(statusBits, "ATK buffado") end
+	if hero.frozen then table.insert(statusBits, "Congelado") end
+	if (hero.poisonTurns or 0) > 0 then
+		table.insert(statusBits, ("Envenenado (%d)"):format(hero.poisonTurns))
+	end
+	detailStatus.Text = table.concat(statusBits, "   •   ")
+
+	local lines = {}
+	if data.ability and HeroData.ABILITY_INFO[data.ability] then
+		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.GetAbilityDescription(data)))
+	end
+	for _, key in ipairs(data.abilities) do
+		local info = HeroData.SKILL_INFO[key]
+		if info then
+			table.insert(lines, ("•  %s — %s"):format(info.name, info.desc))
+		end
+	end
+	detailAbilities.Text = table.concat(lines, "\n\n")
+
+	detail.Visible = true
+	detailBackdrop.Visible = true
+end
+
+-- ===== TÚMULO CLICÁVEL DA CASA DE PROMOÇÃO (sem modal) =====
+-- Chegar na casa de promoção não abre mais um card de escolha: as lápides que
+-- podem voltar ficam AZUIS no próprio tabuleiro (mesmo `paint()` que pinta
+-- destino de movimento/ataque), e o jogador clica ali — o ressuscitado nasce
+-- exatamente naquela casa, não perto da casa de promoção (ver
+-- PerformResurrection). O bloqueio de qualquer outra ação enquanto isto está
+-- pendente continua sendo o servidor (match.pendingPromotion em
+-- AuthorizeAction/EndTurn) — aqui só decide COMO o jogador aponta a escolha.
+-- Pisca entre dois tons de azul — mesma técnica da casa de promoção ativa
+-- (renderPromotionSquares): TweenInfo com Reverses + RepeatCount -1 faz o loop
+-- sozinho, sem RenderStepped nem polling.
+local PROMOTION_RESURRECT_COLOR_LOW = Color3.fromRGB(40, 70, 130)
+local PROMOTION_RESURRECT_COLOR_HIGH = Color3.fromRGB(120, 190, 255)
+
+-- Bookkeeping PRÓPRIO, separado de savedColors/clearHighlights: aquele é
+-- limpo toda vez que o jogador seleciona/desseleciona um herói, e o túmulo
+-- azul precisa sobreviver a isso — ele reflete o estado do SERVIDOR
+-- (pendingPromotion), não a seleção local.
+local promotionHighlighted = {} -- [tile Part] = tween
+local promotionOptionUids = {} -- [uid] = true, lido pelo clique
+
+local function clearPromotionHighlights()
+	for tile, tween in pairs(promotionHighlighted) do
+		tween:Cancel()
+		if tile.Parent then
+			tile.Color = tile:GetAttribute("BaseColor") or fallbackColor(tile)
+		end
+	end
+	promotionHighlighted = {}
+	promotionOptionUids = {}
+end
+
+-- ===== "SELECIONE O HERÓI PARA REVIVER" =====
+-- Texto persistente, não a fila de mensagens transientes (messageLabel) — este
+-- fica na tela o tempo INTEIRO em que a escolha está pendente, não alguns
+-- segundos e some.
+local promotionPrompt = Instance.new("TextLabel")
+promotionPrompt.Name = "PromotionPrompt"
+promotionPrompt.AnchorPoint = Vector2.new(0.5, 0)
+promotionPrompt.Position = UDim2.new(0.5, 0, 0, 58)
+promotionPrompt.Size = UDim2.new(0, 460, 0, 30)
+promotionPrompt.BackgroundTransparency = 1
+promotionPrompt.Text = "Selecione o herói para reviver"
+promotionPrompt.TextColor3 = Color3.fromRGB(140, 195, 255)
+promotionPrompt.TextStrokeTransparency = 0.35
+promotionPrompt.TextScaled = true
+promotionPrompt.Font = Enum.Font.GothamBold
+promotionPrompt.Visible = false
+promotionPrompt.ZIndex = 40
+promotionPrompt.Parent = gui
+
+local function renderPromotionResurrect(state)
+	clearPromotionHighlights()
+
+	local pending = state and state.pendingPromotion
+	local options = pending and pending.options
+	local board = state and state.boardFolder
+
+	promotionPrompt.Visible = options ~= nil and #options > 0
+
+	if not options or #options == 0 or not board then return end
+
+	for _, uid in ipairs(options) do
+		promotionOptionUids[uid] = true
+
+		local hero = heroByUid(uid)
+		local tile = hero and board:FindFirstChild(hero.position)
+		if tile and tile:IsA("BasePart") then
+			-- SEM tocar no attribute BaseColor: essa é a cor ORIGINAL do
+			-- xadrez do tabuleiro (gravada uma vez pelo BoardSpawner), e
+			-- clearPromotionHighlights depende dela pra restaurar certo
+			-- quando a escolha se resolve. Só o .Color visível pulsa.
+			tile.Color = PROMOTION_RESURRECT_COLOR_LOW
+			local tween = TweenService:Create(tile,
+				TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+				{ Color = PROMOTION_RESURRECT_COLOR_HIGH })
+			tween:Play()
+			promotionHighlighted[tile] = tween
+		end
+	end
+end
+
+-- ===== CASAS DE PROMOÇÃO (pintura do tabuleiro) =====
+-- Inativa/Usada são cores fixas, aplicadas direto no BaseColor da casa — é o
+-- MESMO attribute que clearHighlights() lê pra restaurar depois de um hover,
+-- então a casa de promoção nunca "esquece" o próprio estado quando o jogador
+-- passa o mouse por cima mirando outra coisa. Liberada pulsa entre dois tons
+-- de dourado via TweenService (Reverses + RepeatCount -1 fazem o loop sozinhos,
+-- sem precisar de RenderStepped nem polling).
+--
+-- LIMITAÇÃO CONHECIDA: se a casa liberada também estiver destacada como alvo
+-- de movimento/ataque do herói selecionado (teria que estar bem perto dela), o
+-- pulso e o destaque brigam pela cor por cima um do outro por uns instantes —
+-- cosmético, não afeta a jogada. Não vale a complexidade de pausar/retomar a
+-- tween só por isso.
+-- Chaveado pelo hexId, mas guardando TAMBEM a peca que a tween esta animando.
+-- Cada partida gera um tabuleiro novo, com pecas novas de mesmo nome: sem
+-- comparar a peca, a guarda "ja existe tween pra C0" daria positivo pra uma
+-- tween que anima um bloco ja destruido, e a casa da partida nova nunca seria
+-- pintada.
+local promotionGlowTweens = {}
+
+local function renderPromotionSquares(state)
+	local board = state and state.boardFolder
+	if not board then return end
+
+	for _, square in ipairs(state.promotionSquares or {}) do
+		local tile = board:FindFirstChild(square.hex)
+		if tile and tile:IsA("BasePart") then
+			local atual = promotionGlowTweens[square.hex]
+			if atual and atual.tile ~= tile then
+				atual.tween:Cancel()
+				promotionGlowTweens[square.hex] = nil
+				atual = nil
+			end
+
+			if square.state == "active" then
+				if not atual then
+					tile:SetAttribute("BaseColor", PROMOTION_ACTIVE_COLOR_LOW)
+					-- A cor tem que ir pra LOW ANTES da tween nascer: uma tween
+					-- oscila entre o valor que a peça tinha no momento em que
+					-- foi criada e o alvo. Sem esta linha ela partia do escuro
+					-- da casa trancada e o "brilho" virava um pisca-pisca de
+					-- preto a dourado (medido em jogo: 0,15 -> 1,00).
+					tile.Color = PROMOTION_ACTIVE_COLOR_LOW
+					local tween = TweenService:Create(tile,
+						TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+						{ Color = PROMOTION_ACTIVE_COLOR_HIGH })
+					tween:Play()
+					promotionGlowTweens[square.hex] = { tween = tween, tile = tile }
+				end
+			else
+				if atual then
+					atual.tween:Cancel()
+					promotionGlowTweens[square.hex] = nil
+				end
+
+				local color = (square.state == "used") and fallbackColor(tile) or PROMOTION_INACTIVE_COLOR
+				tile:SetAttribute("BaseColor", color)
+				tile.Color = color
+			end
+		end
+	end
+end
 
 -- O servidor transmite o estado várias vezes por ação (mover manda dois, atacar
 -- manda mais um, o fim de partida outro). Sem esta guarda, cada transmissão
 -- reescrevia as seis fichas e criava seis tweens que animavam de um valor pro
 -- MESMO valor — dezenas de tweens por turno do bot, todos para nada.
+-- Só o que o CARD desenha entra aqui. Veneno e gelo não entram mais: eles são
+-- desenhados no crachá do tabuleiro, e o modal lê `row.hero`, que é atualizado
+-- antes desta guarda — ou seja, continua sempre fresco sem forçar re-render.
 local function rowSignature(hero)
 	if not hero then return "vazio" end
-	return ("%d|%d|%s|%s"):format(hero.dataId, hero.currentHp,
+	-- O registro do invisível vem oco (sem dataId, vida ou ataque): formatar com
+	-- %d estouraria. E ele tem assinatura PRÓPRIA e constante, pra que o card de
+	-- interrogação não seja redesenhado a cada snapshot enquanto ele fica na
+	-- sombra.
+	if hero.hidden then return "oculto" end
+
+	local signature = ("%d|%d|%d|%s|%s"):format(hero.dataId, hero.currentHp, hero.attack,
 		tostring(hero.isAlive), tostring(hero.sideIndex))
+
+	-- OS PEDAÇOS ENTRAM NA ASSINATURA. O card do Golem partido é desenhado com
+	-- dados que NÃO estão no herói pai — o corpo já morreu e não muda mais nunca.
+	-- Sem isto a assinatura ficaria constante, o `return` lá embaixo cortaria o
+	-- redesenho e as sub-linhas congelariam no primeiro valor: os pedaços
+	-- apanhariam na tela do jogador sem a vida se mexer.
+	for _, piece in ipairs(hero.summons or {}) do
+		signature ..= ("/%d|%d|%d|%s"):format(piece.dataId, piece.currentHp,
+			piece.attack, tostring(piece.isAlive))
+	end
+
+	return signature
 end
 
 local function renderRow(row, hero)
+	-- Sempre atualizado, mesmo quando a assinatura não muda: é o que o clique
+	-- no card lê pra abrir o modal, e precisa ser a referência mais recente.
+	row.hero = hero
+
 	local signature = rowSignature(hero)
 	if row.signature == signature then return end
 	row.signature = signature
@@ -337,15 +903,69 @@ local function renderRow(row, hero)
 		return
 	end
 
+	-- ===== O ADVERSÁRIO ESCONDIDO =====
+	-- Card de interrogação, e NÃO card escondido. Nesta coluna retrato apagado
+	-- significa uma coisa só — morreu —, então sumir com o Shadow enquanto ele
+	-- está na sombra contaria uma mentira pior do que não contar nada: o
+	-- adversário jogaria o resto do turno achando que está num 3v2.
+	--
+	-- Vida e ataque ficam de fora porque o servidor não os manda (ver Snapshot).
+	-- É o que a furtividade esconde: onde ele está e como ele está, não que ele
+	-- existe.
+	if hero.hidden then
+		row.card.Visible = true
+		row.portrait.Image = ""
+		row.portrait.BackgroundTransparency = 0
+		row.portrait.BackgroundColor3 = Color3.fromRGB(30, 32, 44)
+		row.portrait.ImageColor3 = Color3.new(1, 1, 1)
+		row.portrait.ImageTransparency = 0
+		row.heroName.Text = "?"
+		row.heroName.TextColor3 = Color3.fromRGB(150, 156, 180)
+		row.card.BackgroundColor3 = Color3.fromRGB(24, 27, 37)
+		row.stroke.Color = Color3.fromRGB(90, 94, 120)
+		row.stroke.Transparency = 0.35
+
+		for _, dash in ipairs(row.cross) do
+			dash.Visible = false
+		end
+
+		row.hpTrack.Visible = false
+		row.hpLabel.Visible = false
+		row.atkLabel.Visible = false
+		-- a vaga pode ter sido de um Golem partido antes de o Shadow sumir nela:
+		-- sem isto, as sub-linhas velhas ficariam penduradas no card de "?"
+		for _, sub in ipairs(row.subs) do
+			sub.line.Visible = false
+		end
+		return
+	end
+
 	local data = HeroData.GetById(hero.dataId)
 	local accent = hero.sideIndex == 2 and SIDE_TWO_COLOR or SIDE_ONE_COLOR
+
+	-- ===== O GOLEM PARTIDO =====
+	-- O corpo morreu, mas os pedaços dele estão em jogo. `broken` é o terceiro
+	-- estado do card, entre vivo e morto: o retrato apaga (o corpo se foi mesmo),
+	-- mas a cruz NÃO aparece — nesta coluna cruz significa "eliminado", e o time
+	-- ainda tem essa peça lutando. Quem conta a história são as sub-linhas.
+	--
+	-- Só pedaço VIVO entra: quando o último cai, `pieces` fica vazia, `broken`
+	-- volta a ser falso e o card cai no caminho de morto de sempre — que é
+	-- exatamente quando a lápide do corpo sobe no servidor.
+	local pieces = {}
+	for _, piece in ipairs(hero.summons or {}) do
+		if piece.isAlive then table.insert(pieces, piece) end
+	end
+
 	local alive = hero.isAlive
+	local broken = (not alive) and #pieces > 0
 
 	row.card.Visible = true
 
-	if SPRITE_SHEET_ID and data then
-		row.portrait.Image = SPRITE_SHEET_ID
-		row.portrait.ImageRectSize = HeroData.GetFrameSize()
+	local spriteId = spriteOf(data)
+	if spriteId then
+		row.portrait.Image = spriteId
+		row.portrait.ImageRectSize = HeroData.GetFrameSize(data)
 		row.portrait.ImageRectOffset = HeroData.GetFrameOffset(data)
 		row.portrait.BackgroundTransparency = 1
 	else
@@ -358,18 +978,43 @@ local function renderRow(row, hero)
 	-- Morto: retrato apagado e riscado. O Roblox não tem controle de saturação
 	-- por elemento de GUI, então "sem cor" aqui é o ImageColor3 puxado pro
 	-- cinza-chumbo — some com o vermelho/verde do sprite e some com o destaque.
+	row.heroName.Text = hero.name
+	row.heroName.TextColor3 = alive
+		and Color3.fromRGB(232, 238, 250) or Color3.fromRGB(132, 136, 146)
+
 	row.portrait.ImageColor3 = alive and Color3.new(1, 1, 1) or DEAD_TINT
 	row.portrait.ImageTransparency = alive and 0 or 0.15
-	row.card.BackgroundColor3 = alive and Color3.fromRGB(24, 27, 37) or DEAD_CARD
-	row.stroke.Color = alive and accent or Color3.fromRGB(58, 60, 68)
-	row.stroke.Transparency = alive and 0.15 or 0.5
+	-- partido conta como "em jogo" pro fundo e pra moldura: o card precisa se ler
+	-- como uma peça ativa do time, não como uma baixa
+	row.card.BackgroundColor3 = (alive or broken) and Color3.fromRGB(24, 27, 37) or DEAD_CARD
+	row.stroke.Color = (alive or broken) and accent or Color3.fromRGB(58, 60, 68)
+	row.stroke.Transparency = (alive or broken) and 0.15 or 0.5
 
 	for _, dash in ipairs(row.cross) do
-		dash.Visible = not alive
+		dash.Visible = not alive and not broken
 	end
 
+	-- Os números do topo são do CORPO. Com ele partido quem fala são as
+	-- sub-linhas, e mostrar "0" de vida do Golem ao lado de dois pedaços de pé
+	-- seria a informação errada em cima da certa.
 	row.hpTrack.Visible = alive
 	row.hpLabel.Visible = alive
+	row.atkLabel.Visible = alive
+
+	for subIndex, sub in ipairs(row.subs) do
+		local piece = pieces[subIndex]
+		sub.line.Visible = piece ~= nil
+
+		if piece then
+			local ratio = piece.maxHp > 0 and math.clamp(piece.currentHp / piece.maxHp, 0, 1) or 0
+			sub.fill.Size = UDim2.fromScale(ratio, 1)
+			-- mesmos limiares de cor do card grande, pra vida baixa gritar igual
+			sub.fill.BackgroundColor3 = ratio > 0.5 and Color3.fromRGB(80, 200, 110)
+				or (ratio > 0.25 and Color3.fromRGB(220, 180, 70) or Color3.fromRGB(220, 80, 80))
+			sub.atk.Text = tostring(piece.attack)
+			sub.hp.Text = tostring(math.max(piece.currentHp, 0))
+		end
+	end
 
 	if alive then
 		local ratio = hero.maxHp > 0 and math.clamp(hero.currentHp / hero.maxHp, 0, 1) or 0
@@ -379,7 +1024,41 @@ local function renderRow(row, hero)
 		TweenService:Create(row.hpFill, TweenInfo.new(0.22), {
 			Size = UDim2.fromScale(ratio, 1),
 		}):Play()
+
+		row.atkLabel.Text = tostring(hero.attack)
 	end
+end
+
+-- Pendura cada invocação no herói que a gerou e devolve só os "pais", que são as
+-- peças que o jogador escolheu no draft. É o que garante que o time continue
+-- ocupando HEROES_PER_PLAYER vagas na coluna, mesmo com o Golem virando três
+-- registros ao estilhaçar.
+--
+-- Pai ausente da lista devolve o filho como card próprio, de propósito: um card
+-- a mais é um problema menor do que um herói vivo invisível na tela.
+--
+-- ZERA `summons` NA ENTRADA, e isso não é zelo à toa. No fim da partida a mesma
+-- tabela `state` é agrupada duas vezes (a coluna e o painel de resultado); sem
+-- limpar, a segunda passada empilharia os pedaços de novo e o painel somaria o
+-- dano deles em dobro.
+local function groupHeroes(list)
+	local byUid = {}
+	for _, hero in ipairs(list) do
+		hero.summons = nil
+		byUid[hero.uid] = hero
+	end
+
+	local parents = {}
+	for _, hero in ipairs(list) do
+		local parent = hero.summonOf and byUid[hero.summonOf]
+		if parent then
+			parent.summons = parent.summons or {}
+			table.insert(parent.summons, hero)
+		else
+			table.insert(parents, hero)
+		end
+	end
+	return parents
 end
 
 local function renderTeams(state)
@@ -387,6 +1066,8 @@ local function renderTeams(state)
 	for _, hero in ipairs(state.heroes or {}) do
 		table.insert(hero.isMine and mine or theirs, hero)
 	end
+
+	mine, theirs = groupHeroes(mine), groupHeroes(theirs)
 
 	myTeam.nameLabel.Text = player.DisplayName
 	theirTeam.nameLabel.Text = state.opponentName or "Adversário"
@@ -405,6 +1086,7 @@ end
 local function hideTeams()
 	myTeam.frame.Visible = false
 	theirTeam.frame.Visible = false
+	hideDetail()
 
 	-- Zera as assinaturas: na revanche os heróis voltam com a vida cheia, e uma
 	-- assinatura sobrevivente da partida anterior faria a ficha ser pulada e
@@ -412,6 +1094,7 @@ local function hideTeams()
 	for _, team in ipairs({ myTeam, theirTeam }) do
 		for _, row in ipairs(team.rows) do
 			row.signature = nil
+			row.hero = nil
 		end
 	end
 	counterShown = nil
@@ -505,7 +1188,8 @@ local finisherToken = 0
 
 local function playFinisher(info)
 	local data = HeroData.GetById(info.dataId)
-	if not (SPRITE_SHEET_ID and data) then return end
+	local spriteId = spriteOf(data)
+	if not spriteId then return end
 
 	finisherToken += 1
 	local token = finisherToken
@@ -520,8 +1204,8 @@ local function playFinisher(info)
 		streak.BackgroundColor3 = accent
 	end
 
-	finisherPortrait.Image = SPRITE_SHEET_ID
-	finisherPortrait.ImageRectSize = HeroData.GetFrameSize()
+	finisherPortrait.Image = spriteId
+	finisherPortrait.ImageRectSize = HeroData.GetFrameSize(data)
 	finisherPortrait.ImageRectOffset = HeroData.GetFrameOffset(data)
 	finisherPortrait.ImageTransparency = 0
 
@@ -609,8 +1293,12 @@ local function flashTurnBanner(text, color)
 	end)
 end
 
+-- Clique recusado por não ser seu turno. Quem chama isto já filtrou os cliques
+-- que caíram no tabuleiro (casa, herói ou barril), então aqui não há risco de
+-- apitar por clique no vazio.
 local function warnNotYourTurn()
 	flashTurnBanner("Espere sua vez", WAIT_TURN_COLOR)
+	PlayUiSound("ActionBlocked")
 end
 
 local messageLabel = Instance.new("TextLabel")
@@ -653,93 +1341,231 @@ endTurnButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("endTurn")
 end)
 
--- ===== PAINEL DE DETALHE DO HERÓI SELECIONADO =====
-local detailPanel = Instance.new("Frame")
-detailPanel.Size = UDim2.new(0, 210, 0, 96)
-detailPanel.Position = UDim2.new(0, 16, 1, -112)
-detailPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
-detailPanel.BackgroundTransparency = 0.15
-detailPanel.BorderSizePixel = 0
-detailPanel.Visible = false
-detailPanel.Parent = gui
+-- ===== DESISTIR (canto inferior esquerdo) =====
+-- Mora no canto mais morto da tela e é pequeno de propósito: desistir entrega a
+-- partida, então um toque acidental aqui custa o jogo inteiro. Pelo mesmo
+-- motivo ele não age direto — abre uma confirmação.
+local surrenderButton = Instance.new("TextButton")
+surrenderButton.Name = "Surrender"
+surrenderButton.AnchorPoint = Vector2.new(0, 1)
+surrenderButton.Position = UDim2.new(0, 12, 1, -12)
+surrenderButton.Size = UDim2.new(0, 42, 0, 42)
+surrenderButton.BackgroundColor3 = Color3.fromRGB(26, 23, 30)
+surrenderButton.BackgroundTransparency = 0.25
+surrenderButton.Text = ""
+surrenderButton.BorderSizePixel = 0
+surrenderButton.AutoButtonColor = true
+surrenderButton.Visible = false
+surrenderButton.Parent = gui
 
-local detailCorner = Instance.new("UICorner")
-detailCorner.CornerRadius = UDim.new(0, 8)
-detailCorner.Parent = detailPanel
+local surrenderCorner = Instance.new("UICorner")
+surrenderCorner.CornerRadius = UDim.new(0, 8)
+surrenderCorner.Parent = surrenderButton
 
-local detailName = Instance.new("TextLabel")
-detailName.Size = UDim2.new(1, -16, 0, 24)
-detailName.Position = UDim2.new(0, 8, 0, 6)
-detailName.BackgroundTransparency = 1
-detailName.TextColor3 = Color3.new(1, 1, 1)
-detailName.TextXAlignment = Enum.TextXAlignment.Left
-detailName.TextScaled = true
-detailName.Font = Enum.Font.GothamBold
-detailName.Parent = detailPanel
+local surrenderStroke = Instance.new("UIStroke")
+surrenderStroke.Color = Color3.fromRGB(150, 90, 90)
+surrenderStroke.Thickness = 1.2
+surrenderStroke.Transparency = 0.35
+surrenderStroke.Parent = surrenderButton
 
-local detailStats = Instance.new("TextLabel")
-detailStats.Size = UDim2.new(1, -16, 0, 20)
-detailStats.Position = UDim2.new(0, 8, 0, 32)
-detailStats.BackgroundTransparency = 1
-detailStats.TextColor3 = Color3.fromRGB(210, 220, 235)
-detailStats.TextXAlignment = Enum.TextXAlignment.Left
-detailStats.TextScaled = true
-detailStats.Font = Enum.Font.Gotham
-detailStats.Parent = detailPanel
+local flagSlot = Instance.new("Frame")
+flagSlot.Name = "FlagSlot"
+flagSlot.AnchorPoint = Vector2.new(0.5, 0.5)
+flagSlot.Position = UDim2.fromScale(0.5, 0.5)
+flagSlot.Size = UDim2.new(0, 21, 0, 21) -- 7x7 em células de 3px, sem sobra
+flagSlot.BackgroundTransparency = 1
+flagSlot.Parent = surrenderButton
 
-local detailSkills = Instance.new("TextLabel")
-detailSkills.Size = UDim2.new(1, -16, 0, 34)
-detailSkills.Position = UDim2.new(0, 8, 0, 54)
-detailSkills.BackgroundTransparency = 1
-detailSkills.TextColor3 = Color3.fromRGB(180, 215, 255)
-detailSkills.TextXAlignment = Enum.TextXAlignment.Left
-detailSkills.TextYAlignment = Enum.TextYAlignment.Top
-detailSkills.TextWrapped = true
-detailSkills.TextSize = 13
-detailSkills.Font = Enum.Font.Gotham
-detailSkills.Parent = detailPanel
+PixelIcons.Build("flag", flagSlot, Color3.fromRGB(222, 226, 238), 2)
 
-local function showDetail(hero)
-	if not hero then
-		detailPanel.Visible = false
-		return
-	end
+-- ===== CONFIRMAÇÃO DE DESISTÊNCIA =====
+local confirmLayer = Instance.new("Frame")
+confirmLayer.Name = "SurrenderConfirm"
+confirmLayer.Size = UDim2.fromScale(1, 1)
+confirmLayer.BackgroundTransparency = 1
+confirmLayer.Visible = false
+confirmLayer.ZIndex = 45
+confirmLayer.Parent = gui
 
-	local data = HeroData.GetById(hero.dataId)
-	detailPanel.Visible = true
-	detailName.Text = hero.name
-	detailStats.Text = ("%d ATK   %d/%d HP   %s"):format(
-		hero.attack, math.max(hero.currentHp, 0), hero.maxHp, hero.ability or "-")
+local confirmBackdrop = Instance.new("TextButton")
+confirmBackdrop.Size = UDim2.fromScale(1, 1)
+confirmBackdrop.BackgroundColor3 = Color3.fromRGB(6, 7, 11)
+confirmBackdrop.BackgroundTransparency = 0.45
+confirmBackdrop.BorderSizePixel = 0
+confirmBackdrop.Text = ""
+confirmBackdrop.AutoButtonColor = false
+confirmBackdrop.ZIndex = 45
+confirmBackdrop.Parent = confirmLayer
 
-	local names = {}
-	for _, key in ipairs(data and data.abilities or {}) do
-		local info = HeroData.SKILL_INFO[key]
-		table.insert(names, info and info.name or key)
-	end
-	detailSkills.Text = table.concat(names, " • ")
+local confirmPanel = Instance.new("Frame")
+confirmPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+confirmPanel.Position = UDim2.fromScale(0.5, 0.5)
+confirmPanel.Size = UDim2.new(0, 320, 0, 164)
+confirmPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
+confirmPanel.BorderSizePixel = 0
+confirmPanel.ZIndex = 46
+confirmPanel.Parent = confirmLayer
+
+local confirmCorner = Instance.new("UICorner")
+confirmCorner.CornerRadius = UDim.new(0, 12)
+confirmCorner.Parent = confirmPanel
+
+local confirmStroke = Instance.new("UIStroke")
+confirmStroke.Color = Color3.fromRGB(190, 90, 90)
+confirmStroke.Thickness = 2
+confirmStroke.Transparency = 0.25
+confirmStroke.Parent = confirmPanel
+
+local confirmTitle = Instance.new("TextLabel")
+confirmTitle.Size = UDim2.new(1, -24, 0, 30)
+confirmTitle.Position = UDim2.new(0, 12, 0, 14)
+confirmTitle.BackgroundTransparency = 1
+confirmTitle.Text = "Desistir da partida?"
+confirmTitle.TextColor3 = Color3.new(1, 1, 1)
+confirmTitle.TextScaled = true
+confirmTitle.Font = Enum.Font.GothamBlack
+confirmTitle.ZIndex = 46
+confirmTitle.Parent = confirmPanel
+
+local confirmText = Instance.new("TextLabel")
+confirmText.Size = UDim2.new(1, -28, 0, 40)
+confirmText.Position = UDim2.new(0, 14, 0, 48)
+confirmText.BackgroundTransparency = 1
+confirmText.Text = ""
+confirmText.TextColor3 = Color3.fromRGB(200, 208, 224)
+confirmText.TextWrapped = true
+confirmText.TextSize = 14
+confirmText.Font = GameConfig.UI_FONT_BODY
+confirmText.ZIndex = 46
+confirmText.Parent = confirmPanel
+
+local function confirmButton(name, text, color, alignRight)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.AnchorPoint = Vector2.new(alignRight and 1 or 0, 1)
+	button.Position = UDim2.new(alignRight and 1 or 0, alignRight and -16 or 16, 1, -16)
+	button.Size = UDim2.new(0.5, -24, 0, 42)
+	button.BackgroundColor3 = color
+	button.TextColor3 = Color3.new(1, 1, 1)
+	button.Text = text
+	button.TextSize = 17
+	button.Font = Enum.Font.GothamBold
+	button.BorderSizePixel = 0
+	button.ZIndex = 47
+	button.Parent = confirmPanel
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = button
+
+	return button
 end
 
+local keepPlayingButton = confirmButton("KeepPlaying", "Continuar", Color3.fromRGB(60, 70, 90), false)
+local giveUpButton = confirmButton("GiveUp", "Desistir", Color3.fromRGB(170, 60, 60), true)
+
+local function closeConfirm()
+	confirmLayer.Visible = false
+end
+
+confirmBackdrop.MouseButton1Click:Connect(closeConfirm)
+keepPlayingButton.MouseButton1Click:Connect(closeConfirm)
+
+surrenderButton.MouseButton1Click:Connect(function()
+	if not state or (state.phase ~= "battle" and state.phase ~= "placement") then return end
+
+	local placing = state.phase == "placement"
+	confirmTitle.Text = placing and "Abandonar a partida?" or "Desistir da partida?"
+	giveUpButton.Text = placing and "Abandonar" or "Desistir"
+
+	-- O texto muda com o modo porque a consequência muda: contra o bot ninguém
+	-- recebe nada (o AwardAbandon ignora lado sem jogador), em PvP o adversário
+	-- leva a vitória. Prometer punição que não existe faz o jogador desconfiar
+	-- do aviso da próxima vez.
+	confirmText.Text = state.vsBot
+		and "A partida acaba na hora e você volta pro lobby. Nenhum XP é pago."
+		or "Seu adversário leva a vitória e o XP dela. Você não ganha nada."
+
+	confirmLayer.Visible = true
+end)
+
+giveUpButton.MouseButton1Click:Connect(function()
+	closeConfirm()
+	GameAction:FireServer("leaveMatch")
+end)
+
+-- O painel de detalhe do herói selecionado (nome, ATK/HP, lista de habilidades)
+-- foi REMOVIDO daqui. Ele ocupava 210x96 no canto inferior esquerdo, em cima do
+-- tabuleiro, pra repetir o que o jogador já enxerga: o crachá de ataque e vida
+-- fica embaixo do próprio boneco, a vida também está na coluna de retratos, e as
+-- habilidades ele leu no draft. Quem quiser rever a ficha completa tem o menu do
+-- lobby. As colunas das laterais continuam sendo a leitura rápida da partida.
+
 -- ===== PAINEL DE FIM DE PARTIDA =====
+-- Deixou de ser só "Vitória/Derrota + dois botões". Agora é a prestação de
+-- contas da partida: os heróis QUE VOCÊ levou, um card cada, com o que fizeram.
+--
+-- CADA JOGADOR VÊ O PRÓPRIO TIME. Os números vêm do `summary` do snapshot, que
+-- o servidor já calcula por espectador (ver MatchManager.Snapshot) — o cliente
+-- não escolhe de quem é o destaque, só desenha o que chegou pra ele.
+--
+-- Painel maior (520x412) e centralizado. As colunas laterais continuam visíveis
+-- por trás dele: elas mostram QUEM sobrou dos dois lados, ele mostra o que cada
+-- um dos seus fez pra chegar lá.
+local RESULT_CARD_W = 148
+local RESULT_CARD_H = 176
+local RESULT_CARD_GAP = 10
+
 local resultPanel = Instance.new("Frame")
-resultPanel.Size = UDim2.new(0, 320, 0, 220)
-resultPanel.Position = UDim2.new(0.5, -160, 0.5, -110)
+resultPanel.Size = UDim2.new(0, 520, 0, 412)
+resultPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+resultPanel.Position = UDim2.new(0.5, 0, 0.5, 0)
 resultPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
-resultPanel.BackgroundTransparency = 0.1
+resultPanel.BackgroundTransparency = 0.06
 resultPanel.BorderSizePixel = 0
 resultPanel.Visible = false
 resultPanel.Parent = gui
 
 local resultCorner = Instance.new("UICorner")
-resultCorner.CornerRadius = UDim.new(0, 12)
+resultCorner.CornerRadius = UDim.new(0, 14)
 resultCorner.Parent = resultPanel
 
 local resultLabel = Instance.new("TextLabel")
-resultLabel.Size = UDim2.new(1, -20, 0, 60)
-resultLabel.Position = UDim2.new(0, 10, 0, 16)
+resultLabel.Size = UDim2.new(1, -20, 0, 46)
+resultLabel.Position = UDim2.new(0, 10, 0, 12)
 resultLabel.BackgroundTransparency = 1
 resultLabel.TextScaled = true
 resultLabel.Font = Enum.Font.GothamBold
 resultLabel.Parent = resultPanel
+
+-- Linha de contexto embaixo do título: quantos turnos e o maior golpe da
+-- partida. É o "resumo em uma frase" antes dos cards detalharem por herói.
+local resultSubtitle = Instance.new("TextLabel")
+resultSubtitle.Size = UDim2.new(1, -20, 0, 16)
+resultSubtitle.Position = UDim2.new(0, 10, 0, 58)
+resultSubtitle.BackgroundTransparency = 1
+resultSubtitle.TextColor3 = Color3.fromRGB(150, 160, 182)
+resultSubtitle.TextSize = 13
+resultSubtitle.Font = GameConfig.UI_FONT_BODY
+resultSubtitle.Text = ""
+resultSubtitle.Parent = resultPanel
+
+-- Onde os cards dos heróis entram. Centralizado por UIListLayout horizontal, pra
+-- 3 heróis ou 4 (o Golem estilhaçado vira dois) caberem sem recalcular posição.
+local resultTeam = Instance.new("Frame")
+resultTeam.Name = "TeamRow"
+resultTeam.Position = UDim2.new(0, 0, 0, 82)
+resultTeam.Size = UDim2.new(1, 0, 0, RESULT_CARD_H)
+resultTeam.BackgroundTransparency = 1
+resultTeam.Parent = resultPanel
+
+local resultTeamLayout = Instance.new("UIListLayout")
+resultTeamLayout.FillDirection = Enum.FillDirection.Horizontal
+resultTeamLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+resultTeamLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+resultTeamLayout.Padding = UDim.new(0, RESULT_CARD_GAP)
+resultTeamLayout.SortOrder = Enum.SortOrder.LayoutOrder
+resultTeamLayout.Parent = resultTeam
 
 local replayButton = Instance.new("TextButton")
 replayButton.Size = UDim2.new(1, -60, 0, 46)
@@ -779,9 +1605,252 @@ lobbyButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("leaveMatch")
 end)
 
--- Definido aqui em cima porque a linha de mira também precisa dele, e em Lua
--- uma função só enxerga os locais declarados ANTES dela.
-local function heroByUid(uid)
+-- ===== CARDS DO FIM DE PARTIDA =====
+-- Uma faixa colorida no topo do card marca o papel daquele herói na partida.
+-- Um selo só por herói, na ordem abaixo: o destaque vence o escudo quando o
+-- mesmo herói fez as duas coisas, porque "quem mais bateu" é a leitura que o
+-- jogador procura primeiro.
+local RESULT_BADGES = {
+	{ key = "mvp",       text = "DESTAQUE",   color = Color3.fromRGB(240, 196, 84) },
+	{ key = "protector", text = "ESCUDO",     color = Color3.fromRGB(110, 180, 240) },
+	{ key = "biggest",   text = "MAIOR GOLPE", color = Color3.fromRGB(232, 122, 108) },
+}
+
+-- Rótulo à esquerda, número à direita. Duas TextLabels e não uma string
+-- formatada com espaços: alinhado por espaço, o número dança de card pra card
+-- (a fonte não é monoespaçada) e some da borda quando o card encolhe — e ele
+-- encolhe, porque o Golem estilhaçado enfia dois cards a mais na fileira.
+local function buildResultStat(parent, order, label, value, color)
+	local y = 112 + order * 15
+
+	local name = Instance.new("TextLabel")
+	name.Size = UDim2.new(0.62, -8, 0, 15)
+	name.Position = UDim2.new(0, 8, 0, y)
+	name.BackgroundTransparency = 1
+	name.TextXAlignment = Enum.TextXAlignment.Left
+	name.TextColor3 = color
+	name.TextSize = 11
+	name.TextTruncate = Enum.TextTruncate.AtEnd
+	name.Font = GameConfig.UI_FONT_BODY
+	name.Text = label
+	name.Parent = parent
+
+	local number = Instance.new("TextLabel")
+	number.Size = UDim2.new(0.38, -8, 0, 15)
+	number.Position = UDim2.new(0.62, 0, 0, y)
+	number.BackgroundTransparency = 1
+	number.TextXAlignment = Enum.TextXAlignment.Right
+	number.TextColor3 = color
+	number.TextSize = 12
+	number.Font = Enum.Font.GothamBold
+	number.Text = tostring(value)
+	number.Parent = parent
+end
+
+-- Soma o que os pedaços fizeram no número do corpo. O Golem estilhaçado agora
+-- ocupa UM card, então o dano que os mini-golens causaram sairia da tela junto
+-- com os cards deles — e o jogador leria "o Golem não fez nada" sobre uma peça
+-- que lutou a partida inteira em dois corpos.
+--
+-- Copia antes de somar: `state` é o mesmo snapshot que a coluna lateral desenha,
+-- e escrever nele contaminaria o outro render.
+local function mergedStats(hero)
+	local total = table.clone(hero.stats or {})
+	for _, piece in ipairs(hero.summons or {}) do
+		local s = piece.stats
+		if s then
+			total.dealt = (total.dealt or 0) + (s.dealt or 0)
+			total.taken = (total.taken or 0) + (s.taken or 0)
+			total.healed = (total.healed or 0) + (s.healed or 0)
+			total.kills = (total.kills or 0) + (s.kills or 0)
+			-- maior golpe é MÁXIMO, não soma: é "o maior que esta peça deu"
+			total.biggestHit = math.max(total.biggestHit or 0, s.biggestHit or 0)
+		end
+	end
+	return total
+end
+
+local function buildResultCard(hero, badgeKey, order)
+	local data = HeroData.GetById(hero.dataId)
+	local stats = mergedStats(hero)
+
+	-- Um pedaço de pé conta como sobrevivente do card: quem terminou a partida
+	-- com meio Golem em campo não perdeu a peça.
+	local standing = hero.isAlive
+	for _, piece in ipairs(hero.summons or {}) do
+		if piece.isAlive then standing = true break end
+	end
+
+	local card = Instance.new("Frame")
+	card.Name = hero.uid
+	card.Size = UDim2.new(0, RESULT_CARD_W, 0, RESULT_CARD_H)
+	card.BackgroundColor3 = standing and Color3.fromRGB(26, 30, 42) or DEAD_CARD
+	card.BorderSizePixel = 0
+	card.LayoutOrder = order
+	card.Parent = resultTeam
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = card
+
+	local badge = nil
+	for _, entry in ipairs(RESULT_BADGES) do
+		if entry.key == badgeKey then badge = entry break end
+	end
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = badge and badge.color or Color3.fromRGB(52, 58, 74)
+	stroke.Thickness = badge and 2 or 1
+	stroke.Parent = card
+
+	-- Faixa do selo. Ocupa espaço fixo mesmo sem selo (fica transparente), pra
+	-- os quatro cards alinharem os retratos na mesma altura.
+	local ribbon = Instance.new("TextLabel")
+	ribbon.Size = UDim2.new(1, 0, 0, 18)
+	ribbon.BackgroundColor3 = badge and badge.color or Color3.new(0, 0, 0)
+	ribbon.BackgroundTransparency = badge and 0.12 or 1
+	ribbon.BorderSizePixel = 0
+	ribbon.Text = badge and badge.text or ""
+	ribbon.TextColor3 = Color3.fromRGB(22, 22, 28)
+	ribbon.TextSize = 10
+	ribbon.Font = Enum.Font.GothamBlack
+	ribbon.Parent = card
+
+	local ribbonCorner = Instance.new("UICorner")
+	ribbonCorner.CornerRadius = UDim.new(0, 10)
+	ribbonCorner.Parent = ribbon
+
+	local portrait = Instance.new("ImageLabel")
+	portrait.Size = UDim2.new(0, 62, 0, 62)
+	portrait.Position = UDim2.new(0.5, -31, 0, 22)
+	portrait.BackgroundTransparency = 1
+	portrait.ScaleType = Enum.ScaleType.Fit
+	portrait.ResampleMode = Enum.ResamplerMode.Pixelated
+	portrait.Parent = card
+
+	local spriteId = spriteOf(data)
+	if spriteId and data then
+		portrait.Image = spriteId
+		portrait.ImageRectSize = HeroData.GetFrameSize(data)
+		portrait.ImageRectOffset = HeroData.GetFrameOffset(data)
+		-- morto fica dessaturado, mas reconhecível: mesma regra da coluna lateral
+		portrait.ImageColor3 = standing and Color3.new(1, 1, 1) or DEAD_TINT
+	elseif data then
+		portrait.BackgroundTransparency = 0
+		portrait.BackgroundColor3 = data.color
+	end
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Position = UDim2.new(0, 4, 0, 86)
+	nameLabel.Size = UDim2.new(1, -8, 0, 16)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = hero.name or (data and data.name) or "?"
+	nameLabel.TextColor3 = standing and Color3.fromRGB(232, 238, 250) or DEAD_TINT
+	nameLabel.TextSize = 14
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = card
+
+	-- Três estados, não dois: o Golem que acabou a partida em pedaços não
+	-- "sobreviveu" nem "caiu" — dizer qualquer um dos dois seria mentira.
+	local pecasVivas = 0
+	for _, piece in ipairs(hero.summons or {}) do
+		if piece.isAlive then pecasVivas += 1 end
+	end
+
+	local statusLabel = Instance.new("TextLabel")
+	statusLabel.Position = UDim2.new(0, 4, 0, 100)
+	statusLabel.Size = UDim2.new(1, -8, 0, 12)
+	statusLabel.BackgroundTransparency = 1
+	if hero.isAlive then
+		statusLabel.Text = ("sobreviveu · %d/%d"):format(math.max(hero.currentHp, 0), hero.maxHp)
+	elseif pecasVivas > 0 then
+		statusLabel.Text = ("em pedaços · %d de pé"):format(pecasVivas)
+	else
+		statusLabel.Text = "caiu em combate"
+	end
+	statusLabel.TextColor3 = standing
+		and Color3.fromRGB(130, 200, 150) or Color3.fromRGB(198, 116, 116)
+	statusLabel.TextSize = 10
+	statusLabel.Font = GameConfig.UI_FONT_BODY
+	statusLabel.Parent = card
+
+	buildResultStat(card, 0, "Dano causado", stats.dealt or 0, Color3.fromRGB(255, 186, 120))
+	buildResultStat(card, 1, "Dano recebido", stats.taken or 0, Color3.fromRGB(150, 190, 245))
+
+	-- A terceira linha muda conforme o herói: cura pra quem curou, abates pra
+	-- quem abateu, e o maior golpe pra quem só bateu. Três linhas fixas
+	-- deixariam dois zeros em quase todo card, e zero não informa nada — o
+	-- espaço vale mais mostrando o que aquele herói de fato fez.
+	if (stats.healed or 0) > 0 then
+		buildResultStat(card, 2, "Cura", stats.healed, Color3.fromRGB(150, 225, 175))
+	elseif (stats.kills or 0) > 0 then
+		buildResultStat(card, 2, "Abates", stats.kills, Color3.fromRGB(238, 170, 160))
+	elseif (stats.biggestHit or 0) > 0 then
+		buildResultStat(card, 2, "Maior golpe", stats.biggestHit, Color3.fromRGB(200, 200, 214))
+	end
+end
+
+-- Redesenha a fileira inteira. Os cards são descartáveis: a partida acabou, não
+-- há atualização incremental pra otimizar, e recriar é o que garante que uma
+-- revanche não herde os números da anterior.
+local function renderResultTeam(state)
+	for _, child in ipairs(resultTeam:GetChildren()) do
+		if child:IsA("Frame") then child:Destroy() end
+	end
+
+	local summary = state.summary or {}
+	local mine = {}
+	for _, hero in ipairs(state.heroes) do
+		if hero.isMine then table.insert(mine, hero) end
+	end
+
+	-- Mesmo agrupamento da coluna lateral: os pedaços do Golem entram no card do
+	-- corpo em vez de virarem cards próprios. A ordem já vem pronta do servidor
+	-- (Snapshot ordena por lado e id), então não se reordena aqui — reordenar por
+	-- uid era o bug que embaralhava a fileira em relação à coluna.
+	mine = groupHeroes(mine)
+
+	-- O painel acompanha a fileira. Com o agrupamento são sempre
+	-- HEROES_PER_PLAYER cards, mas a conta fica: um herói invocado cujo pai não
+	-- esteja na lista ainda pode virar card solto (ver groupHeroes).
+	local count = math.max(#mine, 1)
+	local width = 24 + count * RESULT_CARD_W + (count - 1) * RESULT_CARD_GAP
+	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412)
+
+	-- O selo é por uid, e um PEDAÇO pode ter sido o destaque da partida. Sem
+	-- olhar os filhos, o card do Golem ficaria sem faixa nenhuma enquanto o
+	-- resumo do topo anuncia um maior golpe que ninguém na tela reivindica.
+	local function wearsBadge(hero, uid)
+		if not uid then return false end
+		if hero.uid == uid then return true end
+		for _, piece in ipairs(hero.summons or {}) do
+			if piece.uid == uid then return true end
+		end
+		return false
+	end
+
+	for index, hero in ipairs(mine) do
+		local badgeKey = nil
+		if wearsBadge(hero, summary.mvpUid) then badgeKey = "mvp"
+		elseif wearsBadge(hero, summary.protectorUid) then badgeKey = "protector"
+		elseif wearsBadge(hero, summary.biggestHitUid) then badgeKey = "biggest" end
+
+		buildResultCard(hero, badgeKey, index)
+	end
+
+	if summary.turns then
+		local biggest = (summary.biggestHit or 0) > 0
+			and ("   ·   maior golpe: %d de dano"):format(summary.biggestHit) or ""
+		resultSubtitle.Text = ("%d turnos%s"):format(summary.turns, biggest)
+	else
+		resultSubtitle.Text = ""
+	end
+end
+
+-- Implementacao do heroByUid declarado la em cima. Em Lua uma funcao so enxerga
+-- os locais declarados ANTES dela, e este e usado tanto pela linha de mira
+-- quanto pelo modal da Casa de Promocao, que vem antes daqui.
+function heroByUid(uid)
 	if not state then return nil end
 	for _, hero in ipairs(state.heroes) do
 		if hero.uid == uid then return hero end
@@ -800,7 +1869,7 @@ end
 local AIM_LIFT = 2.4 -- altura acima do tabuleiro
 local AIM_DASH_LENGTH = 1.5
 local AIM_DASH_GAP = 1.2
-local AIM_DASH_THICKNESS = 0.34
+local AIM_DASH_THICKNESS = 0.5
 -- Folgas curtas de propósito: entre duas casas vizinhas o centro fica a ~10,4
 -- studs, e um par de folgas maior comia o traço inteiro justamente no caso mais
 -- comum — mover uma casa.
@@ -809,13 +1878,42 @@ local AIM_END_PAD = 3.4 -- onde os traços param pra não invadir a ponta
 local AIM_MAX_DASHES = 48
 local AIM_FLOW_SPEED = 2.4 -- studs por segundo que os traços "andam" pro alvo
 local AIM_NEUTRAL_COLOR = Color3.fromRGB(150, 165, 190)
+-- Vermelho mais aceso que o ATTACK_COLOR das casas: a linha é fina e fica sobre
+-- um tabuleiro claro, então precisa de mais brilho que uma casa inteira pintada.
+local AIM_ATTACK_COLOR = Color3.fromRGB(255, 62, 52)
+
+-- ===== CURVATURA =====
+-- O traçado é uma Bézier quadrática (origem, um ponto de controle, alvo) em vez
+-- de uma reta. Não é a reta "dobrada" na hora de desenhar: a curva é amostrada
+-- e os traços caminham SOBRE ela, cada um girado na tangente do próprio ponto.
+--
+-- O ponto de controle sai do meio do caminho levantado NA VERTICAL. Vertical e
+-- não lateral: é o que faz o traçado ler como projétil lançado (sobe, desce e
+-- cai no alvo) em vez de uma linha que desvia pro lado. Como a direção é sempre
+-- pra cima, esquerda, direita, longe e perto arqueiam todas igual — não existe
+-- o problema antigo da curva "virar de lado" quando o cursor cruzava um eixo.
+-- O desvio é VERTICAL, não lateral: o traçado sobe no meio do caminho e desce
+-- no alvo, como a trajetória de um projétil lançado. O desvio lateral que
+-- existia aqui antes empurrava a linha pro lado no plano do tabuleiro — dava
+-- movimento ao traço, mas lia como "corda torta", não como tiro.
+--
+-- Numa Bézier quadrática a curva passa na METADE do deslocamento do controle,
+-- então o controle sobe o DOBRO da altura desejada no ápice (ver
+-- aimControlPoint) e estes números são a altura de verdade, não a do controle.
+local AIM_CURVE_SAMPLES = 24 -- segmentos da amostragem; 24 já fica liso nesta escala
+local AIM_ARC_RATIO = 0.18 -- quanto da distância vira altura no ápice
+local AIM_ARC_MAX = 6 -- teto: acima disso o tiro longo some do enquadramento
+-- Piso pra jogada de UMA casa (~10 studs) ainda ler como arco em vez de risco
+-- reto — sem ele, mover pra casa vizinha desenhava uma linha praticamente plana.
+local AIM_ARC_MIN = 1.2
+local AIM_TAIL_FADE = 0.4 -- quanto o começo do traçado escurece (0 = sem gradiente)
 
 -- Ponta da seta: duas farpas abertas a partir do bico. Não é um bico fechado
 -- porque a câmera olha o tabuleiro de cima e enviesada — um triângulo cheio
 -- vira um borrão nessa perspectiva, enquanto duas barras continuam lendo como
 -- "aponta pra cá" de qualquer ângulo.
 local ARROW_HEAD_LENGTH = 3.6
-local ARROW_HEAD_THICKNESS = 0.44
+local ARROW_HEAD_THICKNESS = 0.6 -- acompanha a espessura do traço, senão a ponta some perto dele
 local ARROW_HEAD_SPREAD = 38 -- graus de abertura de cada farpa
 
 local aimFolder = Instance.new("Folder")
@@ -869,33 +1967,113 @@ local function tilePosition(hexId)
 	return nil
 end
 
+-- Amostragem da curva. As duas tabelas são criadas UMA vez e reescritas a cada
+-- quadro: isto roda em RenderStepped, e alocar duas tabelas por quadro só pra
+-- jogar fora é lixo garantido pro coletor no meio da jogada.
+local AIM_POINT_COUNT = AIM_CURVE_SAMPLES + 1
+local curvePoints = table.create(AIM_POINT_COUNT)
+local curveDistances = table.create(AIM_POINT_COUNT)
+
+-- Onde fica o "cotovelo" da curva: no meio do caminho, direto pra cima. É isso
+-- que faz o traçado virar um arco de projétil em vez de desviar pro lado.
+local function aimControlPoint(origin, target)
+	local middle = origin:Lerp(target, 0.5)
+
+	-- a altura sai da distância NO PLANO do tabuleiro: um alvo mais alto ou mais
+	-- baixo não deve engordar nem achatar o arco, só inclinar as duas pontas
+	local delta = target - origin
+	local flat = Vector3.new(delta.X, 0, delta.Z)
+	local distance = flat.Magnitude
+	if distance < 0.01 then return middle end
+
+	local apex = math.clamp(distance * AIM_ARC_RATIO, AIM_ARC_MIN, AIM_ARC_MAX)
+
+	-- DOBRO do ápice: a Bézier quadrática só chega na metade do deslocamento do
+	-- controle, então subir `apex` aqui daria metade da altura pedida.
+	return middle + Vector3.new(0, apex * 2, 0)
+end
+
+-- Preenche curvePoints/curveDistances e devolve o comprimento do traçado.
+-- O comprimento é somado segmento a segmento (não é a distância em linha reta)
+-- porque é ele que os traços usam pra caminhar em passo constante — medir pela
+-- reta faria o espaçamento encolher conforme a curva abre.
+local function sampleAimCurve(origin, control, target)
+	curvePoints[1] = origin
+	curveDistances[1] = 0
+
+	local previous = origin
+	local total = 0
+
+	for index = 1, AIM_CURVE_SAMPLES do
+		local t = index / AIM_CURVE_SAMPLES
+		local u = 1 - t
+		local point = origin * (u * u) + control * (2 * u * t) + target * (t * t)
+
+		total += (point - previous).Magnitude
+		curvePoints[index + 1] = point
+		curveDistances[index + 1] = total
+		previous = point
+	end
+
+	return total
+end
+
+-- Ponto e tangente a `distance` studs do começo do traçado.
+--
+-- `searchFrom` é o segmento onde a busca começa: os traços são colocados em
+-- ordem crescente de distância, então o cursor só anda pra frente e a varredura
+-- inteira custa uma passada pela curva, não uma busca por traço.
+local function aimCurveAt(distance, searchFrom)
+	local index = math.max(searchFrom, 1)
+	while index < AIM_CURVE_SAMPLES and curveDistances[index + 1] < distance do
+		index += 1
+	end
+
+	local a, b = curvePoints[index], curvePoints[index + 1]
+	local segmentStart = curveDistances[index]
+	local segmentLength = curveDistances[index + 1] - segmentStart
+	local alpha = segmentLength > 0 and (distance - segmentStart) / segmentLength or 0
+
+	local direction = b - a
+	direction = direction.Magnitude > 1e-4 and direction.Unit or Vector3.new(0, 0, 1)
+
+	return a:Lerp(b, math.clamp(alpha, 0, 1)), direction, index
+end
+
 local function drawAim(fromPosition, toPosition, color)
 	local lift = Vector3.new(0, AIM_LIFT, 0)
 	local origin = fromPosition + lift
 	local target = toPosition + lift
 
-	local delta = target - origin
-	local distance = delta.Magnitude
-	if distance < 0.1 then
+	if (target - origin).Magnitude < 0.1 then
 		hideAim()
 		return
 	end
 
-	local direction = delta.Unit
+	local length = sampleAimCurve(origin, aimControlPoint(origin, target), target)
 	local step = AIM_DASH_LENGTH + AIM_DASH_GAP
 
 	-- o resto móvel faz os traços marcharem em direção ao alvo
 	local travelled = AIM_START_PAD + (os.clock() * AIM_FLOW_SPEED) % step
-	local limit = distance - AIM_END_PAD
+	local limit = length - AIM_END_PAD
 	local used = 0
+	local cursor = 1
 
 	while travelled < limit and used < AIM_MAX_DASHES do
 		used += 1
-		local position = origin + direction * travelled
+
+		local position, direction
+		position, direction, cursor = aimCurveAt(travelled, cursor)
+
+		-- o traço engrossa e acende conforme se aproxima do alvo: dá o sentido
+		-- da trajetória mesmo num quadro parado, sem depender da animação
+		local progress = travelled / length
+
 		local dash = aimDashes[used]
-		dash.Size = Vector3.new(AIM_DASH_THICKNESS, AIM_DASH_THICKNESS, AIM_DASH_LENGTH)
+		local thickness = AIM_DASH_THICKNESS * (0.82 + 0.36 * progress)
+		dash.Size = Vector3.new(thickness, thickness, AIM_DASH_LENGTH)
 		dash.CFrame = CFrame.new(position, position + direction)
-		dash.Color = color
+		dash.Color = color:Lerp(Color3.new(0, 0, 0), (1 - progress) * AIM_TAIL_FADE)
 		dash.Transparency = 0.15
 		travelled += step
 	end
@@ -905,9 +2083,13 @@ local function drawAim(fromPosition, toPosition, color)
 	end
 
 	-- Bico no centro da casa mirada; as farpas abrem pra trás a partir dele.
-	-- `base` olha na direção do traçado, então o -Z local dela É a direção da
-	-- seta — girar em Y por 180° ∓ abertura devolve exatamente as duas farpas.
-	local base = CFrame.new(target, target + direction)
+	-- A direção é a tangente do FIM da curva, não a reta origem->alvo: com o
+	-- traçado chegando de lado, uma ponta alinhada à reta apontaria pra fora do
+	-- próprio rastro que ela termina.
+	local tip = curvePoints[AIM_POINT_COUNT] - curvePoints[AIM_POINT_COUNT - 1]
+	tip = tip.Magnitude > 1e-4 and tip.Unit or Vector3.new(0, 0, 1)
+
+	local base = CFrame.new(target, target + tip)
 	for index, barb in ipairs(aimBarbs) do
 		local sign = (index == 1) and 1 or -1
 		barb.Size = Vector3.new(ARROW_HEAD_THICKNESS, ARROW_HEAD_THICKNESS, ARROW_HEAD_LENGTH)
@@ -931,7 +2113,16 @@ local function hoveredHexId()
 
 	local heroUid = target:GetAttribute("HeroUid")
 	local hero = heroUid and state and heroByUid(heroUid)
-	return hero and hero.position or nil
+	if hero then return hero.position end
+
+	-- o barril também conta como "estou apontando pra casa dele"
+	local barrelUid = target:GetAttribute("BarrelUid")
+	if barrelUid and state then
+		for _, barrel in ipairs(state.barrels or {}) do
+			if barrel.uid == barrelUid then return barrel.position end
+		end
+	end
+	return nil
 end
 
 local function updateAim()
@@ -968,10 +2159,12 @@ local function updateAim()
 		return
 	end
 
-	-- a cor já diz o que vai acontecer no clique, sem precisar ler a casa
+	-- a cor já diz o que vai acontecer no clique, sem precisar ler a casa.
+	-- Mirar ataque usa um vermelho próprio, mais aceso que o das casas: a linha
+	-- é fina e passa por cima do tabuleiro claro, onde o tom das casas apaga.
 	local color = AIM_NEUTRAL_COLOR
 	if attackTargets[hexId] then
-		color = ATTACK_COLOR
+		color = AIM_ATTACK_COLOR
 	elseif moveTargets[hexId] then
 		color = MOVE_COLOR
 	end
@@ -996,22 +2189,49 @@ end
 
 -- O tabuleiro vem no snapshot: com várias partidas rodando, procurar "Board"
 -- pelo nome no Workspace acharia a arena de outra dupla.
+--
+-- MISTURA, NÃO SUBSTITUI. Antes o destaque trocava a cor da casa por completo
+-- (verde puro sobre a pedra), e o tabuleiro virava um tapete de adesivos: berrava
+-- mais que os próprios heróis e apagava o xadrez que separa uma casa da vizinha.
+-- Interpolando a partir da cor de base, o destaque vira um TINGIMENTO — a pedra
+-- continua aparecendo por baixo, as casas claras e escuras seguem distinguíveis,
+-- e a leitura de "onde eu posso ir" não se perde.
+--
+-- Vale pros quatro destaques de uma vez (passo, ataque, barril, lápide), porque
+-- todos passam por aqui. HIGHLIGHT_STRENGTH é o único botão: 0 não pinta nada,
+-- 1 volta ao comportamento antigo.
+local HIGHLIGHT_STRENGTH = 0.55
+
 local function paint(hexId, color)
 	local board = state and state.boardFolder
 	local tile = board and board:FindFirstChild(hexId)
 	if tile and tile:IsA("BasePart") then
 		if savedColors[tile] == nil then savedColors[tile] = true end
-		tile.Color = color
+		-- Lê a base do ATRIBUTO, nunca da cor atual: a casa pode já estar pintada
+		-- por outro destaque nesta mesma passada, e partir dela empilharia tinta
+		-- em cima de tinta até saturar.
+		local base = tile:GetAttribute("BaseColor") or fallbackColor(tile)
+		tile.Color = base:Lerp(color, HIGHLIGHT_STRENGTH)
 	end
 end
 
 local function selectHero(uid)
 	clearHighlights()
 
+	-- Escolha de reviver pendente: o servidor já recusa mover/atacar com
+	-- qualquer herói enquanto isto está aberto (AuthorizeAction), mas sem o
+	-- backdrop de tela cheia que o modal antigo tinha, nada mais impedia o
+	-- clique de selecionar um herói vivo e pintar um destaque de
+	-- movimento/ataque que o servidor ia rejeitar em silêncio. A única jogada
+	-- válida agora é clicar no túmulo azul.
+	if state and state.pendingPromotion and #state.pendingPromotion.options > 0 then
+		selectedUid = nil
+		return
+	end
+
 	local hero = heroByUid(uid)
 	if not hero or not hero.isMine or not hero.isAlive then
 		selectedUid = nil
-		showDetail(nil)
 		return
 	end
 
@@ -1025,16 +2245,57 @@ local function selectHero(uid)
 
 	selectedUid = uid
 
-	local blocked, enemyAt = {}, {}
+	local blocked, enemyAt, graveAt = {}, {}, {}
 	for _, other in ipairs(state.heroes) do
-		blocked[other.position] = true
-		if other.isAlive and not other.isMine then
-			enemyAt[other.position] = other.uid
+		if other.isAlive then
+			blocked[other.position] = true
+
+			-- Shadow invisível: BLOQUEIA a casa, mas não vira alvo. As duas
+			-- coisas juntas são a furtividade — pintar a casa de vermelho como
+			-- "ataque possível" entregaria de graça exatamente o que o servidor
+			-- se deu ao trabalho de não contar (ver o desvio no Snapshot).
+			--
+			-- Ele fica de fora do enemyAt, então nenhum destaque nasce ali e o
+			-- clique não tem uid pra mandar: o jogador vê uma casa que não dá
+			-- pra usar, sem saber por quê.
+			if not other.isMine and not other.hidden then
+				enemyAt[other.position] = other.uid
+			end
+		elseif not other.graveDestroyed then
+			-- Lápide de pé bloqueia passagem como sempre bloqueou. Uma vez
+			-- destruída ela some do tabuleiro (o servidor libera o hex em
+			-- AttackGrave), e aqui é onde o cliente para de fingir que ainda
+			-- tem alguma coisa lá.
+			blocked[other.position] = true
+			if not other.isMine then
+				graveAt[other.position] = other.uid
+			end
+		end
+	end
+
+	-- Barril entra nas duas listas: bloqueia passagem como qualquer coisa em pé
+	-- na casa, e é alvo de ataque como um inimigo. Quem decide o que acontece no
+	-- clique é o servidor — aqui ele só precisa ser clicável e não prometer
+	-- passagem por cima.
+	local barrelAt = {}
+	for _, barrel in ipairs(state.barrels or {}) do
+		blocked[barrel.position] = true
+		barrelAt[barrel.position] = barrel.uid
+	end
+
+	-- Casa de promoção trancada se comporta como parede — mesma regra do
+	-- servidor (ver PromotionLocked no MatchManager). Sem isto o cliente
+	-- pintaria a casa como destino válido e o clique seria recusado do outro
+	-- lado, que é a pior combinação: promete a jogada e não entrega.
+	for _, square in ipairs(state.promotionSquares or {}) do
+		if square.state == "inactive" then
+			blocked[square.hex] = true
 		end
 	end
 
 	local isFree = function(hexId) return not blocked[hexId] end
 
+	-- o moveRange já vem descontado do congelamento pelo servidor
 	if not hero.hasMoved and not hero.hasAttacked then
 		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.moveRange, isFree)) do
 			if isFree(hexId) then
@@ -1045,16 +2306,37 @@ local function selectHero(uid)
 	end
 
 	if not hero.hasAttacked then
-		for hexId in pairs(HexGrid.ComputeReach(hero.position, hero.attackRange, isFree)) do
+		-- MESMA escolha que o servidor faz em AttackHero: quem atira em linha de
+		-- visada ignora obstáculo. Divergir aqui pintaria de vermelho um alvo
+		-- que o servidor recusa (ou esconderia um que ele aceita).
+		--
+		-- As habilidades vêm do catálogo pelo dataId, não do snapshot: ele não
+		-- manda `abilities` (e não precisa — é dado fixo de ficha, o cliente já
+		-- tem o HeroData inteiro pra desenhar retrato e descrição).
+		local data = HeroData.GetById(hero.dataId)
+		local attackReach = GameConfig.UsesLineOfSight(data and data.abilities)
+			and HexGrid.ComputeSightReach(hero.position, hero.attackRange, isFree)
+			or HexGrid.ComputeReach(hero.position, hero.attackRange, isFree)
+
+		for hexId in pairs(attackReach) do
 			if enemyAt[hexId] then
 				attackTargets[hexId] = enemyAt[hexId]
 				moveTargets[hexId] = nil
 				paint(hexId, ATTACK_COLOR)
+			elseif barrelAt[hexId] then
+				-- âmbar em vez do vermelho de inimigo: bater no barril é uma
+				-- jogada diferente de bater em gente, e a cor avisa isso antes
+				-- do clique
+				attackTargets[hexId] = barrelAt[hexId]
+				moveTargets[hexId] = nil
+				paint(hexId, BARREL_COLOR)
+			elseif graveAt[hexId] then
+				attackTargets[hexId] = graveAt[hexId]
+				moveTargets[hexId] = nil
+				paint(hexId, GRAVE_ATTACK_COLOR)
 			end
 		end
 	end
-
-	showDetail(hero)
 end
 
 -- ===== CLIQUES =====
@@ -1066,13 +2348,35 @@ mouse.Button1Down:Connect(function()
 
 	local heroUid = target:GetAttribute("HeroUid")
 	local hexId = target:GetAttribute("HexId")
+	local barrelUid = target:GetAttribute("BarrelUid")
 
 	-- fora do turno o clique não faz nada, mas ficar em silêncio parecia bug:
-	-- avisa sempre que a tentativa foi no tabuleiro (casa ou herói)
+	-- avisa sempre que a tentativa foi no tabuleiro (casa, herói ou barril)
 	if not state.isMyTurn then
-		if heroUid or hexId then
+		if heroUid or hexId or barrelUid then
 			warnNotYourTurn()
 		end
+		return
+	end
+
+	-- clique no próprio barril: mesma jogada de clicar na casa dele
+	if barrelUid and selectedUid then
+		for _, barrel in ipairs(state.barrels or {}) do
+			if barrel.uid == barrelUid and attackTargets[barrel.position] then
+				GameAction:FireServer("attack", selectedUid, barrelUid)
+				return
+			end
+		end
+		return
+	end
+
+	-- Túmulo azul da Casa de Promoção: clique direto revive ali mesmo, sem
+	-- passar pela seleção normal de herói. Checado ANTES do resto porque uma
+	-- lápide também bate `heroUid and hero.isMine` lá embaixo — sem este desvio,
+	-- clicar nela cairia em `selectHero`, que descarta herói morto e não faz
+	-- nada.
+	if heroUid and promotionOptionUids[heroUid] then
+		GameAction:FireServer("resurrect", heroUid)
 		return
 	end
 
@@ -1137,6 +2441,64 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
+-- ===== FURTIVIDADE: O MESMO BONECO, DUAS APARÊNCIAS =====
+-- Primeiro lugar do jogo em que um herói aparece diferente pra cada jogador. O
+-- servidor cria UM modelo e o Roblox replica igual pros dois clientes; o que
+-- torna isto possível é que transparência mexida NO CLIENTE não volta pro
+-- servidor nem chega ao adversário. Cada um pinta a sua cópia.
+--
+-- Isto é só a APARÊNCIA. Quem garante a regra é o servidor, que nem conta ao
+-- adversário que este herói existe (ver Snapshot) e recusa ataque contra
+-- invisível (ver AttackHero). Se este arquivo inteiro fosse adulterado, o
+-- máximo que se ganharia era ver um vulto que continua não sendo alvo.
+--
+-- `alpha`: 0 = sólido, 1 = sumido.
+local function paintHero(anchor, alpha)
+	local hidden = alpha >= 1
+
+	for _, child in ipairs(anchor:GetChildren()) do
+		if child:IsA("BasePart") then
+			-- anéis de time e o cilindro de placeholder
+			child.Transparency = alpha
+		elseif child:IsA("BillboardGui") then
+			-- O crachá de ATK/HP some junto com o dono. O balão de texto também:
+			-- número de dano flutuando sobre uma casa vazia é a denúncia mais
+			-- óbvia possível de que tem alguém ali.
+			if child.Name == "HeroInfo" or child.Name == "FloatingText" then
+				child.Enabled = not hidden
+			end
+
+			local image = child:FindFirstChildWhichIsA("ImageLabel")
+			if image then image.ImageTransparency = alpha end
+		end
+	end
+
+	-- Some do mouse junto com o desenho: sem isto o adversário acharia o
+	-- invisível varrendo o tabuleiro com o cursor e vendo o clique pegar em algo
+	-- que não está na tela.
+	anchor.CanQuery = not hidden
+end
+
+local function applyStealthVisuals(state)
+	local folder = state and state.heroesFolder
+	if not (folder and folder.Parent) then return end
+
+	for _, hero in ipairs(state.heroes or {}) do
+		local anchor = folder:FindFirstChild(hero.uid)
+		if anchor and anchor:IsA("BasePart") then
+			local alpha = 0
+			if hero.hidden then
+				alpha = 1
+			elseif hero.stealth then
+				-- o dono enxerga o próprio vulto, translúcido: precisa saber onde
+				-- ele está pra planejar a emboscada
+				alpha = GameConfig.STEALTH_OWNER_TRANSPARENCY
+			end
+			paintHero(anchor, alpha)
+		end
+	end
+end
+
 -- ===== ESTADO =====
 MatchUpdate.OnClientEvent:Connect(function(newState)
 	state = newState
@@ -1151,13 +2513,29 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		playFinisher(state.finisher)
 	end
 
+	-- ANTES do desvio por fase: as casas de promoção são pintadas em TODAS as
+	-- fases, inclusive no posicionamento. Elas fazem parte do tabuleiro desde o
+	-- começo da partida, e ver as duas apagadas enquanto se escolhe onde largar
+	-- os heróis é justamente o que ensina que elas existem e que ainda não
+	-- valem. Só mexe em cor de casa, então não depende da GUI de batalha.
+	renderPromotionSquares(state)
+
+	-- ANTES do desvio por fase, como as casas de promoção e pelo mesmo motivo:
+	-- mexe só em objeto do Workspace, não depende da GUI de batalha, e um
+	-- invisível que reaparecesse durante a tela de fim de jogo entregaria a
+	-- posição dele numa revanche.
+	applyStealthVisuals(state)
+
 	if state.phase == "finished" then
 		gui.Enabled = true
 		turnPanel.Visible = false
 		timerLabel.Visible = false
 		counterBadge.Visible = false
 		endTurnButton.Visible = false
-		detailPanel.Visible = false
+		-- acabou: não há mais o que desistir, e o painel de resultado já oferece
+		-- "voltar pro lobby"
+		surrenderButton.Visible = false
+		closeConfirm()
 		resultPanel.Visible = true
 		secondsLeft = nil
 		wasMyTurn = false
@@ -1165,6 +2543,10 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		-- as colunas continuam: no fim da partida elas viram o placar do que
 		-- sobrou de cada lado, e o painel de resultado fica no meio, sem tapar
 		renderTeams(state)
+
+		-- o time DELE, com o que cada herói fez. O servidor já mandou o resumo
+		-- do ponto de vista deste espectador (ver Snapshot.summary).
+		renderResultTeam(state)
 
 		-- o servidor já manda o resultado do ponto de vista de quem recebe
 		if state.winner == "draw" then
@@ -1183,18 +2565,27 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 			PlayUiSound(state.winner == "win" and "Victory" or "Defeat")
 		end
 
+		clearPromotionHighlights()
 		clearHighlights()
 		selectedUid = nil
 		return
 	end
 
 	if state.phase ~= "battle" then
-		gui.Enabled = false
+		local placing = state.phase == "placement"
+
+		gui.Enabled = placing
+		turnPanel.Visible = false
+		timerLabel.Visible = false
+		endTurnButton.Visible = false
+		resultPanel.Visible = false
 		counterBadge.Visible = false
+		surrenderButton.Visible = placing
+		if not placing then closeConfirm() end
 		hideTeams()
+		clearPromotionHighlights()
 		clearHighlights()
 		selectedUid = nil
-		showDetail(nil)
 		return
 	end
 
@@ -1202,9 +2593,15 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	turnPanel.Visible = true
 	resultPanel.Visible = false
 
+	-- Disponível o turno inteiro, inclusive na vez do adversário: quem quer sair
+	-- não deveria ter que esperar a própria vez pra conseguir.
+	surrenderButton.Visible = true
+
 	counterBadge.Visible = true
 	renderCounterBadge(state.counterAttackUsed)
 	renderTeams(state)
+	-- renderPromotionSquares roda lá em cima, antes do desvio por fase
+	renderPromotionResurrect(state)
 	resultPlayed = false
 	endTurnButton.Visible = true
 	endTurnButton.Active = state.isMyTurn
@@ -1219,8 +2616,20 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	turnLabel.TextColor3 = state.suddenDeath
 		and Color3.fromRGB(255, 140, 140) or Color3.new(1, 1, 1)
 
+	-- Só na VIRADA (false -> true), não a cada snapshot: o servidor transmite
+	-- várias vezes por ação, e sem essa guarda o som repetiria no meio do turno.
+	-- O aviso sonoro importa porque o turno do adversário pode demorar e o
+	-- jogador desvia o olhar da tela — o banner sozinho passa despercebido.
 	if state.isMyTurn and not wasMyTurn then
 		flashTurnBanner("Sua vez!", MY_TURN_COLOR)
+		-- Sem Sound chamado "TurnStart" em ReplicatedStorage.Sounds, o
+		-- PlayUiSound sai calado — o banner continua funcionando sozinho.
+		PlayUiSound("TurnStart")
+	elseif wasMyTurn and not state.isMyTurn then
+		-- Virada pro outro lado: o turno ACABOU. Sem banner de propósito — a
+		-- tela já mostra o turno do adversário começando, e um segundo aviso
+		-- escrito no meio disso vira poluição. O som sozinho fecha o ciclo.
+		PlayUiSound("TurnEnd")
 	end
 	wasMyTurn = state.isMyTurn
 
@@ -1231,12 +2640,12 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	clearHighlights()
 	selectedUid = nil
 
+	-- a seleção sobrevive à atualização do estado: sem isto, cada snapshot
+	-- (e são vários por ação) apagaria as casas destacadas no meio da jogada
 	if state.isMyTurn and previous then
 		local hero = heroByUid(previous)
 		if hero and hero.isAlive then
 			selectHero(previous)
 		end
-	else
-		showDetail(nil)
 	end
 end)

@@ -40,6 +40,23 @@ Progression.BASE_XP = 100 -- XP pra sair do nível 1
 Progression.XP_STEP = 50 -- quanto cada nível seguinte cobra a mais
 Progression.MAX_LEVEL = 100
 
+-- ===== MOEDAS =====
+-- Duas torneiras: a vitória pinga pouco e toda hora, o nível jorra de vez em
+-- quando.
+--
+-- Moeda NÃO compra mais herói. O elenco inteiro sai da escada de confrontos
+-- contra bot (ReplicatedStorage.Modules.Campaign), e o HERO_COST que morava
+-- aqui saiu junto com a vitrine de compra. Saldo e nível continuam de pé pro
+-- apoio (Monetization) e pro que vier depois.
+Progression.WIN_COINS = 50
+Progression.LEVEL_UP_COINS = 500
+
+-- Quanto uma partida paga em moedas. Só a vitória paga: o consolo da derrota e
+-- do empate é o XP, que sempre pinga.
+function Progression.MatchCoins(result)
+	return result == "win" and Progression.WIN_COINS or 0
+end
+
 -- XP necessário pra sair deste nível e ir pro seguinte
 function Progression.XpToAdvance(level)
 	level = math.max(1, math.floor(tonumber(level) or 1))

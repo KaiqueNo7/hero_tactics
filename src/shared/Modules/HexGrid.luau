@@ -91,6 +91,42 @@ function HexGrid.Generate()
 		end
 	end
 
+	-- ===== CASAS DE PROMOÇÃO =====
+	-- Duas casas a mais, na ponta da coluna central (C, que tem 6 linhas contra 7
+	-- de B/D — por isso ela é o "meio" de verdade do tabuleiro). C0 estende antes
+	-- de C1, C7 estende depois de C6.
+	--
+	-- Entram como hexágonos NORMAIS, não um sistema à parte: mesma tabela, mesmo
+	-- axial, mesma fórmula de vizinho. Isso é o que faz Distance/GetNeighbors/
+	-- ComputeReach/FindPath tratá-las como qualquer casa sem precisar de nenhuma
+	-- linha extra de código — C1 ganha C0 como vizinha, C6 ganha C7, automático.
+	-- GetBoardBounds também passa a incluir as duas sozinho, o que é o efeito
+	-- desejado: câmera e posição dos competidores (GetStandPosition) se ajustam
+	-- pra fora, dando espaço pras novas casas sem sobrepor nada — checado em jogo
+	-- antes desta implementação.
+	local CENTER_COLUMN = 2 -- índice de "C" em COLUMN_LETTERS (0-based)
+	local CENTER_LETTER = COLUMN_LETTERS[CENTER_COLUMN + 1]
+	local CENTER_ROWS = COLUMN_COUNTS[CENTER_COLUMN + 1]
+
+	for _, row0 in ipairs({ -1, CENTER_ROWS }) do -- antes da linha 1, depois da última
+		local id = CENTER_LETTER .. tostring(row0 + 1) -- row0=-1 -> "C0", row0=6 -> "C7"
+		local q, r = offsetToAxial(CENTER_COLUMN, row0)
+
+		local hex = {
+			id = id,
+			col = CENTER_COLUMN,
+			row = row0 + 1,
+			letter = CENTER_LETTER,
+			q = q,
+			r = r,
+			s = -q - r,
+		}
+
+		hexes[id] = hex
+		table.insert(hexList, hex)
+		axialToId[q .. "," .. r] = id
+	end
+
 	return hexList
 end
 
@@ -202,19 +238,35 @@ function HexGrid.GetBoardCenter(offset)
 	return (minV + maxV) / 2
 end
 
--- Onde cada competidor fica de pé: os dois à esquerda do tabuleiro, lado a
--- lado. Slot 1 fica mais ao fundo (-Z), slot 2 à frente. Client e server
--- chamam a mesma função pra não haver divergência de posição.
-function HexGrid.GetStandPosition(slot, groundY, offset)
-	local minV = HexGrid.GetBoardBounds(offset)
-	local center = HexGrid.GetBoardCenter(offset)
-	local half = GameConfig.PLAYER_STAND_SPACING / 2
+-- Distância entre as LINHAS de hexágono no eixo Z. Um passo em `r` vale
+-- sqrt(3)*HEX_SIZE (ver GetWorldPosition), então esta é a medida de "uma casa"
+-- pra quem anda pra fora do tabuleiro.
+local function HexRowSpacing()
+	return HEX_SIZE * math.sqrt(3)
+end
 
-	return Vector3.new(
-		minV.X - GameConfig.PLAYER_SIDE_MARGIN,
-		groundY,
-		center.Z + ((slot == 2) and half or -half)
-	)
+-- Onde cada competidor fica de pé: lados opostos do tabuleiro, os dois no
+-- MESMO X (o centro do campo) e separados só no Z. Slot 1 fica na borda de +Z,
+-- slot 2 na de -Z. Client e server chamam esta mesma função pra não divergirem.
+--
+-- A folga sai da borda REAL (GetBoardBounds), não do centro de um hex-âncora:
+-- como B e D têm 7 linhas contra 6 de A/C/E, a borda não é reta, e medir por
+-- uma coluna só deixava o bonequim caindo meio em cima de uma casa.
+function HexGrid.GetStandPosition(slot, groundY, offset)
+	local minV, maxV = HexGrid.GetBoardBounds(offset)
+	local center = HexGrid.GetBoardCenter(offset)
+	local outset = HexRowSpacing() * GameConfig.PLAYER_STAND_OUTSET_HEXES
+
+	local z = (slot == 2) and (minV.Z - outset) or (maxV.Z + outset)
+	return Vector3.new(center.X, groundY, z)
+end
+
+-- Pra onde cada um olha. Como os dois estão no mesmo X e em bordas opostas do
+-- Z, andar reto no eixo Z já mira exatamente o adversário — slot 1 olha pra -Z,
+-- slot 2 pra +Z. Dois treinadores encarando um ao outro por cima do campo.
+function HexGrid.GetStandFacing(slot, standPos)
+	local forwardZ = (slot == 2) and 1 or -1
+	return standPos + Vector3.new(0, 0, forwardZ * 10)
 end
 
 -- BFS de alcance. Atravessa apenas casas livres, mas REGISTRA as ocupadas
@@ -246,6 +298,96 @@ function HexGrid.ComputeReach(originId, maxSteps, isFree)
 	end
 
 	dist[originId] = nil
+	return dist
+end
+
+-- Mesmo FORMATO da ComputeReach ({ [hexId] = distância }), regra oposta: conta
+-- em LINHA DE VISADA, pela distância axial pura, sem se importar com o que está
+-- no caminho.
+--
+-- Existe porque a ComputeReach é uma BFS que só atravessa casa livre — ela
+-- mede quantos PASSOS a pé, e contorna obstáculo. Pra quem anda isso é certo;
+-- pra quem atira, não: a bala não dá a volta no barril. E a diferença não é só
+-- estética, ela mente no número — com um obstáculo no meio, um alvo a 4 casas
+-- de distância real entra como "5 passos", e uma habilidade que cobra pela
+-- distância (ver Skills.longShot) cobra 4 num tiro que o alcance tratou como 5.
+-- Arredonda um ponto cúbico fracionário pra casa mais próxima. O eixo que mais
+-- errou é recalculado a partir dos outros dois, que é o que mantém q+r+s = 0.
+local function CubeRound(q, r, s)
+	local rq, rr, rs = math.round(q), math.round(r), math.round(s)
+	local dq, dr, ds = math.abs(rq - q), math.abs(rr - r), math.abs(rs - s)
+
+	if dq > dr and dq > ds then
+		rq = -rr - rs
+	elseif dr > ds then
+		rr = -rq - rs
+	else
+		rs = -rq - rr
+	end
+	return rq, rr
+end
+
+-- Casas atravessadas pela RETA de uma casa até outra, sem as duas pontas.
+-- É o traçado de linha clássico do hexágono: interpola em coordenada cúbica e
+-- arredonda cada amostra pra casa mais próxima.
+--
+-- Serve pra responder "tem alguém na frente do tiro?" — por isso as pontas
+-- ficam de fora: a origem é quem atira e o destino é quem leva, e nenhum dos
+-- dois bloqueia o próprio disparo.
+function HexGrid.HexLine(fromId, toId)
+	local a, b = hexes[fromId], hexes[toId]
+	if not a or not b then return {} end
+
+	local n = HexGrid.Distance(fromId, toId)
+	if n == math.huge or n < 2 then return {} end
+
+	local result = {}
+	for step = 1, n - 1 do
+		local t = step / n
+
+		-- O empurrãozinho não é frescura: sem ele, uma reta que passa EXATAMENTE
+		-- na aresta entre duas casas fica em cima do empate no arredondamento, e
+		-- o desempate cai pro lado que a conta escolher. Na prática o tiro
+		-- atravessava quem estava bem no meio do caminho, que é justamente o
+		-- caso que esta função existe pra pegar.
+		local q = a.q + (b.q - a.q) * t + 1e-6
+		local r = a.r + (b.r - a.r) * t + 1e-6
+
+		local rq, rr = CubeRound(q, r, -q - r)
+		local id = axialToId[rq .. "," .. rr]
+		if id then
+			table.insert(result, id)
+		end
+	end
+	return result
+end
+
+function HexGrid.ComputeSightReach(originId, maxSteps, isFree)
+	if #hexList == 0 then
+		HexGrid.Generate()
+	end
+
+	local dist = {}
+	for _, hex in ipairs(hexList) do
+		local d = HexGrid.Distance(originId, hex.id)
+		if d > 0 and d <= maxSteps then
+			-- Reta livre até lá? Corpo no meio do caminho para a bala — o tiro
+			-- não contorna (isso é a ComputeReach) nem atravessa.
+			local clear = true
+			if isFree then
+				for _, blockerId in ipairs(HexGrid.HexLine(originId, hex.id)) do
+					if not isFree(blockerId) then
+						clear = false
+						break
+					end
+				end
+			end
+
+			if clear then
+				dist[hex.id] = d
+			end
+		end
+	end
 	return dist
 end
 

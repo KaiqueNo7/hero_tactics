@@ -7,39 +7,63 @@
 	tanto o servidor (HeroView) quanto o client (seleção) precisam disso.
 ]]
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+
 local HeroData = {}
 
--- ===== SPRITESHEET =====
--- Cole só o número do asset (ou a URI completa). Vazio = placeholder colorido.
 HeroData.SPRITE_SHEET = "101129276337487"
 HeroData.FRAME_WIDTH = 165
 HeroData.FRAME_HEIGHT = 231
-HeroData.SHEET_COLUMNS = 3 -- largura do PNG dividida por 165
+HeroData.SHEET_COLUMNS = 3 
 
--- O Roblox exige o prefixo rbxassetid:// — número solto não carrega
-function HeroData.GetSpriteId()
-	local digits = HeroData.SPRITE_SHEET:gsub("%D", "")
+function HeroData.GetSpriteId(data)
+	local raw = (data and data.sprite) or HeroData.SPRITE_SHEET
+	local digits = tostring(raw):gsub("%D", "")
 	if digits == "" or digits == "0" then return nil end
 	return "rbxassetid://" .. digits
 end
 
-function HeroData.GetFrameSize()
+local FULL_IMAGE = Vector2.new(0, 0)
+
+function HeroData.GetFrameSize(data)
+	local rect = data and data.spriteRect
+	if rect then return Vector2.new(rect[3], rect[4]) end
+	if data and data.sprite then return FULL_IMAGE end
 	return Vector2.new(HeroData.FRAME_WIDTH, HeroData.FRAME_HEIGHT)
 end
 
 function HeroData.GetFrameOffset(data)
+	local rect = data and data.spriteRect
+	if rect then return Vector2.new(rect[1], rect[2]) end
+	if data and data.sprite then return FULL_IMAGE end
 	return Vector2.new(
 		(data.frame % HeroData.SHEET_COLUMNS) * HeroData.FRAME_WIDTH,
 		math.floor(data.frame / HeroData.SHEET_COLUMNS) * HeroData.FRAME_HEIGHT
 	)
 end
 
--- ===== ÍCONE DE VENENO (POR ESTÁGIO DE DURAÇÃO) =====
--- Tira horizontal com 3 células de largura IGUAL (uma por estágio de duração
--- restante, 3 = GameConfig.POISON_DURATION). Frame 1 = acabou de envenenar,
--- frame 3 = último turno do veneno. Recorte por ESCALA (não por pixel), então
--- não precisa saber a resolução exata do PNG — só as 3 células terem a mesma largura.
--- Vazio = sem sprite, usa o fallback de texto (☠).
+-- ===== PROPORÇÃO DA ARTE (por que precisa estar guardada) =====
+-- No tabuleiro o sprite é desenhado com ScaleType.Fit dentro de uma moldura
+-- 165x231 (RETRATO). Fit preserva a proporção e CENTRALIZA: arte mais larga que
+-- a moldura entra "deitada" e sobra faixa vazia em cima E embaixo. A faixa de
+-- baixo é o que faz o herói parecer flutuando — quem fica plantado na casa é o
+-- pé da MOLDURA, não o do desenho. O Golem (447x361, largo) perdia 21% da
+-- altura só nessa faixa, e ampliar a escala dele ampliou a faixa junto.
+--
+-- Fit não tem alinhamento ("encosta embaixo" não existe), então o HeroView
+-- desconta a faixa na mão — e pra isso precisa da proporção da arte, que o
+-- engine não expõe em runtime. Daí o spriteSize: é o tamanho em pixels do
+-- arquivo, que dá pra ler nas propriedades da imagem ao trocar um sprite.
+-- Errar o número não quebra nada, só desalinha o pé daquele herói.
+function HeroData.GetArtAspect(data)
+	local rect = data and data.spriteRect
+	if rect then return rect[3] / rect[4] end
+	local size = data and data.spriteSize
+	if size then return size.X / size.Y end
+	return HeroData.FRAME_WIDTH / HeroData.FRAME_HEIGHT
+end
+
 HeroData.POISON_SHEET = "81879107964596"
 HeroData.POISON_FRAME_COUNT = 3
 
@@ -49,25 +73,134 @@ function HeroData.GetPoisonSpriteId()
 	return "rbxassetid://" .. digits
 end
 
--- durationRemaining: 3 = acabou de aplicar, 1 = último turno -> índice 0,1,2 na tira
 function HeroData.GetPoisonStageIndex(durationRemaining)
 	return math.clamp(HeroData.POISON_FRAME_COUNT - durationRemaining, 0, HeroData.POISON_FRAME_COUNT - 1)
 end
 
--- ===== CATÁLOGO =====
 HeroData.CATALOG = {
-	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70) },
-	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 20, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90) },
-	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70) },
-	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165) },
-	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200) },
-	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120) },
-	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110) },
-	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 19, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200) },
-	{ id = 9, name = "Bramm",   frame = 6, attack = 2, hp = 26, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60) },
+	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true, sprite = "136396565767790", spriteSize = Vector2.new(301, 441) },
+	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 21, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90), sprite = "122742882947541", spriteSize = Vector2.new(855, 1024) },
+	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), sprite = "139532054857999", spriteSize = Vector2.new(385, 439) },
+	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165), sprite = "100992479929680", spriteSize = Vector2.new(400, 429) },
+	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true, sprite = "76020534312617", spriteSize = Vector2.new(407, 426) },
+	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true, sprite = "125070102363421", spriteSize = Vector2.new(438, 454) },
+	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110), sprite = "126479088125110", spriteSize = Vector2.new(256, 307), scale = 0.85 },
+	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "98874918804932", spriteSize = Vector2.new(254, 323), scale = 0.85 },
+	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "97869309543381", spriteSize = Vector2.new(358, 319), scale = 1.25 },
+
+	{ id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged", attackRange = 3,
+		abilities = { "iceEffect", "iceStorm" },
+		color = Color3.fromRGB(150, 210, 240),
+		sprite = "127914513925837", spriteSize = Vector2.new(299, 358)
+	},
+
+	{ id = 11, name = "Merlin", attack = 2, hp = 22, ability = nil,
+		abilities = { "bloodScent", "frenzy" },
+		color = Color3.fromRGB(150, 70, 60),
+		sprite = "85377589727040", spriteSize = Vector2.new(259, 348) 
+	},
+
+	{ id = 12, name = "Karo", attack = 2, hp = 19, ability = nil,
+		abilities = { "flamePath", "flameStrike", "flameFury" },
+		color = Color3.fromRGB(255, 140, 70),
+		sprite = "73283114537576", spriteSize = Vector2.new(304, 354) },
+
+	{ id = 13, name = "Nash", attack = 2, hp = 14, ability = "Sprint",
+		abilities = { "stealth", "stealthHeal", "ambush" },
+		color = Color3.fromRGB(80, 90, 120),
+		sprite = "95643253305726", spriteSize = Vector2.new(312, 306) },
+
+	{ id = 14, name = "Golem", attack = 1, hp = 40, ability = "Taunt",
+		abilities = { "shatter" },
+		color = Color3.fromRGB(140, 140, 140),
+		sprite = "95596148134035", spriteSize = Vector2.new(447, 361), scale = 1.4 },
+
+	-- Lucy — irmã do Karo. `flamePath` é literalmente a MESMA skill dele, não uma
+	-- cópia: o rastro de fogo já é por lado (match.flames[hexId].ownerId), não por
+	-- herói, então ela acende e cruza o mesmo fogo sem código extra nenhum. O
+	-- payoff é que muda: ele pisa em chama e ganha ataque (flameFury), ela pisa e
+	-- se cura (flameHeal). Sem Sprint/Ranged/Taunt de propósito — ela protege de
+	-- perto, não de longe.
+	{ id = 17, name = "Lucy", attack = 1, hp = 22, ability = nil,
+		abilities = { "flamePath", "flameHeal", "emberShield" },
+		color = Color3.fromRGB(240, 150, 120),
+		sprite = "108465334355138", spriteSize = Vector2.new(312, 416) },
+
+	-- Zeff — controle de posicionamento, não dano. Empurra os aliados do ALVO
+	-- pra longe dele (não os do próprio Zeff), isolando quem apanhou.
+	--
+	-- `attackRange` aqui é override, não a ability `Ranged` — ele mantém
+	-- `Sprint` (move 3, ficha e texto de UI continuam sendo os do Sprint) e
+	-- ganha o alcance de ataque padrão do Ranged por fora, igual o Kor fazia
+	-- quando atirava mais longe que o resto (ver HeroData.GetAttackRange).
+	-- Escreve `GameConfig.RANGED_ATTACK_RANGE` em vez de número solto porque,
+	-- ao contrário do Kor, este não é um valor PRÓPRIO — é o padrão do jogo,
+	-- e deve acompanhar se ele mudar.
+	--
+	-- O preço que ele pagava por controlar formação era o contra-ataque (o
+	-- revide só exige `Distance <= attackRange do alvo`, não adjacência) —
+	-- com alcance 2 ele empurra sem entrar no alcance de ninguém que não seja
+	-- Ranged também. Se sair forte demais nos testes, é aqui que se mexe
+	-- primeiro, antes de tocar em ataque/vida.
+	{ id = 18, name = "Zeff", attack = 2, hp = 17, ability = "Sprint",
+		attackRange = GameConfig.RANGED_ATTACK_RANGE,
+		abilities = { "gustPush" },
+		color = Color3.fromRGB(150, 230, 220),
+		sprite = "120553491509947", spriteSize = Vector2.new(412, 405), scale = 1.15 },
+
+	-- Wren — atiradora. `ability = "Ranged"` com `attackRange` próprio é o
+	-- mesmo arranjo que o Kor usava quando atirava mais longe que os outros
+	-- Ranged: a passiva diz O QUE ela é (e a ficha na UI lê o alcance real
+	-- dela, não o padrão), o campo diz QUANTO.
+	--
+	-- `attack = 3` é DECORATIVO: o longShot sempre substitui o dano pelo valor
+	-- da distância (damageApplied), então este número nunca é o dano de fato.
+	-- Fica em 3 por ser o meio da faixa que ela causa (1 a 5) — é o palpite
+	-- menos mentiroso pro crachá, que não tem como prever o alvo.
+	{ id = 19, name = "Wren", attack = 3, hp = 15, ability = "Ranged",
+		attackRange = GameConfig.WREN_RANGE,
+		abilities = { "longShot" },
+		color = Color3.fromRGB(100, 210, 180),
+		sprite = "78823127008143", spriteSize = Vector2.new(382, 412) },
 }
 
--- ===== HABILIDADES (textos vindos de lang/pt.json) =====
+-- ===== TAMANHO APARENTE =====
+-- `scale` multiplica a moldura do sprite no tabuleiro. 1 = normal, e a maioria
+-- do elenco não precisa do campo.
+--
+-- POR QUE ALGUNS PRECISAM. A moldura tem proporção fixa (5.8 x 8.12 studs) e o
+-- ScaleType.Fit encaixa a arte dentro dela sem distorcer — logo, quem tem arte
+-- LARGA é limitado pela largura e sobra vazio em cima e embaixo. Medindo a arte
+-- de cada asset, a altura desenhada ia de 4.5 (Golem) a 7.8 studs (Ralph): 74%
+-- de diferença que ninguém escolheu, que saiu só da proporção do PNG. É por
+-- isso que o ajuste é por ficha, e não uma constante global.
+--
+-- Isto é IRMÃO do spriteSize, não substituto: `scale` decide o tamanho, o
+-- spriteSize decide onde ficam os pés. Ampliar um sprite largo sem o segundo
+-- amplia junto a faixa vazia embaixo dele — foi o que deixou o Golem no ar.
+--
+-- Ao trocar a arte de um herói, vale remedir os dois números.
+
+local MINI_GOLEM_SPRITE = "125545602412754"
+local MINI_GOLEM_SIZE = Vector2.new(251, 202)
+local MINI_GOLEM_SCALE = 0.6
+
+HeroData.SUMMONS = {
+	{ id = 15, name = "Golem", attack = 2, hp = 5, ability = nil,
+		abilities = {},
+		color = Color3.fromRGB(120, 120, 120),
+		sprite = MINI_GOLEM_SPRITE, spriteSize = MINI_GOLEM_SIZE, scale = MINI_GOLEM_SCALE },
+
+	{ id = 16, name = "Golem", attack = 2, hp = 5, ability = nil,
+		abilities = {},
+		color = Color3.fromRGB(100, 100, 100),
+		sprite = MINI_GOLEM_SPRITE, spriteSize = MINI_GOLEM_SIZE, scale = MINI_GOLEM_SCALE },
+}
+
+function HeroData.IsStarter(data)
+	return data ~= nil and data.starter == true
+end
+
 HeroData.SKILL_INFO = {
 	firstPunch    = { name = "First Punch",    desc = "O primeiro ataque do herói na partida causa +2 de dano." },
 	autoDefense   = { name = "Auto Defense",   desc = "Recebe 1 ponto a menos de dano ao sofrer contra-ataques." },
@@ -80,12 +213,42 @@ HeroData.SKILL_INFO = {
 	aloneIsBetter = { name = "Alone is Better",desc = "Causa o dobro de dano ao atacar um inimigo isolado." },
 	health        = { name = "Health",         desc = "Cura aliados próximos em +2 no fim do turno." },
 	clean         = { name = "Clean",          desc = "Remove os efeitos negativos de aliados próximos." },
-	rage          = { name = "Rage",           desc = "Move o inimigo uma casa para trás. Se bloqueado, causa +1 de dano." },
+	rage          = { name = "Rage",           desc = ("Move o inimigo uma casa para trás. Se bloqueado, causa +%d de dano.")
+		:format(GameConfig.RAGE_BLOCKED_BONUS) },
+	iceEffect     = { name = "Efeito de Gelo", desc = "Cada ataque congela o alvo: ele passa a andar só uma casa, mesmo com Sprint. Atacar quem já está congelado causa o dobro de dano." },
+	iceStorm      = { name = "Tempestade de Gelo", desc = "Ao morrer, congela todos os inimigos a até uma casa de distância." },
+	bloodScent    = { name = "Faro de Sangue", desc = "Ganha +1 de ataque cada vez que um herói morre em campo, até no máximo +2." },
+	frenzy        = { name = "Frenesi",        desc = ("Ao ficar como último herói vivo do time, cura %d e ganha +%d de ataque e Sprint. Fica imune a efeitos negativos e recupera %d de vida a cada inimigo abatido.")
+		:format(GameConfig.MERLIN_FRENZY_HEAL, GameConfig.MERLIN_FRENZY_ATTACK, GameConfig.MERLIN_FRENZY_KILL_HEAL) },
+	flamePath     = { name = "Caminho de Chamas", desc = "Deixa fogo nas casas que atravessa e na de origem — só a de destino fica de fora. O fogo dura 2 turnos e causa 2 de dano em quem pisar nele." },
+	flameStrike   = { name = "Soco de Chamas",    desc = "O golpe gira: todos os inimigos a uma casa de distância levam o mesmo dano." },
+	flameFury     = { name = "Furor das Chamas",  desc = ("Ao pisar numa casa já em chamas (dele mesmo), ganha +%d de ataque por casa por %d turno. Não acumula, e o ataque não passa de %d.")
+		:format(GameConfig.FLAME_FURY_ATTACK, GameConfig.FLAME_FURY_DURATION, GameConfig.FLAME_FURY_MAX_ATTACK) },
+	stealth       = { name = "Furtividade",  desc = "Fica invisível enquanto nenhum inimigo estiver a menos de 2 casas. Atacar ou levar dano quebra a invisibilidade." },
+	stealthHeal   = { name = "Sombra Densa", desc = "Recupera 1 de vida a cada turno enquanto estiver invisível." },
+	ambush        = { name = "Emboscada",    desc = ("O ataque que sai da invisibilidade causa +%d de dano e não pode ser revidado, venha ele de onde vier. Revelado, ele volta na hora ao ataque de ficha.")
+		:format(GameConfig.AMBUSH_BONUS_DAMAGE) },
+	shatter       = { name = "Corpo de Pedra", desc = "Ao perder a primeira vida, se parte em dois golens menores: 2 de ataque e 5 de vida cada. Os pedaços não deixam túmulo — o Golem é enterrado uma vez só, quando o último deles cair." },
+
+	-- Lucy
+	flameHeal   = { name = "Calor da Família", desc = ("Ao pisar numa casa em chamas (dela ou do Karo), recupera %d de vida por casa.")
+		:format(GameConfig.LUCY_FLAME_HEAL) },
+	emberShield = { name = "Chama que Protege", desc = "Aliados adjacentes recebem 1 ponto a menos de dano ao serem atacados." },
+
+	-- Zeff
+	gustPush = { name = "Rajada", desc = ("Ao atacar, empurra 1 casa para longe do alvo todo aliado do alvo que estiver colado nele. O alvo em si não se move e leva o dano normal. Sem pra onde empurrar, causa %d de dano em vez disso.")
+		:format(GameConfig.GUST_BLOCKED_DAMAGE) },
+
+	-- Wren (nome de trabalho)
+	longShot = { name = "Tiro Longo", desc = ("Causa dano igual à distância até o alvo (mínimo 1, máximo %d) em vez do ataque de ficha. Quanto mais perto o alvo, mais fraco o tiro.")
+		:format(GameConfig.WREN_RANGE) },
 }
 
 HeroData.ABILITY_INFO = {
-	Sprint = "Move até 3 casas por turno em vez de 2.",
-	Ranged = "Ataca a até 2 casas de distância.",
+	Sprint = ("Move até %d casas por turno em vez de %d.")
+		:format(GameConfig.SPRINT_MOVE_RANGE, GameConfig.BASE_MOVE_RANGE),
+	Ranged = ("Ataca a até %d casas de distância.")
+		:format(GameConfig.RANGED_ATTACK_RANGE),
 	Taunt  = "Inimigos adjacentes só podem atacar este herói.",
 }
 
@@ -93,17 +256,43 @@ function HeroData.GetById(id)
 	for _, hero in ipairs(HeroData.CATALOG) do
 		if hero.id == id then return hero end
 	end
+	for _, summon in ipairs(HeroData.SUMMONS) do
+		if summon.id == id then return summon end
+	end
 	return nil
 end
 
--- Mesma regra do hero.js: attackRange = ability === 'Ranged' ? 2 : 1
 function HeroData.GetAttackRange(data)
-	return data.ability == "Ranged" and 2 or 1
+	if data.attackRange then return data.attackRange end
+
+	return data.ability == GameConfig.ABILITIES.RANGED
+		and GameConfig.RANGED_ATTACK_RANGE
+		or GameConfig.BASE_ATTACK_RANGE
 end
 
--- Mesma regra do board.js: movimento = ability === 'Sprint' ? 3 : 2
+function HeroData.GetAbilityDescription(data)
+	if data.ability == GameConfig.ABILITIES.RANGED then
+		return ("Ataca a até %d casas de distância."):format(HeroData.GetAttackRange(data))
+	end
+
+	local base = HeroData.ABILITY_INFO[data.ability]
+
+	-- Alcance por FORA da ability (Zeff: Sprint + `attackRange` avulso, ver
+	-- HeroData.CATALOG) não aparece em lugar nenhum se não somar aqui — a
+	-- frase de cima só fala de alcance quando a ability É Ranged.
+	local range = HeroData.GetAttackRange(data)
+	if range > GameConfig.BASE_ATTACK_RANGE then
+		local rangedText = ("Ataca a até %d casas de distância."):format(range)
+		return base and (base .. " " .. rangedText) or rangedText
+	end
+
+	return base
+end
+
 function HeroData.GetMoveRange(data)
-	return data.ability == "Sprint" and 3 or 2
+	return data.ability == GameConfig.ABILITIES.SPRINT
+		and GameConfig.SPRINT_MOVE_RANGE
+		or GameConfig.BASE_MOVE_RANGE
 end
 
 return HeroData

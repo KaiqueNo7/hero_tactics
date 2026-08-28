@@ -2,7 +2,12 @@
 	LobbyMenu.client.lua
 	LocalScript — StarterPlayer/StarterPlayerScripts
 
-	Os três painéis do lobby: mural de regras, vitrine de heróis e apoio.
+	Os painéis do lobby: mural de regras, campanha, elenco e apoio.
+
+	A CAMPANHA é a progressão inteira do jogo: um quadrado por confronto contra
+	bot, e vencer entrega o herói daquele quadrado. Ela é GUI e não pad físico
+	porque o estado (aberto/trancado/concluído) é POR JOGADOR — uma Part no
+	cenário tem uma cor só, igual pra todo mundo que passa por ela.
 
 	Tudo aqui é GUI de tela, e não placa física no cenário, por um motivo prático:
 	texto de regra é longo e precisa rolar. Numa SurfaceGui o jogador teria que
@@ -18,23 +23,26 @@
 	Só aparece no lobby: durante draft e batalha o MatchUpdate apaga os dois.
 ]]
 
+local CollectionService = game:GetService("CollectionService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
+local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local Monetization = require(ReplicatedStorage.Modules.Monetization)
 local Progression = require(ReplicatedStorage.Modules.Progression)
+local SafeArea = require(ReplicatedStorage.Modules.SafeArea)
 
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local WalletUpdate = ReplicatedStorage.Remotes:WaitForChild("WalletUpdate")
+local RosterUpdate = ReplicatedStorage.Remotes:WaitForChild("RosterUpdate")
+local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-
-local SPRITE_SHEET_ID = HeroData.GetSpriteId()
 
 local PANEL_BG = Color3.fromRGB(16, 19, 28)
 local CARD_BG = Color3.fromRGB(26, 31, 44)
@@ -132,9 +140,12 @@ local function buildHeroImage(parent, data)
 	image.ScaleType = Enum.ScaleType.Fit
 	image.ResampleMode = Enum.ResamplerMode.Pixelated
 
-	if SPRITE_SHEET_ID then
-		image.Image = SPRITE_SHEET_ID
-		image.ImageRectSize = HeroData.GetFrameSize()
+	-- a folha vem do próprio herói: os criados depois moram em asset separado
+	local spriteId = HeroData.GetSpriteId(data)
+
+	if spriteId then
+		image.Image = spriteId
+		image.ImageRectSize = HeroData.GetFrameSize(data)
 		image.ImageRectOffset = HeroData.GetFrameOffset(data)
 	else
 		image.BackgroundTransparency = 0
@@ -149,11 +160,11 @@ end
 local menuGui = Instance.new("ScreenGui")
 menuGui.Name = "LobbyMenuGui"
 menuGui.ResetOnSpawn = false
--- ACIMA do modal (60), não abaixo: o fundo escurecido do modal é um botão que
--- cobre a tela inteira, então com a barra por baixo dele um toque em "HERÓIS"
--- com as regras abertas só fechava o painel. Por cima, dá pra pular de um
--- painel pro outro direto — e o saldo continua visível enquanto se lê a vitrine.
-menuGui.DisplayOrder = 70
+-- ABAIXO do modal (60). Modal é modal: nada da interface do lobby passa na
+-- frente dele. A troca de painel, que era o motivo de eu ter posto a barra por
+-- cima antes, virou uma fileira de abas DENTRO do modal — resolve a navegação
+-- sem quebrar a hierarquia visual.
+menuGui.DisplayOrder = 25
 menuGui.Parent = playerGui
 
 local modalGui = Instance.new("ScreenGui")
@@ -170,7 +181,9 @@ local coinBadge = Instance.new("Frame")
 coinBadge.Name = "CoinBadge"
 coinBadge.AnchorPoint = Vector2.new(1, 0)
 coinBadge.Position = UDim2.new(1, -12, 0, 58)
-coinBadge.Size = UDim2.new(0, 136, 0, 28)
+-- mesma largura do crachá de nível (LobbyClient): os dois ficam um debaixo do
+-- outro na mesma coluna, e larguras diferentes deixavam a pilha torta
+coinBadge.Size = UDim2.new(0, 150, 0, 28)
 coinBadge.BackgroundColor3 = PANEL_BG
 coinBadge.BackgroundTransparency = 0.2
 coinBadge.BorderSizePixel = 0
@@ -186,10 +199,29 @@ coinDot.BorderSizePixel = 0
 coinDot.Parent = coinBadge
 corner(coinDot, 20)
 
+-- A bolinha dourada sozinha não dizia o que era aquele número. O rótulo ao lado
+-- dela resolve sem depender de o jogador adivinhar pelo desenho.
+local coinName = Instance.new("TextLabel")
+coinName.Name = "CoinName"
+coinName.AnchorPoint = Vector2.new(0, 0.5)
+coinName.Position = UDim2.new(0, 29, 0.5, 0)
+coinName.Size = UDim2.new(0, 46, 0, 12)
+coinName.BackgroundTransparency = 1
+coinName.Text = "COINS"
+coinName.TextColor3 = TEXT_SOFT
+coinName.TextXAlignment = Enum.TextXAlignment.Left
+coinName.TextScaled = true
+coinName.Font = Enum.Font.GothamBold
+coinName.Parent = coinBadge
+
+local coinNameLimit = Instance.new("UITextSizeConstraint")
+coinNameLimit.MaxTextSize = 11
+coinNameLimit.Parent = coinName
+
 local coinLabel = Instance.new("TextLabel")
 coinLabel.AnchorPoint = Vector2.new(1, 0.5)
 coinLabel.Position = UDim2.new(1, -10, 0.5, 0)
-coinLabel.Size = UDim2.new(1, -32, 0, 16)
+coinLabel.Size = UDim2.new(1, -90, 0, 16)
 coinLabel.BackgroundTransparency = 1
 coinLabel.Text = "0"
 coinLabel.TextColor3 = GOLD
@@ -198,10 +230,14 @@ coinLabel.TextScaled = true
 coinLabel.Font = Enum.Font.GothamBlack
 coinLabel.Parent = coinBadge
 
+local coinValueLimit = Instance.new("UITextSizeConstraint")
+coinValueLimit.MaxTextSize = 15
+coinValueLimit.Parent = coinLabel
+
 local coinGain = Instance.new("TextLabel")
 coinGain.AnchorPoint = Vector2.new(1, 0)
 coinGain.Position = UDim2.new(1, -12, 0, 88)
-coinGain.Size = UDim2.new(0, 136, 0, 20)
+coinGain.Size = UDim2.new(0, 150, 0, 20)
 coinGain.BackgroundTransparency = 1
 coinGain.Text = ""
 coinGain.TextColor3 = GOLD
@@ -214,6 +250,23 @@ coinGain.Parent = menuGui
 
 local myCoins = 0
 local coinGainToken = 0
+
+-- Elenco comprado e a vitrine que o desenha. Declarados AQUI, antes da carteira,
+-- porque tanto o saldo quanto a lista de heróis mandam redesenhar as linhas — e
+-- as duas coisas podem chegar do servidor antes do menu ser montado. Declarado
+-- depois, `refreshAllHeroRows` viraria uma global nil dentro do renderWallet.
+--
+-- `heroRefreshers` é [dataId] = função que redesenha aquela linha. O buildStore
+-- zera o registro a cada abertura: a vitrine é remontada, e os refreshers velhos
+-- apontariam pra Frames já destruídas.
+local myHeroes = {} -- [dataId] = true, só os COMPRADOS
+local heroRefreshers = {}
+
+local function refreshAllHeroRows()
+	for _, refresh in pairs(heroRefreshers) do
+		refresh()
+	end
+end
 
 -- A linha "Seu saldo" do painel de apoio. Ela é construída junto com o painel,
 -- e a compra acontece justamente com o painel ABERTO — sem esta referência o
@@ -232,6 +285,9 @@ local function renderWallet(payload)
 	if tipBalanceLabel and tipBalanceLabel.Parent then
 		tipBalanceLabel.Text = balanceText()
 	end
+
+	-- o preço não muda, mas o "Faltam X" e a cor do botão dependem do saldo
+	refreshAllHeroRows()
 
 	local gained = payload.gained
 	if not gained or gained <= 0 then return end
@@ -255,6 +311,140 @@ end
 
 WalletUpdate.OnClientEvent:Connect(renderWallet)
 
+-- ===================== ELENCO =====================
+-- O servidor manda a lista de ids conquistados; o catálogo (que o cliente já
+-- tem) diz quem é inicial. A soma dos dois é o conjunto que o Campaign lê pra
+-- dizer o estado de cada quadrado — a MESMA conta que o servidor faz com o
+-- GetPlayableIds antes de aceitar a entrada no confronto.
+local function ownsHero(data)
+	return HeroData.IsStarter(data) or myHeroes[data.id] == true
+end
+
+local function ownedSet()
+	local set = {}
+	for _, data in ipairs(HeroData.CATALOG) do
+		if ownsHero(data) then set[data.id] = true end
+	end
+	return set
+end
+
+-- ===================== QUADRADOS NO CENÁRIO =====================
+-- Os pads de confronto existem pra todo mundo (o servidor cria e marca com a
+-- tag), mas o ESTADO é de cada um. Pintar aqui, no cliente, é o que deixa o
+-- mesmo pad estar verde pra quem já pode entrar e cinza com cadeado pra quem
+-- ainda não — mexer em cor/transparência no cliente não volta pro servidor nem
+-- vaza pro outro jogador (mesma ideia do vulto do Nash).
+local PAD_COLOR = {
+	open = Color3.fromRGB(60, 170, 130),
+	done = Color3.fromRGB(64, 72, 92),
+	locked = Color3.fromRGB(92, 94, 104),
+}
+
+-- Cadeado desenhado com duas Frames (corpo + arco), pelo mesmo motivo do X do
+-- botão de fechar: o glifo 🔒 não existe nas fontes do Roblox e sai quadradinho.
+-- Medidas em ESCALA, não em pixel. O retrato do pad é dimensionado no servidor
+-- (GameStartTrigger.FIGHT_PORTRAIT_SCALE) e o cadeado mora dentro do MESMO
+-- billboard: em pixel fixo ele parava de caber assim que o retrato encolhia —
+-- 34px de cadeado num billboard de 66px de largura é metade da moldura. Assim
+-- ele acompanha qualquer escala futura sozinho.
+local function buildPadLock(parent)
+	local holder = Instance.new("Frame")
+	holder.Name = "Lock"
+	holder.AnchorPoint = Vector2.new(0.5, 0.5)
+	holder.Position = UDim2.new(0.5, 0, 0.38, 0) -- meio do retrato, acima do nome
+	holder.Size = UDim2.new(0.42, 0, 0.42, 0)
+	holder.SizeConstraint = Enum.SizeConstraint.RelativeXX -- quadrado, não achatado
+	holder.BackgroundTransparency = 1
+	holder.Visible = false
+	holder.Parent = parent
+
+	local shackle = Instance.new("Frame")
+	shackle.Name = "Shackle"
+	shackle.AnchorPoint = Vector2.new(0.5, 0)
+	shackle.Position = UDim2.new(0.5, 0, 0, 0)
+	shackle.Size = UDim2.new(0.6, 0, 0.55, 0)
+	shackle.BackgroundTransparency = 1
+	shackle.Parent = holder
+	corner(shackle, 10)
+	stroke(shackle, Color3.fromRGB(226, 232, 245), 3, 0)
+
+	local body = Instance.new("Frame")
+	body.Name = "Body"
+	body.AnchorPoint = Vector2.new(0.5, 1)
+	body.Position = UDim2.new(0.5, 0, 1, 0)
+	body.Size = UDim2.new(1, 0, 0.65, 0)
+	body.BackgroundColor3 = Color3.fromRGB(226, 232, 245)
+	body.BorderSizePixel = 0
+	body.Parent = holder
+	corner(body, 6)
+
+	return holder
+end
+
+local function paintFightPad(pad, owned)
+	local fight = Campaign.GetFight(pad:GetAttribute("FightHero"))
+	if not fight then return end
+
+	local state = Campaign.StateOf(owned, fight)
+	pad.Color = PAD_COLOR[state]
+
+	local label = pad:FindFirstChild("FightLabel")
+	if not label then return end
+
+	local portrait = label:FindFirstChild("Portrait")
+	local nameLabel = label:FindFirstChild("HeroName")
+	local lock = label:FindFirstChild("Lock") or buildPadLock(label)
+
+	if portrait then
+		-- trancado vira silhueta; concluído fica desbotado, mas reconhecível
+		portrait.ImageColor3 = state == "locked" and Color3.fromRGB(46, 50, 62)
+			or (state == "done" and Color3.fromRGB(170, 178, 195) or Color3.new(1, 1, 1))
+	end
+
+	if nameLabel then
+		-- sem glifo de "check" nem cadeado em texto: as fontes do Roblox não têm
+		-- esses símbolos e eles saem como quadradinho. Quem conta o estado é a
+		-- cor do nome, a cor do pad e o cadeado desenhado ali em cima.
+		nameLabel.TextColor3 = state == "open" and Color3.new(1, 1, 1)
+			or (state == "done" and Color3.fromRGB(150, 200, 175) or Color3.fromRGB(150, 156, 172))
+	end
+
+	lock.Visible = state == "locked"
+end
+
+local function paintAllFightPads()
+	local owned = ownedSet()
+	for _, pad in ipairs(CollectionService:GetTagged(Campaign.PAD_TAG)) do
+		paintFightPad(pad, owned)
+	end
+end
+
+-- Pad que chega depois (streaming, ou o servidor criando na entrada) nasce
+-- pintado: sem isto o jogador que anda até lá encontra a cor de fábrica.
+CollectionService:GetInstanceAddedSignal(Campaign.PAD_TAG):Connect(function(pad)
+	paintFightPad(pad, ownedSet())
+end)
+
+-- Preenchido lá embaixo (o painel aberto se redesenha quando chega elenco
+-- novo). Declarado aqui porque o RosterUpdate pode chegar antes do menu montar.
+local rebuildBody
+
+RosterUpdate.OnClientEvent:Connect(function(payload)
+	local set = {}
+	for _, dataId in ipairs(payload.owned or {}) do
+		set[dataId] = true
+	end
+	myHeroes = set
+	refreshAllHeroRows()
+	paintAllFightPads()
+
+	-- herói novo muda o estado dos quadrados (o grupo seguinte pode ter aberto)
+	-- e a lista de heróis: redesenha o painel que estiver na tela
+	if rebuildBody then rebuildBody() end
+end)
+
+paintAllFightPads()
+
 -- ===================== MODAL =====================
 local backdrop = Instance.new("TextButton")
 backdrop.Name = "Backdrop"
@@ -266,6 +456,27 @@ backdrop.Text = ""
 backdrop.AutoButtonColor = false
 backdrop.Parent = modalGui
 
+-- ÁREA ÚTIL DO MODAL
+-- O fundo escurecido cobre a tela inteira (é isso que faz o modal ser modal),
+-- mas o PAINEL não pode subir até o topo: lá moram o menu, o chat e o microfone
+-- do Roblox. No celular, onde essa faixa é proporcionalmente mais alta, a borda
+-- de cima do painel e a fileira de abas caíam bem embaixo dos botões deles — e o
+-- toque ia pro Roblox em vez de trocar de aba. O painel é centralizado DENTRO
+-- desta área, não da tela.
+local modalArea = Instance.new("Frame")
+modalArea.Name = "SafeArea"
+modalArea.BackgroundTransparency = 1
+modalArea.Parent = modalGui
+
+local function layoutModalArea()
+	local top = SafeArea.Top()
+	modalArea.Position = UDim2.new(0, 0, 0, top)
+	modalArea.Size = UDim2.new(1, 0, 1, -(top + SafeArea.MARGIN))
+end
+
+layoutModalArea()
+SafeArea.OnChange(layoutModalArea)
+
 local panel = Instance.new("Frame")
 panel.Name = "Panel"
 panel.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -275,7 +486,7 @@ panel.Position = UDim2.fromScale(0.5, 0.5)
 panel.Size = UDim2.new(0.88, 0, 0.86, 0)
 panel.BackgroundColor3 = PANEL_BG
 panel.BorderSizePixel = 0
-panel.Parent = modalGui
+panel.Parent = modalArea
 corner(panel, 14)
 stroke(panel, ACCENT, 2, 0.2)
 
@@ -296,10 +507,72 @@ panelTitle.TextScaled = true
 panelTitle.Font = Enum.Font.GothamBlack
 panelTitle.Parent = panel
 
+-- ===== ABAS DENTRO DO MODAL =====
+-- A barra do lobby fica ABAIXO do modal (é o certo: modal é modal). Só que o
+-- fundo escurecido cobre a tela inteira, então com a barra embaixo dela um
+-- toque em "HERÓIS" com as regras abertas ia parar no fundo e só fechava o
+-- painel. A troca de painel mudou de lugar: agora mora aqui dentro, onde
+-- nenhum fundo passa na frente.
+local TAB_HEIGHT = 26
+local BODY_TOP = 36 + TAB_HEIGHT + 6
+
+local openModal -- definido mais abaixo; as abas precisam dele aqui
+
+local tabRow = Instance.new("Frame")
+tabRow.Name = "Tabs"
+tabRow.Position = UDim2.new(0, 0, 0, 36)
+tabRow.Size = UDim2.new(1, 0, 0, TAB_HEIGHT)
+tabRow.BackgroundTransparency = 1
+tabRow.Parent = panel
+
+local tabLayout = Instance.new("UIListLayout")
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.Padding = UDim.new(0, 6)
+tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+tabLayout.Parent = tabRow
+
+local tabs = {}
+
+local function buildTab(text, key, order, accent)
+	local button = Instance.new("TextButton")
+	button.Name = key
+	button.Size = UDim2.new(0, 96, 1, 0)
+	button.BackgroundColor3 = CARD_BG
+	button.Text = text
+	button.TextColor3 = TEXT_SOFT
+	button.TextSize = 13
+	button.Font = Enum.Font.GothamBold
+	button.BorderSizePixel = 0
+	button.LayoutOrder = order
+	button.Parent = tabRow
+	corner(button, 6)
+
+	local edge = stroke(button, accent or ACCENT, 1, 0.6)
+	tabs[key] = { button = button, edge = edge, accent = accent or ACCENT }
+
+	button.MouseButton1Click:Connect(function()
+		openModal(key)
+	end)
+end
+
+local function refreshTabs(activeKey)
+	for key, tab in pairs(tabs) do
+		local active = key == activeKey
+		tab.button.BackgroundColor3 = active and Color3.fromRGB(42, 48, 66) or CARD_BG
+		tab.button.TextColor3 = active and tab.accent or TEXT_SOFT
+		tab.edge.Transparency = active and 0 or 0.6
+	end
+end
+
+buildTab("REGRAS", "rules", 1)
+buildTab("CAMPANHA", "campaign", 2)
+buildTab("HERÓIS", "store", 3)
+buildTab("APOIAR", "tips", 4, GOLD)
+
 local body = Instance.new("ScrollingFrame")
 body.Name = "Body"
-body.Position = UDim2.new(0, 0, 0, 36)
-body.Size = UDim2.new(1, 0, 1, -36)
+body.Position = UDim2.new(0, 0, 0, BODY_TOP)
+body.Size = UDim2.new(1, 0, 1, -BODY_TOP)
 body.BackgroundTransparency = 1
 body.BorderSizePixel = 0
 body.CanvasSize = UDim2.new()
@@ -330,6 +603,189 @@ end
 
 closeButton.MouseButton1Click:Connect(closeModal)
 backdrop.MouseButton1Click:Connect(closeModal)
+
+-- ===================== DESBLOQUEIO DE HERÓI (REVEAL) =====================
+-- O RosterUpdate já manda `unlocked` (ver HeroUnlockService.Push) sempre que um
+-- confronto da campanha paga um herói novo — mas isso acontece em PLENA
+-- partida, às vezes antes mesmo do fim de jogo aparecer na tela. A tela de
+-- comemoração só pode aparecer quando o MatchUpdate confirmar phase == "lobby",
+-- senão ela cobre a batalha ou o placar de fim de partida. Por isso a fila:
+-- guarda os ids que chegaram e só desenrola quando o jogador está mesmo aqui.
+local UNLOCK_GREEN = Color3.fromRGB(90, 235, 150)
+
+local inLobbyNow = true
+local pendingUnlockIds = {}
+local showNextReward
+
+local rewardGui = Instance.new("ScreenGui")
+rewardGui.Name = "HeroRewardGui"
+rewardGui.ResetOnSpawn = false
+rewardGui.IgnoreGuiInset = true
+rewardGui.DisplayOrder = 70 -- acima do modal de abas (60): a comemoração vence qualquer painel aberto
+rewardGui.Enabled = false
+rewardGui.Parent = playerGui
+
+local rewardBackdrop = Instance.new("TextButton")
+rewardBackdrop.Name = "Backdrop"
+rewardBackdrop.Size = UDim2.fromScale(1, 1)
+rewardBackdrop.BackgroundColor3 = Color3.fromRGB(4, 6, 8)
+rewardBackdrop.BackgroundTransparency = 0.25
+rewardBackdrop.BorderSizePixel = 0
+rewardBackdrop.Text = ""
+rewardBackdrop.AutoButtonColor = false
+rewardBackdrop.Parent = rewardGui
+
+local rewardPanel = Instance.new("Frame")
+rewardPanel.Name = "Panel"
+rewardPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+rewardPanel.Position = UDim2.fromScale(0.5, 0.5)
+rewardPanel.Size = UDim2.new(0.7, 0, 0.6, 0)
+rewardPanel.BackgroundColor3 = PANEL_BG
+rewardPanel.BorderSizePixel = 0
+rewardPanel.Parent = rewardGui
+corner(rewardPanel, 16)
+
+local rewardPanelSize = Instance.new("UISizeConstraint")
+rewardPanelSize.MaxSize = Vector2.new(320, 380)
+rewardPanelSize.MinSize = Vector2.new(220, 280)
+rewardPanelSize.Parent = rewardPanel
+
+local rewardStroke = stroke(rewardPanel, UNLOCK_GREEN, 3, 0)
+
+local rewardGlow = Instance.new("Frame")
+rewardGlow.Name = "Glow"
+rewardGlow.AnchorPoint = Vector2.new(0.5, 0)
+rewardGlow.Position = UDim2.new(0.5, 0, 0, 34)
+rewardGlow.Size = UDim2.new(0, 150, 0, 150)
+rewardGlow.BackgroundColor3 = UNLOCK_GREEN
+rewardGlow.BackgroundTransparency = 0.55
+rewardGlow.BorderSizePixel = 0
+rewardGlow.Parent = rewardPanel
+corner(rewardGlow, 999)
+
+local rewardPortraitHolder = Instance.new("Frame")
+rewardPortraitHolder.Name = "PortraitHolder"
+rewardPortraitHolder.AnchorPoint = Vector2.new(0.5, 0)
+rewardPortraitHolder.Position = UDim2.new(0.5, 0, 0, 24)
+rewardPortraitHolder.Size = UDim2.new(0, 160, 0, 160)
+rewardPortraitHolder.BackgroundTransparency = 1
+rewardPortraitHolder.ZIndex = 2
+rewardPortraitHolder.Parent = rewardPanel
+
+local rewardTitle = Instance.new("TextLabel")
+rewardTitle.Name = "Title"
+rewardTitle.AnchorPoint = Vector2.new(0.5, 0)
+rewardTitle.Position = UDim2.new(0.5, 0, 0, 196)
+rewardTitle.Size = UDim2.new(1, -20, 0, 26)
+rewardTitle.BackgroundTransparency = 1
+rewardTitle.Text = "HERÓI DESBLOQUEADO!"
+rewardTitle.TextColor3 = UNLOCK_GREEN
+rewardTitle.TextStrokeColor3 = UNLOCK_GREEN
+rewardTitle.TextStrokeTransparency = 0.5
+rewardTitle.TextScaled = true
+rewardTitle.Font = Enum.Font.GothamBlack
+rewardTitle.ZIndex = 2
+rewardTitle.Parent = rewardPanel
+
+local rewardTitleLimit = Instance.new("UITextSizeConstraint")
+rewardTitleLimit.MaxTextSize = 20
+rewardTitleLimit.Parent = rewardTitle
+
+local rewardName = Instance.new("TextLabel")
+rewardName.Name = "HeroName"
+rewardName.AnchorPoint = Vector2.new(0.5, 0)
+rewardName.Position = UDim2.new(0.5, 0, 0, 228)
+rewardName.Size = UDim2.new(1, -20, 0, 30)
+rewardName.BackgroundTransparency = 1
+rewardName.Text = ""
+rewardName.TextColor3 = TEXT_MAIN
+rewardName.TextScaled = true
+rewardName.Font = Enum.Font.GothamBold
+rewardName.ZIndex = 2
+rewardName.Parent = rewardPanel
+
+local rewardNameLimit = Instance.new("UITextSizeConstraint")
+rewardNameLimit.MaxTextSize = 24
+rewardNameLimit.Parent = rewardName
+
+local rewardButton = Instance.new("TextButton")
+rewardButton.Name = "Continue"
+rewardButton.AnchorPoint = Vector2.new(0.5, 1)
+rewardButton.Position = UDim2.new(0.5, 0, 1, -18)
+rewardButton.Size = UDim2.new(0.7, 0, 0, 36)
+rewardButton.BackgroundColor3 = UNLOCK_GREEN
+rewardButton.Text = "CONTINUAR"
+rewardButton.TextColor3 = Color3.fromRGB(10, 20, 14)
+rewardButton.Font = Enum.Font.GothamBlack
+rewardButton.TextScaled = true
+rewardButton.BorderSizePixel = 0
+rewardButton.ZIndex = 2
+rewardButton.Parent = rewardPanel
+corner(rewardButton, 8)
+
+local rewardButtonLimit = Instance.new("UITextSizeConstraint")
+rewardButtonLimit.MaxTextSize = 16
+rewardButtonLimit.Parent = rewardButton
+
+-- o brilho pulsa (mesmo truque do ícone de conexão): tamanho e transparência
+-- do halo, e a espessura efetiva da borda via transparência, oscilando sem fim
+local rewardGlowTween = TweenService:Create(rewardGlow,
+	TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+	{ BackgroundTransparency = 0.15, Size = UDim2.new(0, 175, 0, 175) })
+
+local rewardStrokeTween = TweenService:Create(rewardStroke,
+	TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+	{ Transparency = 0.6 })
+
+local function closeReward()
+	rewardGlowTween:Cancel()
+	rewardStrokeTween:Cancel()
+	rewardGui.Enabled = false
+
+	-- outro herói já pode ter chegado enquanto este estava na tela (revanche
+	-- rápida, ou dois confrontos terminando perto um do outro)
+	if #pendingUnlockIds > 0 then
+		task.defer(showNextReward)
+	end
+end
+
+function showNextReward()
+	local dataId = table.remove(pendingUnlockIds, 1)
+	if not dataId then return end
+
+	local data = HeroData.GetById(dataId)
+	if not data then return end
+
+	for _, child in ipairs(rewardPortraitHolder:GetChildren()) do
+		child:Destroy()
+	end
+	local portrait = buildHeroImage(rewardPortraitHolder, data)
+	portrait.Size = UDim2.fromScale(1, 1)
+	portrait.ZIndex = 3
+
+	rewardName.Text = data.name
+
+	rewardGui.Enabled = true
+	rewardPanel.Size = UDim2.new(0.5, 0, 0.4, 0)
+	TweenService:Create(rewardPanel, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Size = UDim2.new(0.7, 0, 0.6, 0),
+	}):Play()
+
+	rewardGlowTween:Play()
+	rewardStrokeTween:Play()
+end
+
+rewardButton.MouseButton1Click:Connect(closeReward)
+rewardBackdrop.MouseButton1Click:Connect(closeReward)
+
+RosterUpdate.OnClientEvent:Connect(function(payload)
+	if not payload.unlocked then return end
+
+	table.insert(pendingUnlockIds, payload.unlocked)
+	if inLobbyNow and not rewardGui.Enabled then
+		showNextReward()
+	end
+end)
 
 local function clearBody()
 	tipBalanceLabel = nil
@@ -413,7 +869,127 @@ local function buildRules()
 			Progression.LOSS_XP, Progression.BOT_WIN_XP), TEXT_SOFT, 14, next())
 end
 
--- ===================== CONTEÚDO: VITRINE DE HERÓIS =====================
+-- ===================== CONTEÚDO: CAMPANHA =====================
+-- Um quadrado por confronto, na ordem da escada. O estado sai do Campaign, que
+-- é a mesma função que o servidor chama pra aceitar ou recusar a entrada — a
+-- cor aqui nunca promete o que o servidor vai negar.
+local FIGHT_STYLE = {
+	open   = { edge = Color3.fromRGB(90, 200, 140), tag = "DISPONÍVEL",  tagColor = Color3.fromRGB(150, 240, 180) },
+	done   = { edge = Color3.fromRGB(120, 130, 155), tag = "CONCLUÍDO",  tagColor = Color3.fromRGB(180, 190, 210) },
+	locked = { edge = Color3.fromRGB(70, 74, 90),    tag = "BLOQUEADO",  tagColor = Color3.fromRGB(150, 156, 172) },
+}
+
+local function teamNames(fight)
+	local names = {}
+	for _, dataId in ipairs(fight.team) do
+		table.insert(names, HeroData.GetById(dataId).name)
+	end
+	return table.concat(names, ", ")
+end
+
+local function buildFightSquare(grid, fight, state, order)
+	local style = FIGHT_STYLE[state]
+	local data = HeroData.GetById(fight.hero)
+
+	local card = Instance.new("TextButton")
+	card.Name = data.name
+	card.BackgroundColor3 = state == "locked" and Color3.fromRGB(20, 22, 30) or CARD_BG
+	card.Text = ""
+	card.AutoButtonColor = state ~= "locked"
+	card.BorderSizePixel = 0
+	card.LayoutOrder = order
+	card.Parent = grid
+	corner(card, 10)
+	padding(card, 8)
+	stroke(card, style.edge, state == "open" and 2 or 1, state == "open" and 0 or 0.5)
+
+	local portraitHolder = Instance.new("Frame")
+	portraitHolder.Size = UDim2.new(1, 0, 0, 74)
+	portraitHolder.BackgroundColor3 = Color3.fromRGB(18, 21, 30)
+	portraitHolder.BorderSizePixel = 0
+	portraitHolder.Parent = card
+	corner(portraitHolder, 8)
+
+	local portrait = buildHeroImage(portraitHolder, data)
+	portrait.Size = UDim2.new(1, -8, 1, -8)
+	portrait.Position = UDim2.new(0, 4, 0, 4)
+	-- trancado fica em silhueta: dá pra ver que existe alguém ali, não quem é
+	portrait.ImageColor3 = state == "locked" and Color3.fromRGB(40, 44, 58) or Color3.new(1, 1, 1)
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Position = UDim2.new(0, 0, 0, 78)
+	nameLabel.Size = UDim2.new(1, 0, 0, 18)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = data.name
+	nameLabel.TextColor3 = state == "locked" and TEXT_SOFT or TEXT_MAIN
+	nameLabel.TextSize = 15
+	nameLabel.Font = Enum.Font.GothamBlack
+	nameLabel.Parent = card
+
+	local tag = Instance.new("TextLabel")
+	tag.Position = UDim2.new(0, 0, 0, 96)
+	tag.Size = UDim2.new(1, 0, 0, 13)
+	tag.BackgroundTransparency = 1
+	tag.Text = style.tag
+	tag.TextColor3 = style.tagColor
+	tag.TextSize = 10
+	tag.Font = Enum.Font.GothamBold
+	tag.Parent = card
+
+	local teamLabel = Instance.new("TextLabel")
+	teamLabel.Position = UDim2.new(0, 0, 0, 111)
+	teamLabel.Size = UDim2.new(1, 0, 0, 26)
+	teamLabel.BackgroundTransparency = 1
+	teamLabel.Text = state == "locked" and "?" or teamNames(fight)
+	teamLabel.TextColor3 = Color3.fromRGB(160, 172, 196)
+	teamLabel.TextSize = 11
+	teamLabel.TextWrapped = true
+	teamLabel.Font = Enum.Font.Gotham
+	teamLabel.Parent = card
+
+	if state == "locked" then return end
+
+	card.MouseButton1Click:Connect(function()
+		-- O cliente só diz QUAL confronto. Quem confere a escada e monta o time
+		-- do bot é o servidor (GameStartTrigger/Campaign).
+		GameAction:FireServer("fight", fight.hero)
+		closeModal()
+	end)
+end
+
+local function buildCampaign()
+	local owned = ownedSet()
+	local total = Campaign.CountOwned(owned)
+
+	local pvpLine = Campaign.PvpUnlocked(owned)
+		and "O modo online já está liberado — o pad vermelho do lobby entra na fila."
+		or ("Faltam %d heróis para liberar o modo online.")
+			:format(Campaign.PVP_MIN_HEROES - total)
+
+	paragraph(body, ("Cada quadrado é um confronto contra um time fixo. Vencer entrega o herói " ..
+		"daquele quadrado, de uma vez por todas. Você tem %d de %d heróis. %s")
+		:format(total, #HeroData.CATALOG, pvpLine), TEXT_SOFT, 14, 0)
+
+	local grid = Instance.new("Frame")
+	grid.Name = "Fights"
+	grid.Size = UDim2.new(1, 0, 0, 0)
+	grid.AutomaticSize = Enum.AutomaticSize.Y
+	grid.BackgroundTransparency = 1
+	grid.LayoutOrder = 1
+	grid.Parent = body
+
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.CellSize = UDim2.new(0, 118, 0, 158)
+	gridLayout.CellPadding = UDim2.new(0, 8, 0, 8)
+	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	gridLayout.Parent = grid
+
+	for index, fight in ipairs(Campaign.FIGHTS) do
+		buildFightSquare(grid, fight, Campaign.StateOf(owned, fight), index)
+	end
+end
+
+-- ===================== CONTEÚDO: ELENCO =====================
 local function buildHeroRow(data, order)
 	local row = Instance.new("Frame")
 	row.Name = data.name
@@ -452,13 +1028,33 @@ local function buildHeroRow(data, order)
 	local nameLabel = paragraph(text, data.name, TEXT_MAIN, 17, 1)
 	nameLabel.Font = Enum.Font.GothamBlack
 
-	paragraph(text, ("%d ATK   •   %d HP   •   %s")
-		:format(data.attack, data.hp, data.ability or "sem passiva"),
-		Color3.fromRGB(200, 212, 232), 13, 2).Font = Enum.Font.GothamBold
+	local statsLabel = paragraph(text, "", Color3.fromRGB(200, 212, 232), 13, 2)
+	statsLabel.Font = Enum.Font.GothamBold
+
+	-- Sem botão: herói não se compra mais. A linha de status diz de onde ele vem
+	-- (inicial, seu, ou o confronto que ainda falta vencer) e o quadrado da
+	-- campanha é quem leva o jogador até lá.
+	local function refresh()
+		local status
+		if HeroData.IsStarter(data) then
+			status = "   •   inicial"
+		elseif ownsHero(data) then
+			status = "   •   seu"
+		else
+			status = "   •   prêmio do confronto " .. data.name
+		end
+
+		statsLabel.Text = ("%d ATK   •   %d HP   •   %s%s")
+			:format(data.attack, data.hp, data.ability or "sem passiva", status)
+	end
+
+	refresh()
+	row:SetAttribute("HeroId", data.id)
+	heroRefreshers[data.id] = refresh
 
 	local lines = {}
 	if data.ability and HeroData.ABILITY_INFO[data.ability] then
-		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.ABILITY_INFO[data.ability]))
+		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.GetAbilityDescription(data)))
 	end
 	for _, key in ipairs(data.abilities) do
 		local info = HeroData.SKILL_INFO[key]
@@ -470,10 +1066,22 @@ local function buildHeroRow(data, order)
 end
 
 local function buildStore()
-	paragraph(body, ("Os %d heróis abaixo já estão liberados para todo mundo, de graça. " ..
-		"Cada partida usa %d deles — e o adversário escolhe do mesmo catálogo, então " ..
-		"quem escolhe primeiro decide o que sobra.")
-		:format(#HeroData.CATALOG, GameConfig.HEROES_PER_PLAYER), TEXT_SOFT, 14, 0)
+	-- a lista é remontada a cada abertura: os refreshers antigos apontam pra
+	-- Frames que já foram destruídas
+	heroRefreshers = {}
+
+	-- contado do catálogo em vez de escrito à mão: marcar um herói como `starter`
+	-- não pode deixar este texto mentindo
+	local starters = 0
+	for _, data in ipairs(HeroData.CATALOG) do
+		if HeroData.IsStarter(data) then starters += 1 end
+	end
+
+	paragraph(body, ("O catálogo tem %d heróis: você começa com %d e conquista os outros " ..
+		"vencendo os confrontos da CAMPANHA — um herói por confronto, nenhum se compra. " ..
+		"Cada partida usa %d heróis, e no online o adversário escolhe do mesmo catálogo, " ..
+		"então quem escolhe primeiro decide o que sobra.")
+		:format(#HeroData.CATALOG, starters, GameConfig.HEROES_PER_PLAYER), TEXT_SOFT, 14, 0)
 
 	for index, data in ipairs(HeroData.CATALOG) do
 		buildHeroRow(data, index)
@@ -535,10 +1143,16 @@ local function buildTipButton(tip, order)
 
 	if not configured then
 		-- Sem id de produto o PromptProductPurchase erra e o jogador leva um
-		-- diálogo de falha sem entender. Melhor deixar claro que falta config.
-		paragraph(card, "Indisponível: falta cadastrar o id do Developer Product " ..
-			"em ReplicatedStorage.Modules.Monetization.",
-			Color3.fromRGB(226, 150, 120), 12, 4)
+		-- diálogo de falha sem entender — por isso o botão nasce desabilitado.
+		--
+		-- O QUE O JOGADOR LÊ é só "Em breve". A pendência é do desenvolvedor, e
+		-- despejar "falta cadastrar o id do Developer Product em
+		-- ReplicatedStorage.Modules.Monetization" na tela de quem está jogando
+		-- não conserta nada: expõe caminho interno do projeto e passa a
+		-- impressão de jogo quebrado. O recado técnico vai pro console.
+		paragraph(card, "Em breve.", Color3.fromRGB(150, 156, 170), 12, 4)
+		warn(("LobbyMenu: apoio '%s' sem Developer Product cadastrado — " ..
+			"preencha productId em ReplicatedStorage.Modules.Monetization."):format(tip.key))
 		return
 	end
 
@@ -602,22 +1216,36 @@ end
 -- ===================== ABERTURA =====================
 local PANELS = {
 	rules = { title = "MURAL DE REGRAS", build = buildRules },
+	campaign = { title = "CAMPANHA", build = buildCampaign },
 	store = { title = "HERÓIS", build = buildStore },
 	tips = { title = "SEJA UM APOIADOR", build = buildTips },
 }
 
-local function openModal(key)
+-- Redesenha o painel ABERTO sem fechar nem reabrir o modal: é o que o
+-- RosterUpdate chama quando um herói novo chega, pra o quadrado recém-vencido
+-- virar "concluído" (e o grupo seguinte abrir) na mesma hora.
+function rebuildBody()
+	local entry = currentPanel and PANELS[currentPanel]
+	if not entry then return end
+	clearBody()
+	entry.build()
+end
+
+-- atribui ao local declarado lá em cima (as abas do modal já apontam pra ele)
+function openModal(key)
 	local entry = PANELS[key]
 	if not entry then return end
 
-	-- tocar de novo no mesmo botão fecha, como qualquer menu
-	if currentPanel == key then
-		closeModal()
-		return
-	end
+	-- Já está neste painel: não faz nada. (Antes isto fechava o modal, pra servir
+	-- de liga-desliga na barra do lobby — mas a barra agora fica debaixo do
+	-- fundo escurecido e não recebe clique com o modal aberto. Quem chega aqui
+	-- repetido é a aba de dentro, e fechar o painel ao clicar na aba em que
+	-- você já está seria só confuso.)
+	if currentPanel == key then return end
 
 	currentPanel = key
 	panelTitle.Text = entry.title
+	refreshTabs(key)
 	clearBody()
 	entry.build()
 
@@ -632,7 +1260,7 @@ end
 local buttonBar = Instance.new("Frame")
 buttonBar.Name = "MenuBar"
 buttonBar.Position = UDim2.new(0, 12, 0, 8)
-buttonBar.Size = UDim2.new(0, 300, 0, 34)
+buttonBar.Size = UDim2.new(0, 400, 0, 34)
 buttonBar.BackgroundTransparency = 1
 buttonBar.Parent = menuGui
 
@@ -664,8 +1292,9 @@ local function buildMenuButton(text, key, order, accent)
 end
 
 buildMenuButton("REGRAS", "rules", 1)
-buildMenuButton("HERÓIS", "store", 2)
-buildMenuButton("APOIAR", "tips", 3, GOLD)
+buildMenuButton("CAMPANHA", "campaign", 2, Color3.fromRGB(120, 220, 170))
+buildMenuButton("HERÓIS", "store", 3)
+buildMenuButton("APOIAR", "tips", 4, GOLD)
 
 -- ===================== VISIBILIDADE =====================
 -- Mesma regra do crachá de nível: fora do lobby isso tudo sai da frente.
@@ -674,5 +1303,10 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 	menuGui.Enabled = inLobby
 	if not inLobby then
 		closeModal()
+	end
+
+	inLobbyNow = inLobby
+	if inLobby and #pendingUnlockIds > 0 and not rewardGui.Enabled then
+		showNextReward()
 	end
 end)

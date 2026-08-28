@@ -25,8 +25,10 @@ local DataStoreService = game:GetService("DataStoreService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Monetization = require(ReplicatedStorage.Modules.Monetization)
+local SafeStore = require(ServerScriptService.Modules.SafeStore)
 
 local COIN_STORE_NAME = "HeroTactics_Coins_v1"
 local RECEIPT_STORE_NAME = "HeroTactics_Receipts_v1"
@@ -57,14 +59,9 @@ local function Push(player, gained)
 end
 
 local function Load(player)
-	local ok, value = pcall(function()
-		return coinStore:GetAsync(tostring(player.UserId))
-	end)
-
-	if not ok then
-		warn(("CoinService: falha ao ler saldo de %s: %s"):format(player.Name, tostring(value)))
-		value = nil
-	end
+	local ok, value = SafeStore.Get(coinStore, tostring(player.UserId),
+		("leitura de saldo de %s"):format(player.Name))
+	if not ok then value = nil end
 
 	-- saiu enquanto o GetAsync rodava: não deixa lixo no cache
 	if not player.Parent then return end
@@ -80,18 +77,13 @@ function CoinService.Award(userId, amount)
 	amount = math.floor(tonumber(amount) or 0)
 	if amount <= 0 then return nil end
 
-	local newTotal
-	local ok, err = pcall(function()
-		newTotal = coinStore:UpdateAsync(tostring(userId), function(oldValue)
-			return (tonumber(oldValue) or 0) + amount
-		end)
-	end)
+	-- Aqui a nova tentativa vale ainda mais que no XP: isto roda dentro do
+	-- ProcessReceipt, e desistir na primeira falha é Robux cobrado sem entrega.
+	local ok, newTotal = SafeStore.Update(coinStore, tostring(userId), function(oldValue)
+		return (tonumber(oldValue) or 0) + amount
+	end, ("crédito de %d moedas em %s"):format(amount, tostring(userId)))
 
-	if not (ok and newTotal) then
-		warn(("CoinService: falha ao creditar %d moedas em %s: %s")
-			:format(amount, tostring(userId), tostring(err)))
-		return nil
-	end
+	if not (ok and newTotal) then return nil end
 
 	coins[userId] = newTotal
 
@@ -103,6 +95,43 @@ end
 
 function CoinService.GetCoins(userId)
 	return coins[userId] or 0
+end
+
+-- Debita `amount` se houver saldo. Devolve (ok, novoSaldo).
+--
+-- A checagem do saldo mora DENTRO do transform, não antes dele: entre um
+-- GetAsync e um SetAsync cabem duas compras do mesmo jogador em servidores
+-- diferentes, e as duas passariam achando que o dinheiro estava lá. Quem decide
+-- é o UpdateAsync, que lê e escreve como uma operação só.
+--
+-- Devolver nil do transform ABORTA a gravação — é assim que a compra sem saldo
+-- termina sem encostar no valor guardado.
+function CoinService.Spend(userId, amount)
+	amount = math.floor(tonumber(amount) or 0)
+	if amount <= 0 then return false, nil end
+
+	local ok, newTotal = SafeStore.Update(coinStore, tostring(userId), function(oldValue)
+		local saldo = tonumber(oldValue) or 0
+		if saldo < amount then return nil end
+		return saldo - amount
+	end, ("débito de %d moedas em %s"):format(amount, tostring(userId)))
+
+	-- ok=true com newTotal nil é o transform tendo abortado: tinha conexão, mas
+	-- não tinha saldo. ok=false é o DataStore fora do ar. Pro chamador as duas
+	-- terminam igual (a compra não aconteceu), mas só a segunda merece log.
+	if not ok then
+		warn(("CoinService: débito de %d de %s não gravou — compra recusada.")
+			:format(amount, tostring(userId)))
+		return false, nil
+	end
+	if not newTotal then return false, nil end
+
+	coins[userId] = newTotal
+
+	local player = Players:GetPlayerByUserId(userId)
+	if player then Push(player) end
+
+	return true, newTotal
 end
 
 -- ===================== RECIBOS =====================
@@ -122,17 +151,11 @@ local function ProcessReceipt(info)
 
 	local receiptKey = "r_" .. tostring(info.PurchaseId)
 
-	local seenOk, seen = pcall(function()
-		return receiptStore:GetAsync(receiptKey)
-	end)
+	local seenOk, seen = SafeStore.Get(receiptStore, receiptKey, "consulta de recibo")
 
 	-- DataStore fora do ar: melhor devolver pendente e deixar o Roblox tentar de
 	-- novo do que arriscar creditar em dobro
-	if not seenOk then
-		warn("CoinService: falha ao consultar recibo: " .. tostring(seen))
-		return pending
-	end
-
+	if not seenOk then return pending end
 	if seen then return granted end
 
 	if not CoinService.Award(info.PlayerId, tip.coins) then
@@ -141,9 +164,7 @@ local function ProcessReceipt(info)
 
 	-- Marca depois de creditar. Se ESTA gravação falhar não tem problema:
 	-- respondemos PurchaseGranted logo abaixo e o Roblox não reenvia o recibo.
-	pcall(function()
-		receiptStore:SetAsync(receiptKey, os.time())
-	end)
+	SafeStore.Set(receiptStore, receiptKey, os.time(), "marcação de recibo")
 
 	print(("CoinService: %s apoiou com '%s' (+%d moedas)."):format(
 		tostring(info.PlayerId), tip.key, tip.coins))

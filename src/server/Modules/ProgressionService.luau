@@ -13,8 +13,11 @@
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Progression = require(ReplicatedStorage.Modules.Progression)
+local CoinService = require(ServerScriptService.Modules.CoinService)
+local SafeStore = require(ServerScriptService.Modules.SafeStore)
 
 local XP_STORE_NAME = "HeroTactics_Xp_v1"
 local xpStore = DataStoreService:GetDataStore(XP_STORE_NAME)
@@ -42,14 +45,9 @@ local function Push(player, gained)
 end
 
 local function Load(player)
-	local ok, value = pcall(function()
-		return xpStore:GetAsync(tostring(player.UserId))
-	end)
-
-	if not ok then
-		warn(("ProgressionService: falha ao ler XP de %s: %s"):format(player.Name, tostring(value)))
-		value = nil
-	end
+	local ok, value = SafeStore.Get(xpStore, tostring(player.UserId),
+		("leitura de XP de %s"):format(player.Name))
+	if not ok then value = nil end
 
 	-- se o jogador saiu enquanto o GetAsync rodava, não deixa lixo no cache
 	if not player.Parent then return end
@@ -64,26 +62,46 @@ end
 function ProgressionService.AwardMatchXp(player, result, survivors, vsBot)
 	if not player then return end
 
+	local userId = player.UserId
+
+	-- Moedas da vitória: independem do XP e são pagas mesmo se a gravação do XP
+	-- falhar logo abaixo. São dois DataStores diferentes; amarrar um ao outro só
+	-- faria um soluço num deles levar o outro junto.
+	local matchCoins = Progression.MatchCoins(result)
+	if matchCoins > 0 then
+		CoinService.Award(userId, matchCoins)
+	end
+
 	local amount = Progression.MatchReward(result, survivors, vsBot)
 	if amount <= 0 then return end
 
-	local userId = player.UserId
-	local newTotal
+	-- guardado ANTES de somar o XP: é a comparação com o nível de depois que diz
+	-- se subiu, e quantos níveis subiu de uma vez (uma partida boa pode passar
+	-- por dois se o jogador estava quase virando)
+	local levelBefore = Progression.FromTotalXp(totalXp[userId] or 0).level
 
 	-- UpdateAsync soma em cima do que está gravado: mesmo que o GetAsync do
-	-- login tenha falhado, o ganho não apaga o histórico do jogador.
-	local ok, err = pcall(function()
-		newTotal = xpStore:UpdateAsync(tostring(userId), function(oldValue)
-			return (tonumber(oldValue) or 0) + amount
-		end)
-	end)
+	-- login tenha falhado, o ganho não apaga o histórico do jogador. O SafeStore
+	-- ainda tenta de novo algumas vezes antes de desistir — perder o XP de uma
+	-- partida inteira por um soluço de rede é o tipo de coisa que faz o jogador
+	-- achar que o jogo não guarda progresso.
+	local ok, newTotal = SafeStore.Update(xpStore, tostring(userId), function(oldValue)
+		return (tonumber(oldValue) or 0) + amount
+	end, ("gravação de XP de %s"):format(player.Name))
 
 	if ok and newTotal then
 		totalXp[userId] = newTotal
 	else
 		-- sem persistir: pelo menos a sessão atual mostra o que ganhou
 		totalXp[userId] = (totalXp[userId] or 0) + amount
-		warn(("ProgressionService: falha ao salvar XP de %s: %s"):format(player.Name, tostring(err)))
+	end
+
+	-- Prêmio por subir de nível. Conta os níveis ganhos em vez de assumir um,
+	-- senão quem passa dois de uma vez recebe pela metade. Fica DEPOIS da
+	-- gravação de propósito: só paga por nível que o jogador realmente tem.
+	local levelsGained = Progression.FromTotalXp(totalXp[userId]).level - levelBefore
+	if levelsGained > 0 then
+		CoinService.Award(userId, levelsGained * Progression.LEVEL_UP_COINS)
 	end
 
 	Push(player, amount)
@@ -91,6 +109,14 @@ end
 
 function ProgressionService.GetTotalXp(userId)
 	return totalXp[userId] or 0
+end
+
+-- Nível atual pela curva. Se o GetAsync do login ainda não voltou (ou falhou), o
+-- cache está em 0 e isto devolve 1 — o jogador entra com o elenco inicial em vez
+-- de travar a partida. Vale saber que é assim: um soluço de DataStore no login
+-- não bloqueia ninguém, só esconde os heróis avançados naquela partida.
+function ProgressionService.GetLevel(userId)
+	return Progression.FromTotalXp(ProgressionService.GetTotalXp(userId)).level
 end
 
 Players.PlayerAdded:Connect(function(player)

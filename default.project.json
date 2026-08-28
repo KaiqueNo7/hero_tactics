@@ -34,6 +34,12 @@
       "Store": {
         "$path": "src/server/Store.server.luau"
       },
+      "CoreChecks": {
+        "$path": "src/dev/CoreChecks.server.luau"
+      },
+      "BalanceSim": {
+        "$path": "src/dev/BalanceSim.server.luau"
+      },
       "Modules": {
         "$path": "src/server/Modules"
       }
@@ -44,11 +50,17 @@
         "CameraController": {
           "$path": "src/client/CameraController.client.luau"
         },
+        "ConnectionStatusClient": {
+          "$path": "src/client/ConnectionStatusClient.client.luau"
+        },
         "PlacementClient": {
           "$path": "src/client/PlacementClient.client.luau"
         },
         "BattleClient": {
           "$path": "src/client/BattleClient.client.luau"
+        },
+        "MatchLogClient": {
+          "$path": "src/client/MatchLogClient.client.luau"
         },
         "LobbyClient": {
           "$path": "src/client/LobbyClient.client.luau"
@@ -58,6 +70,9 @@
         },
         "SoundClient": {
           "$path": "src/client/SoundClient.client.luau"
+        },
+        "TutorialClient": {
+          "$path": "src/client/TutorialClient.client.luau"
         }
       }
     }

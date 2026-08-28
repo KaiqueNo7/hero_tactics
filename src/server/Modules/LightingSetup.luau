@@ -38,15 +38,37 @@ local LightingSetup = {}
 LightingSetup.READY_ATTRIBUTE = "HeroTacticsLightingReady"
 
 -- ===== CÉU ABERTO / SOL =====
-local CLOCK_TIME = 14.2 -- meio da tarde: sol inclinado dá sombra longa e macia
-local GEOGRAPHIC_LATITUDE = 24 -- inclina o sol pro lado em vez de deixá-lo a pino
+-- ATENÇÃO: ajustar o ClockTime pelo Explorer NÃO se sustenta. O Apply() abaixo
+-- roda no servidor quando a partida começa e reescreve estas propriedades por
+-- cima do que estiver salvo no place — era isso que apagava o horário calibrado
+-- à mão em modo Edit assim que o jogo entrava em Play. Quem manda no sol é este
+-- arquivo; o Explorer serve só pra pré-visualizar antes de trazer o número pra cá.
+--
+-- 11.6 = 11:36. Sol quase a pino: a parede da taverna para de projetar sombra
+-- dentro da arena. Era 14.2 (meio da tarde), que dá sombra longa e bonita no
+-- lobby aberto, mas atravessa o tabuleiro inteiro — no diorama fechado a beleza
+-- custava legibilidade.
+local CLOCK_TIME = 11.6
+-- Anda junto com o horário: a latitude inclina o sol pro lado, então mexer em um
+-- sem olhar o outro devolve a sombra por um caminho diferente.
+local GEOGRAPHIC_LATITUDE = 24
 local BRIGHTNESS = 2.4
 
 -- ===== LUZ INDIRETA =====
 -- Ambient vale pro mundo todo (inclusive dentro da taverna); OutdoorAmbient só
--- pro que enxerga o céu. Ambient levemente azulado imita a luz do céu quicando
--- nas paredes, que é o que dá o aspecto "natural" em vez de lanterna no escuro.
-local AMBIENT = Color3.fromRGB(30, 32, 40)
+-- pro que enxerga o céu.
+--
+-- O Ambient era azulado, imitando céu quicando na parede — fazia sentido quando
+-- a taverna era um diorama de três paredes com a frente aberta pro sol. A
+-- taverna atual é uma SALA FECHADA (quatro paredes e teto): nenhum fóton do sol
+-- entra, o azul não tinha de onde vir, e o que sobrava era um cinza morto.
+-- Agora é âmbar escuro: é a luz do fogo e das tochas quicando na madeira, que é
+-- a única luz indireta que existe lá dentro.
+--
+-- Este é o valor que mais pesa na cena. Ele sozinho decide o quão preto fica o
+-- que nenhuma luz alcança — e "preto puro" é o que faz o ambiente parecer um
+-- modelo sem acabamento em vez de uma taverna à noite.
+local AMBIENT = Color3.fromRGB(46, 38, 33)
 local OUTDOOR_AMBIENT = Color3.fromRGB(124, 132, 148)
 
 -- Sol quente por cima, sombra fria por baixo: o contraste de temperatura é o
@@ -59,7 +81,10 @@ local COLOR_SHIFT_BOTTOM = Color3.fromRGB(8, 11, 20)
 local ENVIRONMENT_DIFFUSE = 0.85
 local ENVIRONMENT_SPECULAR = 0.35
 
-local EXPOSURE_COMPENSATION = 0.12
+-- Subiu pra 0.18 quando a taverna estava escura demais; agora que a sala tem
+-- luz própria a compensação vira brilho em cima de brilho. 0.08 tira o excesso
+-- sem devolver o ambiente pro escuro.
+local EXPOSURE_COMPENSATION = 0.08
 local SHADOW_SOFTNESS = 0.42 -- borda de sombra difusa = "suave"
 
 -- ===== ATMOSFERA =====
@@ -76,13 +101,202 @@ local ATMOSPHERE = {
 -- ===== PÓS-PROCESSAMENTO =====
 -- Bloom discreto: o suficiente pra tocha e o Neon do anel de time "acenderem",
 -- longe do borrão branco que come o contraste do tabuleiro.
-local BLOOM = { Enabled = true, Intensity = 0.7, Size = 20, Threshold = 1.6 }
+--
+-- O Threshold foi a 1.05 pra fazer a lareira brilhar, e passou do ponto: as
+-- velas do lustre (Neon) e o fogo viravam uma bolha branca chapada, sem forma
+-- nenhuma, bem no topo do enquadramento. 1.45 devolve o desenho da chama e das
+-- velas e ainda deixa halo nelas — o halo tem que sugerir a fonte, não apagá-la.
+--
+-- Este é o número que controla "está muito brilhoso", e não o Ambient: o que
+-- estourava eram as FONTES, não a luz do ambiente.
+local BLOOM = { Enabled = true, Intensity = 0.45, Size = 20, Threshold = 1.45 }
 local SUN_RAYS = { Enabled = true, Intensity = 0.03, Spread = 0.2 }
+
+-- Sala fechada iluminada só por fogo e janela vira uma mancha laranja uniforme:
+-- tudo na mesma família de cor, e o olho lê "textura de madeira", não "ambiente".
+-- Contraste separa de novo o que a luz alcança do que não alcança, e a saturação
+-- devolve a cor que a exposição alta lava. Valores baixos de propósito — isto
+-- vale pro LOBBY também, que é céu aberto e não aguenta correção pesada.
+local COLOR_CORRECTION = {
+	Enabled = true,
+	Contrast = 0.12,
+	Saturation = 0.14,
+	Brightness = 0,
+	TintColor = Color3.fromRGB(255, 249, 242),
+}
 
 -- Desfoque de profundidade fica DESLIGADO: a câmera olha o tabuleiro de longe e
 -- de cima, então qualquer DepthOfField borra exatamente as casas que o jogador
 -- precisa ler. Fica registrado aqui pra ninguém religar sem querer.
 local DEPTH_OF_FIELD_ENABLED = false
+
+-- ===== LUZ DE DENTRO DA TAVERNA =====
+-- A taverna é uma sala fechada: o sol da Lighting não entra em nenhum ponto
+-- dela, então TODA a luz de lá vem daqui.
+--
+-- Os emissores são achados pelo NOME do que você montou no Studio, e não por
+-- uma lista de posições: decore à vontade, mova a janela, duplique o lustre —
+-- no próximo start o construtor reposiciona a luz sozinho. É o mesmo padrão do
+-- LobbyZoneBuilder (construtor idempotente), então mexer na luz à mão pelo
+-- Explorer NÃO gruda: mude os números aqui.
+--
+-- Cada emissor mora numa peça invisível própria (AUTO_LIGHT_NAME) em vez de ir
+-- pendurada na decoração: assim dá pra apagar e reconstruir tudo sem risco de
+-- levar junto uma luz que você tenha posto à mão.
+local AUTO_LIGHT_NAME = "AutoLight"
+
+local ARENA_EMITTERS = {
+	-- Luz principal da sala. É luz de fora entrando, então é a mais branca e a
+	-- mais forte — o contraste entre ela e o âmbar da lareira é o que dá volume.
+	Janela = {
+		class = "SpotLight",
+		aimed = true, -- feixe descendo pro chão, como sol entrando
+		props = {
+			Brightness = 1.6,
+			Range = 72,
+			Angle = 78,
+			Color = Color3.fromRGB(255, 240, 210),
+			Face = Enum.NormalId.Front,
+		},
+	},
+	Lustre = {
+		class = "PointLight",
+		-- Mais fraco que as janelas de propósito. O lustre fica no TOPO do
+		-- enquadramento, quase colado na câmera: com o mesmo brilho das outras
+		-- fontes ele lavava a metade de cima da tela inteira. Ele é decoração
+		-- acesa, quem ilumina o tabuleiro são as janelas.
+		props = { Brightness = 1.0, Range = 46, Color = Color3.fromRGB(255, 198, 132) },
+	},
+	WallLight = {
+		class = "PointLight",
+		props = { Brightness = 1.3, Range = 26, Color = Color3.fromRGB(255, 172, 104) },
+	},
+	Fireplace = {
+		class = "PointLight",
+		-- A lareira é alta (a chaminé sobe até o teto) e o centro da caixa dela
+		-- cai no meio do cano, longe do fogo. O fogo é o que ilumina: a luz
+		-- desce pra altura da brasa, medida a partir da BASE do modelo.
+		heightFromBottom = 8,
+		props = { Brightness = 1.7, Range = 58, Color = Color3.fromRGB(255, 138, 62) },
+	},
+}
+
+local function BoundsOf(instance)
+	if instance:IsA("BasePart") then
+		return instance.Position, instance.Size
+	end
+	local cframe, size = instance:GetBoundingBox()
+	return cframe.Position, size
+end
+
+-- Reconstrói a luz da arena. Chamado pelo BoardSpawner, e seguro de rodar
+-- quantas vezes for: apaga o que ele mesmo criou antes de recriar.
+function LightingSetup.LightArena(folder)
+	if not folder then return end
+
+	for _, descendant in ipairs(folder:GetDescendants()) do
+		if descendant.Name == AUTO_LIGHT_NAME then
+			descendant:Destroy()
+		end
+	end
+
+	-- O piso é a referência da sala: sem ele não dá pra saber pra onde as
+	-- janelas apontam, e aí elas ficam sem feixe (o resto da luz acende igual).
+	local floor = folder:FindFirstChild("Floor", true)
+	floor = floor and floor:IsA("BasePart") and floor or nil
+
+	local floorTop = floor and (floor.Position.Y + floor.Size.Y / 2)
+	local roomCenter = floor and Vector3.new(floor.Position.X, floorTop, floor.Position.Z)
+
+	-- Cada janela ilumina o pedaço de chão DIANTE DELA, não o centro da sala.
+	-- Mirar todas no centro parecia certo e não era: os quatro feixes somavam no
+	-- mesmo ponto, o tabuleiro estourava de branco e o resto do chão continuava
+	-- escuro. Separados, viram quatro poços de luz — que é como janela funciona,
+	-- e é o que dá o gradiente no chão em vez de um holofote só.
+	local BEAM_REACH = 42
+
+	local function AimFor(position)
+		local inward = ((roomCenter - position) * Vector3.new(1, 0, 1))
+		if inward.Magnitude < 1 then return roomCenter end
+		return Vector3.new(position.X, floorTop, position.Z) + inward.Unit * BEAM_REACH
+	end
+
+	-- Modelo que JÁ ACENDE não recebe luz nossa.
+	--
+	-- Os modelos do Studio vêm com iluminação embutida: o lustre tem PointLight
+	-- próprio (e 26 peças Neon, que acendem sozinhas), cada arandela tem
+	-- PointLight + SurfaceLight. Sem esta checagem o LightArena pendurava uma
+	-- SEGUNDA luz em cima de cada uma — era isso que estourava de branco o topo
+	-- do enquadramento, e nenhum ajuste de brilho resolvia, porque metade da luz
+	-- vinha de instâncias que este arquivo não controla.
+	--
+	-- Sobra pra nós exatamente o que o cenário não resolve: o feixe das janelas
+	-- (vidro não emite luz) e a lareira.
+	local function HasOwnLight(instance)
+		if instance:IsA("BasePart") and instance:FindFirstChildWhichIsA("Light") then
+			return true
+		end
+		for _, d in ipairs(instance:GetDescendants()) do
+			if d:IsA("Light") then return true end
+		end
+		return false
+	end
+
+	-- Um "WallLight" é um Model que tem dentro dele uma peça também chamada
+	-- WallLight — sem esta checagem o mesmo suporte ganhava duas luzes empilhadas
+	-- no mesmo ponto, dobrando o brilho e o custo. Vale a mais de fora.
+	local function IsNestedEmitter(instance)
+		local parent = instance.Parent
+		while parent and parent ~= folder do
+			if ARENA_EMITTERS[parent.Name] then return true end
+			parent = parent.Parent
+		end
+		return false
+	end
+
+	for _, descendant in ipairs(folder:GetDescendants()) do
+		local spec = ARENA_EMITTERS[descendant.Name]
+		if spec and (not spec.aimed or roomCenter)
+			and not IsNestedEmitter(descendant)
+			and not HasOwnLight(descendant)
+		then
+			local center, size = BoundsOf(descendant)
+
+			if spec.heightFromBottom then
+				center = Vector3.new(center.X, center.Y - size.Y / 2 + spec.heightFromBottom, center.Z)
+			end
+
+			local anchor = Instance.new("Part")
+			anchor.Name = AUTO_LIGHT_NAME
+			anchor.Size = Vector3.new(0.2, 0.2, 0.2)
+			anchor.Transparency = 1
+			anchor.Anchored = true
+			anchor.CanCollide = false
+			-- invisível e fora de qualquer teste: uma peça de luz no meio da sala
+			-- não pode roubar o clique de uma casa nem empurrar quem passa
+			anchor.CanQuery = false
+			anchor.CanTouch = false
+
+			local aim = spec.aimed and AimFor(center)
+			if aim and (aim - center).Magnitude > 1 then
+				-- 3 studs pra dentro: nascendo exatamente no plano da janela, o
+				-- feixe saía por dentro da parede e a sala não recebia nada
+				local inward = (aim - center).Unit
+				anchor.CFrame = CFrame.lookAt(center + inward * 3, aim)
+			else
+				anchor.CFrame = CFrame.new(center)
+			end
+
+			local light = Instance.new(spec.class)
+			for key, value in pairs(spec.props) do
+				light[key] = value
+			end
+			light.Parent = anchor
+
+			anchor.Parent = folder
+		end
+	end
+end
 
 local function EnsureChild(className, name)
 	local existing = Lighting:FindFirstChildOfClass(className)
@@ -121,6 +335,7 @@ function LightingSetup.Apply()
 	ApplyProps(EnsureChild("Atmosphere", "Atmosphere"), ATMOSPHERE)
 	ApplyProps(EnsureChild("BloomEffect", "Bloom"), BLOOM)
 	ApplyProps(EnsureChild("SunRaysEffect", "SunRays"), SUN_RAYS)
+	ApplyProps(EnsureChild("ColorCorrectionEffect", "ColorCorrection"), COLOR_CORRECTION)
 
 	local depthOfField = Lighting:FindFirstChildOfClass("DepthOfFieldEffect")
 	if depthOfField then

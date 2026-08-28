@@ -24,15 +24,28 @@ local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 -- ===== ENQUADRAMENTO (medido em jogo) =====
+-- Calibrado no voo livre (F) e copiado do HUD: o log de lá usa a MESMA origem
+-- (boardCenter) e a mesma convenção de ângulo do applyCamera, então os números
+-- passam direto pra cá, sem conversão.
+--
+-- O azimute saiu de 16° pra 91°: o tabuleiro passou a ser visto quase de lado,
+-- não mais de frente. Com a câmera um pouco mais alta e bem mais perto
+-- (95 -> 75) as casas pegam mais luz e o hexágono fica menos achatado.
 local FIELD_OF_VIEW = 38
-local ELEVATION = 35
-local AZIMUTH = 13
-local DEFAULT_DISTANCE = 89
+local ELEVATION = 44
+local AZIMUTH = 91
+local DEFAULT_DISTANCE = 75
 local FRAMING = 1.12
 
 -- ===== ZOOM =====
+-- O teto do zoom não é só gosto: ele decide se a câmera continua DENTRO do
+-- diorama. O afastamento em X é 0.72 * raio (azimute 91°, elevação 44°), e o
+-- piso da arena só vai até ARENA_CAMERA_MARGIN além do tabuleiro. Em 1.8 o raio
+-- ia a 135 e a câmera saía ~73 studs além da borda — de fora, olhando o
+-- cenário de trás, com o vazio preto aparecendo por baixo e pelas laterais.
+-- 1.5 mantém ela dentro da margem nova do ArenaBuilder com folga.
 local ZOOM_STEP = 5
-local ZOOM_MIN_FACTOR, ZOOM_MAX_FACTOR = 0.45, 1.8
+local ZOOM_MIN_FACTOR, ZOOM_MAX_FACTOR = 0.45, 1.5
 
 -- ===== MOVIMENTO NO LOBBY =====
 -- Lidos do StarterPlayer pra devolver exatamente o que o place configurou, em
@@ -217,11 +230,78 @@ local function setDefaultControls(enabled)
 	end
 end
 
+-- ===== MOVIMENTO DE LOBBY =====
+-- Andar, pular e os controles na tela, do jeito que o place configurou. Separado
+-- do returnToLobby porque precisa valer TAMBÉM pra quem acabou de entrar e pra
+-- quem renasceu — dois casos em que o returnToLobby nem chega a rodar.
+local function applyLobbyMovement(character)
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	humanoid.WalkSpeed = LOBBY_WALK_SPEED
+	humanoid.JumpPower = LOBBY_JUMP_POWER
+	humanoid.JumpHeight = LOBBY_JUMP_HEIGHT
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
+
+	setDefaultControls(true)
+end
+
+-- ===== NASCER FORA DE PARTIDA JÁ VEM COM CONTROLE =====
+-- O `controlsEnabled` é estado de MÓDULO e a TouchGui é recriada a cada
+-- respawn: renascendo com a bandeira ainda em `false`, o applyTouchGui carimbava
+-- esse `false` na GUI nova e o thumbstick e o botão de pulo não voltavam mais.
+-- E não voltavam nem depois, porque o returnToLobby desiste na primeira linha
+-- quando `activated` já é false — que é justamente o caso de quem saiu da
+-- partida pela morte, pela desconexão, ou perdeu o MatchUpdate de "lobby".
+--
+-- A regra aqui é sem estado e vale ao contrário: TODO personagem que nasce fora
+-- de uma partida nasce com movimento e controles de lobby. Cobre a primeira
+-- entrada, o respawn e qualquer restauração que tenha se perdido no caminho.
+player.CharacterAdded:Connect(function(character)
+	if activated then return end
+	applyLobbyMovement(character)
+end)
+
+-- O script pode subir DEPOIS do personagem já existir (é o caso comum na
+-- primeira entrada), e aí o CharacterAdded acima nunca dispara pra ele.
+if player.Character then
+	task.defer(applyLobbyMovement, player.Character)
+end
+
+-- Altura em que o HumanoidRootPart descansa com o boneco de pé no chão.
+-- Precisa ser medida DEPOIS do ScaleTo: as partes crescem junto, e um número
+-- fixo (era "+3.5", cravado pra escala 1.6) enfia o boneco no piso ou o deixa
+-- boiando assim que PLAYER_STAND_SCALE muda.
+local function standingRootHeight(character, humanoid, rootPart)
+	-- R15 declara a altura do quadril; R6 não usa HipHeight (fica 0) e apoia o
+	-- root no meio do torso, então a perna é quem dá a medida — e ela acompanha
+	-- a escala do mesmo jeito.
+	if humanoid.RigType == Enum.HumanoidRigType.R6 then
+		local leg = character:FindFirstChild("Left Leg")
+		return (leg and leg.Size.Y or 2) + rootPart.Size.Y / 2
+	end
+
+	return humanoid.HipHeight + rootPart.Size.Y / 2
+end
+
 local function placeCharacter(character, standPos, lookAt)
 	local humanoid = character:WaitForChild("Humanoid")
 	local rootPart = character:WaitForChild("HumanoidRootPart")
 
-	rootPart.CFrame = CFrame.new(standPos, lookAt)
+	pcall(function()
+		character:ScaleTo(GameConfig.PLAYER_STAND_SCALE)
+	end)
+
+	-- standPos vem no nível do CHÃO; a altura do boneco entra aqui. O alvo do
+	-- olhar sobe junto, senão o personagem encara o piso em vez do adversário.
+	local restY = standPos.Y + standingRootHeight(character, humanoid, rootPart)
+	rootPart.CFrame = CFrame.new(
+		Vector3.new(standPos.X, restY, standPos.Z),
+		Vector3.new(lookAt.X, restY, lookAt.Z)
+	)
 
 	humanoid.WalkSpeed = 0
 	humanoid.JumpPower = 0
@@ -282,19 +362,17 @@ local function returnToLobby()
 
 	local character = player.Character
 	if character then
+		pcall(function()
+			character:ScaleTo(1)
+		end)
+
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		local rootPart = character:FindFirstChild("HumanoidRootPart")
 
 		if humanoid then
 			camera.CameraSubject = humanoid
-			humanoid.WalkSpeed = LOBBY_WALK_SPEED
-			humanoid.JumpPower = LOBBY_JUMP_POWER
-			humanoid.JumpHeight = LOBBY_JUMP_HEIGHT
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
 		end
+		applyLobbyMovement(character)
 
 		if rootPart then
 			rootPart.CFrame = lobbyCFrame()
@@ -330,8 +408,8 @@ local function activateBoardCamera(hexSize, boardOffset, slot)
 	maxRadius = baseRadius * ZOOM_MAX_FACTOR
 
 	local groundY = boardOffset.Y
-	local standPos = HexGrid.GetStandPosition(slot or 1, groundY + 3.5)
-	local lookAt = Vector3.new(boardCenter.X, standPos.Y, boardCenter.Z)
+	local standPos = HexGrid.GetStandPosition(slot or 1, groundY)
+	local lookAt = HexGrid.GetStandFacing(slot or 1, standPos)
 
 	buildStandPlatform(standPos, groundY)
 	placeCharacter(player.Character or player.CharacterAdded:Wait(), standPos, lookAt)
