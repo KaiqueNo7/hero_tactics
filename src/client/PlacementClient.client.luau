@@ -14,18 +14,19 @@ local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
 local Debris = game:GetService("Debris")
 
+local HeroData = require(ReplicatedStorage.Modules.HeroData)
+local SafeArea = require(ReplicatedStorage.Modules.SafeArea)
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+
 local function PlayUiSound(name)
 	local template = ReplicatedStorage.Sounds:FindFirstChild(name)
 	if not template then return end
 	local sound = template:Clone()
+	sound.Volume = template.Volume * GameConfig.MASTER_VOLUME
 	sound.Parent = SoundService
 	sound:Play()
 	Debris:AddItem(sound, 3)
 end
-
-local HeroData = require(ReplicatedStorage.Modules.HeroData)
-local SafeArea = require(ReplicatedStorage.Modules.SafeArea)
-local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local PlaceHero = ReplicatedStorage.Remotes:WaitForChild("PlaceHero")
 
@@ -40,6 +41,7 @@ local mouse = player:GetMouse()
 local HIGHLIGHT_COLOR = Color3.fromRGB(72, 132, 80)
 local HOVER_COLOR = Color3.fromRGB(116, 190, 124)
 local DRAG_THRESHOLD = 8
+local DETAIL_HOLD = 0.35
 
 local activeTweens = {}
 
@@ -66,6 +68,7 @@ local currentState = nil
 local paintedTiles = {}
 local heroCards = {}
 local drag = nil
+local pendingDetail = nil
 local hoveredHex = nil
 local usedHeroIdSet = {} -- montado a partir do array que o servidor envia
 local lockedHeroIdSet = {} -- heróis que este jogador ainda não liberou por nível
@@ -783,12 +786,19 @@ local function destroyStrayGhosts()
 	end
 end
 
+local function qualifiesAsDetail(press, endPosition)
+	if os.clock() - press.startedAt < DETAIL_HOLD then return false end
+	if (scroller.CanvasPosition - press.canvas).Magnitude > DRAG_THRESHOLD then return false end
+	return not endPosition or (endPosition - press.origin).Magnitude <= DRAG_THRESHOLD
+end
+
 local function finishDrag()
 	if not drag then return end
 
 	local dropHex = hoveredHex
 	local dataId = drag.data.id
 	local moved = drag.moved
+	local press = drag
 
 	drag.ghost:Destroy()
 	drag = nil
@@ -801,7 +811,7 @@ local function finishDrag()
 	-- tabuleiro sem ele pedir, gastando uma das escolhas.
 	if moved and dropHex and isFreeDeployHex(dropHex) then
 		PlaceHero:FireServer(dataId, dropHex)
-	elseif not moved then
+	elseif not moved and qualifiesAsDetail(press) then
 		showDetail(HeroData.GetById(dataId))
 	end
 
@@ -829,6 +839,8 @@ local function startDrag(data, input)
 		data = data,
 		ghost = makeGhost(data),
 		origin = startPosition,
+		startedAt = os.clock(),
+		canvas = scroller.CanvasPosition,
 		moved = false,
 		input = input,
 		isTouch = input.UserInputType == Enum.UserInputType.Touch,
@@ -843,7 +855,13 @@ for id, entry in pairs(heroCards) do
 			-- herói bloqueado não arrasta, mas ainda abre o detalhe: ver o que
 			-- vem no próximo nível é justamente o que dá vontade de subir
 			if lockedHeroIdSet[entry.data.id] then
-				showDetail(entry.data)
+				pendingDetail = {
+					data = entry.data,
+					input = input,
+					startedAt = os.clock(),
+					origin = Vector2.new(input.Position.X, input.Position.Y),
+					canvas = scroller.CanvasPosition,
+				}
 				return
 			end
 			startDrag(entry.data, input)
@@ -878,6 +896,16 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 UserInputService.InputEnded:Connect(function(input)
+	if pendingDetail then
+		local press = pendingDetail
+		if input == press.input or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			pendingDetail = nil
+			if qualifiesAsDetail(press, Vector2.new(input.Position.X, input.Position.Y)) then
+				showDetail(press.data)
+			end
+		end
+	end
+
 	if not belongsToDrag(input, true) then return end
 	finishDrag()
 end)

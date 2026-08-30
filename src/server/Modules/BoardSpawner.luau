@@ -168,7 +168,8 @@ local function FocusInStudio(folder)
 	local camera = Workspace.CurrentCamera
 	if not (floor and floor:IsA("BasePart") and camera) then return end
 
-	camera.CFrame = CFrame.new(floor.Position + Vector3.new(0, 95, 135), floor.Position)
+	camera.FieldOfView = GameConfig.CAMERA_FOV
+	camera.CFrame = GameConfig.MatchCameraCFrame(floor.Position)
 end
 
 -- ===== EDITAR UMA ARENA À MÃO =====

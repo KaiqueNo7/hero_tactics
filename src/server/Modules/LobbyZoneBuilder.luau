@@ -238,22 +238,32 @@ function LobbyZoneBuilder.PlacePads()
 	for group, fights in pairs(byGroup) do
 		local zone = LobbyZones.ForGroup(group)
 
-		-- Numa trilha adotada só mexe nos quadrados das ilhas que ACABARAM de
-		-- nascer; o resto está onde o Studio deixou, e é lá que fica.
-		if zone and (not adopted or built[zone.id]) then
+		if zone then
 			local slots = LobbyZones.PadSlots(zone, #fights)
+			local zoneIsNew = not adopted or built[zone.id]
 
 			for index, fight in ipairs(fights) do
 				local pad = Workspace:FindFirstChild("FightPad_" .. fight.hero, true)
 				if pad and pad:IsA("BasePart") then
+					-- Numa trilha adotada, o que o Studio montou fica onde está.
+					-- Duas exceções: o quadrado recém-criado (TrailPending), que
+					-- não tem montagem à mão pra respeitar, e o que ficou na ilha
+					-- ERRADA depois de o herói mudar de grupo no Campaign — esse
+					-- não é escolha de ninguém, é sobra da escada antiga.
+					local placedZone = pad:GetAttribute("TrailZone")
+					local mayMove = zoneIsNew
+						or pad:GetAttribute("TrailPending")
+						or (placedZone ~= nil and placedZone ~= zone.id)
+
 					if pad:GetAttribute("KeepPosition") then
 						kept += 1
-					else
+					elseif mayMove then
 						-- CFrame e não Position: pad adotado do place pode vir
 						-- torto, e um quadrado inclinado é uma rampa que joga o
 						-- jogador pra fora da ilha
 						pad.CFrame = CFrame.new(slots[index])
 						pad:SetAttribute("TrailZone", zone.id)
+						pad:SetAttribute("TrailPending", nil)
 						moved += 1
 					end
 				end

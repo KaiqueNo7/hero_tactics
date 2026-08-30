@@ -2,39 +2,24 @@
 	CoinService.lua
 	ModuleScript — ServerScriptService/Modules/CoinService
 
-	Carteira de moedas do jogador: persiste entre servidores e é creditada quando
-	um apoio (Developer Product) é confirmado pelo Roblox.
+	Carteira de moedas do jogador: persiste entre servidores e é creditada pelo
+	ProgressionService (vitória e subida de nível).
 
 	Mesma dependência do ProgressionService: precisa de "Enable Studio Access to
 	API Services" (Game Settings > Security) pra funcionar dentro do Studio. Sem
 	isso os pcall falham com warn e o saldo vale só pra sessão.
-
-	QUEM MANDA NO PREÇO
-	O cliente só abre o prompt do produto — ele nunca informa quanto vale. Quem
-	converte é o ProcessReceipt aqui, olhando o `ProductId` que veio no recibo e
-	buscando a entrada correspondente em Modules.Monetization. Se o produto não
-	estiver no catálogo, o recibo NÃO é confirmado (o jogador não perde Robux por
-	uma compra que o jogo não sabe entregar).
-
-	ATENÇÃO: MarketplaceService.ProcessReceipt aceita UM único handler no jogo
-	inteiro. Ele é registrado aqui — se um dia outro script precisar vender algo,
-	o caminho é chamar de dentro deste handler, não criar um segundo.
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
-local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local Monetization = require(ReplicatedStorage.Modules.Monetization)
 local SafeStore = require(ServerScriptService.Modules.SafeStore)
 
 local COIN_STORE_NAME = "HeroTactics_Coins_v1"
-local RECEIPT_STORE_NAME = "HeroTactics_Receipts_v1"
 
 local coinStore = DataStoreService:GetDataStore(COIN_STORE_NAME)
-local receiptStore = DataStoreService:GetDataStore(RECEIPT_STORE_NAME)
 
 -- Mesmo padrão do ProfileUpdate: criado aqui se faltar, pra quem clonar o repo
 -- não precisar montar o RemoteEvent na mão dentro do place.
@@ -78,7 +63,7 @@ function CoinService.Award(userId, amount)
 	if amount <= 0 then return nil end
 
 	-- Aqui a nova tentativa vale ainda mais que no XP: isto roda dentro do
-	-- ProcessReceipt, e desistir na primeira falha é Robux cobrado sem entrega.
+	-- crédito, e desistir na primeira falha é moeda ganha que some.
 	local ok, newTotal = SafeStore.Update(coinStore, tostring(userId), function(oldValue)
 		return (tonumber(oldValue) or 0) + amount
 	end, ("crédito de %d moedas em %s"):format(amount, tostring(userId)))
@@ -133,46 +118,6 @@ function CoinService.Spend(userId, amount)
 
 	return true, newTotal
 end
-
--- ===================== RECIBOS =====================
--- O Roblox reentrega o mesmo recibo até receber PurchaseGranted. A trava do
--- receiptStore existe pro caso do servidor cair DEPOIS de creditar e ANTES de
--- responder: sem ela, a reentrega pagaria as moedas duas vezes.
-local function ProcessReceipt(info)
-	local granted = Enum.ProductPurchaseDecision.PurchaseGranted
-	local pending = Enum.ProductPurchaseDecision.NotProcessedYet
-
-	local tip = Monetization.GetTipByProductId(info.ProductId)
-	if not tip then
-		warn(("CoinService: recibo de produto desconhecido (%s) — não confirmado.")
-			:format(tostring(info.ProductId)))
-		return pending
-	end
-
-	local receiptKey = "r_" .. tostring(info.PurchaseId)
-
-	local seenOk, seen = SafeStore.Get(receiptStore, receiptKey, "consulta de recibo")
-
-	-- DataStore fora do ar: melhor devolver pendente e deixar o Roblox tentar de
-	-- novo do que arriscar creditar em dobro
-	if not seenOk then return pending end
-	if seen then return granted end
-
-	if not CoinService.Award(info.PlayerId, tip.coins) then
-		return pending
-	end
-
-	-- Marca depois de creditar. Se ESTA gravação falhar não tem problema:
-	-- respondemos PurchaseGranted logo abaixo e o Roblox não reenvia o recibo.
-	SafeStore.Set(receiptStore, receiptKey, os.time(), "marcação de recibo")
-
-	print(("CoinService: %s apoiou com '%s' (+%d moedas)."):format(
-		tostring(info.PlayerId), tip.key, tip.coins))
-
-	return granted
-end
-
-MarketplaceService.ProcessReceipt = ProcessReceipt
 
 Players.PlayerAdded:Connect(function(player)
 	task.spawn(Load, player)

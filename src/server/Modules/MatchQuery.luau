@@ -150,11 +150,14 @@ end
 -- ou de Sprint. Descontando uma casa, o Sprint congelado ainda andava 2 — mais
 -- do que um herói normal inteiro, o que fazia o gelo do Kor valer menos
 -- justamente contra quem corre mais.
-function MatchQuery.MoveRangeOf(hero)
+function MatchQuery.MoveRangeOf(match, hero)
 	local range = hero.moveRange
 
-	if MatchQuery.FindStatusEffect(hero, "windBoost") then
-		range += GameConfig.WIND_BOOST_MOVE_BONUS
+	for _, ally in ipairs(MatchQuery.AlliesAdjacentTo(match, hero, hero.position)) do
+		if MatchQuery.HasSkill(ally, "tailwind") then
+			range += GameConfig.WIND_BOOST_MOVE_BONUS
+			break
+		end
 	end
 
 	if MatchQuery.FindStatusEffect(hero, "freeze") then

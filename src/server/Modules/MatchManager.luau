@@ -33,6 +33,7 @@ local HeroStatsService = require(ServerScriptService.Modules.HeroStatsService)
 -- O DevAccess saiu daqui junto com a liberação por nível: quem sabe quais heróis
 -- o jogador pode levar (inclusive as exceções de testador) é o HeroUnlockService.
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
+local Campaign = require(ReplicatedStorage.Modules.Campaign)
 
 -- ===== CONSULTA E DECISÃO MORAM FORA =====
 -- MatchQuery: as perguntas ao tabuleiro (só leitura, nunca cede).
@@ -57,6 +58,7 @@ local GetEnemiesInRange = MatchQuery.GetEnemiesInRange
 local LivingHeroesOf = MatchQuery.LivingHeroesOf
 local FindStatusEffect = MatchQuery.FindStatusEffect
 local MoveRangeOf = MatchQuery.MoveRangeOf
+local HasSkill = MatchQuery.HasSkill
 
 local MatchUpdate = ReplicatedStorage.Remotes.MatchUpdate
 local BoardReady = ReplicatedStorage.Remotes.BoardReady
@@ -154,6 +156,11 @@ local function TriggerSkills(match, hero, triggerName, target, isCounterAttack, 
 			scope.api = setmetatable({
 				Effect = function(target, variant)
 					HeroView.PlaySkillEffect(target, variant or key)
+				end,
+
+				ApplyStatusEffect = function(target, effect)
+					effect.source = effect.source or hero
+					match.skillApi.ApplyStatusEffect(target, effect)
 				end,
 			}, { __index = match.skillApi })
 
@@ -265,7 +272,7 @@ function KillHero(match, hero, attacker)
 	-- estilhaça e cria heróis novos, e o onKill do Merlin pode matar de novo em
 	-- cascata. Somando depois, o crédito se perderia no meio dessa cadeia.
 	-- `attacker ~= hero` porque o Golem se "mata" ao estilhaçar.
-	if attacker and attacker ~= hero and attacker.stats then
+	if attacker and attacker ~= hero and attacker.stats and not hero.summoner then
 		attacker.stats.kills += 1
 	end
 
@@ -311,18 +318,28 @@ function KillHero(match, hero, attacker)
 	if hero.noGrave then
 		hero.graveDestroyed = true
 		hero.graveHitsLeft = 0
+
+		if match.occupied[hero.position] == hero then
+			match.occupied[hero.position] = nil
+		end
+
+		if not hero.gravePending then
+			HeroView.PlayAnimation(hero, "die")
+		end
+
 		HeroView.Destroy(hero)
 	else
 		-- Destaque do finalizador: fica guardado até o próximo Broadcast e vai UMA
 		-- vez só. Morte sem autor (veneno, Morte Súbita) chega aqui com attacker nil
 		-- e não gera destaque — não teria de quem mostrar o retrato.
-		if attacker and attacker ~= hero then
+		if attacker and attacker ~= hero and not hero.summoner then
 			match.finisher = {
 				dataId = attacker.dataId,
 				name = attacker.name,
 				ownerId = attacker.ownerId,
 				sideIndex = attacker.sideIndex,
 				victim = hero.name,
+				hex = attacker.position,
 			}
 		end
 
@@ -392,7 +409,15 @@ function KillHero(match, hero, attacker)
 	ResolvePendingGraves(match)
 end
 
-function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
+local DAMAGE_SOURCES = {
+	poison = "veneno",
+	flame = "fogo",
+	suddenDeath = "Morte Súbita",
+	graveCurse = "maldição do túmulo",
+	summonerFell = "perder quem a invocou",
+}
+
+function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sourceKey)
 	if not hero.isAlive then return end
 
 	-- passivas que reduzem dano recebido (ex: autoDefense do Ralph)
@@ -440,16 +465,23 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 	-- skill, veneno, Morte Súbita, maldição de túmulo — então instrumentar este
 	-- ponto pega tudo, e nenhuma skill nova precisa lembrar de somar nada.
 	--
-	-- Guarda o número CHEIO, não o descontado da vida que sobrava: é o mesmo que
-	-- o "-N" que sobe em cima do herói (HeroView.Say logo abaixo), e a tela de
-	-- resultado mentiria se dissesse 3 onde o jogador viu 12.
+	-- Guarda o dano que REALMENTE tirou vida, e não o número cheio do golpe. Um
+	-- herói de 10 de vida não pode fechar a partida com 11 recebidos sem cura no
+	-- meio: a tela de resultado tem que fechar a conta. Pelo mesmo motivo o dano
+	-- causado é o que saiu da vida do outro — excesso de golpe não vira placar.
 	--
-	-- Sem autor = dano de ambiente. Ele conta como recebido (o tanque que
-	-- aguentou a Morte Súbita aguentou de verdade), mas não credita ninguém.
-	hero.stats.taken += amount
-	if attacker and attacker.stats then
-		attacker.stats.dealt += amount
-		attacker.stats.biggestHit = math.max(attacker.stats.biggestHit, amount)
+	-- O balão "-N" em cima do herói continua mostrando o número cheio (ver
+	-- HeroView.Say logo abaixo): lá o que importa é a força do golpe.
+	--
+	-- Sem autor = dano de ambiente: conta como recebido, mas não credita
+	-- ninguém. `credit` responde pelo dano ATRASADO (veneno, fogo no chão) —
+	-- credita quem plantou sem tratar a ticada como golpe dele.
+	local landed = math.min(amount, math.max(hero.currentHp, 0))
+	local author = attacker or credit
+	hero.stats.taken += landed
+	if author and author.stats then
+		author.stats.dealt += landed
+		author.stats.biggestHit = math.max(author.stats.biggestHit, landed)
 	end
 
 	hero.currentHp -= amount
@@ -460,8 +492,11 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack)
 	HeroView.PlayAnimation(hero, "hit", attacker == nil)
 	HeroView.Say(hero, "-" .. tostring(amount), "damage")
 
+	local sourceName = sourceKey and DAMAGE_SOURCES[sourceKey]
+
 	LogEvent(match, "damage", attacker and attacker.sideIndex or hero.sideIndex,
 		attacker and ("%s causou %d de dano em %s"):format(attacker.name, amount, hero.name)
+		or sourceName and ("%s sofreu %d de dano de %s"):format(hero.name, amount, sourceName)
 		or ("%s sofreu %d de dano do cenário"):format(hero.name, amount))
 
 	if hero.currentHp <= 0 then
@@ -608,7 +643,7 @@ local function ProcessStatusEffects(match, hero, ownTurnEnding)
 		end
 
 		if effect.damagePerTurn then
-			ApplyDamage(match, hero, effect.damagePerTurn, nil, false)
+			ApplyDamage(match, hero, effect.damagePerTurn, nil, false, effect.source, effect.type)
 		end
 		if effect.duration > 1 then
 			effect.duration -= 1
@@ -629,7 +664,7 @@ end
 -- fogo do Caminho de Chamas não cabe lá: ele fica na CASA e continua queimando
 -- depois que o Karo saiu de cima. Por isso mora numa tabela por partida.
 --
---   match.flames[hexId] = { ownerId, duration, appliedTurnToken }
+--   match.flames[hexId] = { ownerId, source, duration, appliedTurnToken }
 --
 -- Fogo NÃO ocupa a casa: não entra em match.occupied, não bloqueia passagem e
 -- não é alvo de nada. Ele só cobra pedágio de quem atravessa — que é o que o
@@ -639,13 +674,14 @@ local function LightFlame(match, hexId, hero)
 
 	match.flames[hexId] = {
 		ownerId = hero.ownerId,
+		source = hero,
 		duration = GameConfig.FLAME_DURATION,
 		-- mesmo carimbo dos status de herói: um prazo nunca é consumido no turno
 		-- em que começou, senão o rastro aceso agora venceria no fim deste mesmo
 		-- turno e o inimigo nunca chegaria a pisar nele
 		appliedTurnToken = match.turnToken,
 	}
-	HeroView.CreateFlame(match.view, hexId)
+	HeroView.CreateFlame(match.view, hexId, hero.sideIndex)
 end
 
 local function ClearFlame(match, hexId)
@@ -682,7 +718,7 @@ local function ConsumeFlame(match, hero, hexId)
 
 	local own = flame.ownerId == hero.ownerId
 	if not own then
-		ApplyDamage(match, hero, GameConfig.FLAME_DAMAGE, nil, false)
+		ApplyDamage(match, hero, GameConfig.FLAME_DAMAGE, nil, false, flame.source, "flame")
 	end
 
 	ClearFlame(match, hexId)
@@ -708,8 +744,8 @@ end
 -- existem outras partidas rodando.
 local function BuildSkillApi(match)
 	return {
-		ApplyDamage = function(hero, amount, attacker, isCounterAttack)
-			ApplyDamage(match, hero, amount, attacker, isCounterAttack)
+		ApplyDamage = function(hero, amount, attacker, isCounterAttack, sourceKey)
+			ApplyDamage(match, hero, amount, attacker, isCounterAttack, nil, sourceKey)
 		end,
 		Heal = function(hero, amount, source) Heal(match, hero, amount, source) end,
 		IncreaseAttack = function(hero, amount) IncreaseAttack(match, hero, amount) end,
@@ -751,7 +787,7 @@ local function BuildSkillApi(match)
 		CountDeaths = function()
 			local dead = 0
 			for _, other in pairs(match.heroes) do
-				if not other.isAlive then dead += 1 end
+				if not other.isAlive and not other.summoner then dead += 1 end
 			end
 			return dead
 		end,
@@ -770,6 +806,14 @@ local function BuildSkillApi(match)
 			HeroView.PlayIceStorm(match.view, hero.position)
 		end,
 
+		PoisonBomb = function(hero)
+			HeroView.PlayPoisonBomb(match.view, hero.position)
+		end,
+
+		FireCircle = function(hero)
+			HeroView.PlayFireCircle(match.view, hero.position)
+		end,
+
 		FlashAttackRange = function(hero)
 			local hexIds = {}
 			for _, hex in ipairs(HexGrid.GetNeighbors(hero.position)) do
@@ -786,7 +830,23 @@ local function BuildSkillApi(match)
 		Summon = function(origin, dataId)
 			local hexId = FindNearestFreeHex(match, origin.position)
 			if not hexId then return nil end
-			return CreateHero(match, dataId, origin.ownerId, hexId)
+
+			local minion = CreateHero(match, dataId, origin.ownerId, hexId)
+			if minion then minion.summoner = origin end
+			return minion
+		end,
+
+		IsMyTurn = function(hero)
+			return match.turn ~= nil and match.turn.ownerId == hero.ownerId
+		end,
+
+		GetAllyByData = function(hero, dataId)
+			for _, other in pairs(match.heroes) do
+				if other.ownerId == hero.ownerId and other.dataId == dataId then
+					return other
+				end
+			end
+			return nil
 		end,
 
 		-- Golem: a PRIMEIRA vida cai sem lápide NA HORA. Libera a casa JÁ,
@@ -835,8 +895,23 @@ local function CanMove(match, hero)
 end
 
 -- ===================== SNAPSHOT =====================
+local function RematchWantedByOther(match, viewerId)
+	for _, side in ipairs(match.sides) do
+		if side.id ~= viewerId and match.rematch[side.id] then return true end
+	end
+	return false
+end
+
+local function TurnIsTimed(match)
+	if GameConfig.TURN_TIME_LIMIT <= 0 or not match.turn then return false end
+	if not match.vsBot then return true end
+
+	local side = SideOf(match, match.turn.ownerId)
+	return side ~= nil and side.isBot
+end
+
 local function TurnSecondsLeft(match)
-	if not match.turn or GameConfig.TURN_TIME_LIMIT <= 0 then return nil end
+	if not TurnIsTimed(match) then return nil end
 	local elapsed = os.clock() - match.turn.startedAt
 	return math.max(0, math.floor(GameConfig.TURN_TIME_LIMIT - elapsed))
 end
@@ -883,10 +958,10 @@ local function Snapshot(match, viewerId)
 	for _, hero in ipairs(ordered) do
 		-- ===== O QUE ESTE ESPECTADOR NÃO PODE VER =====
 		-- Primeiro caso do jogo em que o mesmo herói vai diferente pros dois
-		-- lados. O Shadow invisível chega ao adversário como um registro OCO: a
-		-- casa e o uid, nada mais. Nome, ficha, vida e dono ficam de fora de
-		-- propósito — o cliente é do jogador, e o que sai daqui é o que um
-		-- exploit consegue ler. Esconder só no desenho seria esconder nada.
+		-- lados. O que a sombra esconde é a MIRA, não a existência: a ficha
+		-- (nome, vida, ataque) vai junto, porque é informação de placar e o
+		-- adversário decide a jogada com ela. Quem apaga o boneco no tabuleiro e
+		-- tira a casa do alvo é a marca `hidden`, lida pelo cliente.
 		--
 		-- A CASA continua indo. É a decisão de projeto: o adversário percebe que
 		-- não dá pra passar ali, sem saber por quê. Como STEALTH_RANGE e
@@ -899,6 +974,15 @@ local function Snapshot(match, viewerId)
 				isAlive = true,
 				isMine = false,
 				hidden = true,
+
+				dataId = hero.dataId,
+				name = hero.name,
+				sideIndex = hero.sideIndex,
+				currentHp = hero.currentHp,
+				maxHp = hero.maxHp,
+				attack = GameConfig.EffectiveAttack(hero),
+				baseAttack = hero.baseAttack,
+				ability = hero.ability,
 			})
 			continue
 		end
@@ -923,7 +1007,7 @@ local function Snapshot(match, viewerId)
 			baseAttack = hero.baseAttack,
 			ability = hero.ability,
 			attackRange = hero.attackRange,
-			moveRange = MoveRangeOf(hero), -- já descontado o gelo
+			moveRange = MoveRangeOf(match, hero), -- já descontado o gelo
 			isAlive = hero.isAlive,
 
 			-- o cliente precisa saber POR QUE o herói anda menos: sem isso o
@@ -949,15 +1033,14 @@ local function Snapshot(match, viewerId)
 			graveHitsLeft = (not hero.isAlive) and hero.graveHitsLeft or nil,
 			graveDestroyed = (not hero.isAlive) and hero.graveDestroyed or nil,
 
-			-- Golem: uid do CORPO que gerou este pedaço. O elo já existia aqui
-			-- dentro (`graveOwner`, ver DeferGrave), só não atravessava a rede —
-			-- e sem ele o cliente não tem como saber que os dois pedaços moram no
-			-- card do Golem em vez de gastarem duas vagas próprias.
-			--
-			-- Vai o uid do PAI e não um "sou invocação": o Golem ressuscita pela
-			-- Casa de Promoção e estilhaça de novo, então a pergunta que importa
-			-- não é "este é um pedaço?" e sim "pedaço de QUEM?".
-			summonOf = hero.graveOwner and hero.graveOwner.uid or nil,
+			-- Uid do PAI, não um "sou invocação": sem ele o cliente não tem como
+			-- saber que pedaço de Golem e caveira de Morn moram no card de quem
+			-- os gerou em vez de gastarem uma vaga própria. `sameBody` separa os
+			-- dois casos — o pedaço É o corpo do Golem partido (e por isso mantém
+			-- o card "de pé" e as sub-linhas), a caveira é só uma peça a mais.
+			summonOf = (hero.graveOwner or hero.summoner)
+				and (hero.graveOwner or hero.summoner).uid or nil,
+			sameBody = hero.graveOwner ~= nil or nil,
 
 			-- O que ele fez na partida. SÓ NO FIM: durante o jogo isto seria uma
 			-- tabela a mais por herói em cada um dos muitos snapshots por turno,
@@ -1026,6 +1109,7 @@ local function Snapshot(match, viewerId)
 			name = match.finisher.name,
 			victim = match.finisher.victim,
 			sideIndex = match.finisher.sideIndex,
+			hex = match.finisher.hex,
 			isMine = match.finisher.ownerId == viewerId,
 		}
 	end
@@ -1114,6 +1198,12 @@ local function Snapshot(match, viewerId)
 		barrels = barrels,
 		promotionSquares = promotionSquares,
 		pendingPromotion = pendingPromotion,
+		campaign = match.fight ~= nil,
+		rematch = (match.phase == "finished" and not match.vsBot) and {
+			open = match.rematchOpen == true,
+			mine = match.rematch[viewerId] == true,
+			theirs = RematchWantedByOther(match, viewerId),
+		} or nil,
 		turnNumber = match.turn and match.turn.number or 0,
 		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,
 		turnSecondsLeft = TurnSecondsLeft(match),
@@ -1184,6 +1274,8 @@ function CreateHero(match, dataId, ownerId, hexId)
 		abilities = data.abilities,
 		attackRange = HeroData.GetAttackRange(data),
 		moveRange = HeroData.GetMoveRange(data),
+		deathSound = data.deathSound,
+		attackSound = data.attackSound,
 		position = hexId,
 		isAlive = true,
 		statusEffects = {},
@@ -1233,6 +1325,9 @@ function CreateHero(match, dataId, ownerId, hexId)
 		graveOwner = nil,
 		graveHex = nil, -- casa do último pedaço que caiu; é onde a lápide sobe
 
+		skullCooldown = 0,
+		summoner = nil,
+
 		view = match.view,
 	}
 
@@ -1245,6 +1340,8 @@ function CreateHero(match, dataId, ownerId, hexId)
 	-- (PerformResurrection), e passar duas vezes não muda nada.
 	local previous = match.heroes[hero.uid]
 	if previous and not previous.isAlive then
+		hero.stats = previous.stats
+
 		if match.occupied[previous.position] == previous then
 			match.occupied[previous.position] = nil
 		end
@@ -1408,7 +1505,7 @@ function AttackGrave(match, attacker, grave)
 		-- sem contar como ataque de habilidade nenhuma. Se isso matar quem
 		-- profanou o túmulo, ApplyDamage/KillHero cuidam disso normalmente — a
 		-- própria lápide virando outra lápide é o preço fazendo sentido até o fim.
-		ApplyDamage(match, attacker, GameConfig.GRAVE_CURSE_DAMAGE, nil, false)
+		ApplyDamage(match, attacker, GameConfig.GRAVE_CURSE_DAMAGE, nil, false, nil, "graveCurse")
 	end
 
 	Broadcast(match)
@@ -1758,7 +1855,7 @@ function BeginTurn(match, ownerId, number)
 	if number >= GameConfig.SUDDEN_DEATH_START_TURN then
 		for _, hero in pairs(match.heroes) do
 			if hero.isAlive then
-				ApplyDamage(match, hero, GameConfig.SUDDEN_DEATH_DAMAGE, nil, false)
+				ApplyDamage(match, hero, GameConfig.SUDDEN_DEATH_DAMAGE, nil, false, nil, "suddenDeath")
 			end
 		end
 		message = "☠ Morte Súbita: todos perdem 1 de vida!"
@@ -1772,7 +1869,7 @@ function BeginTurn(match, ownerId, number)
 	Broadcast(match, message)
 
 	-- cronômetro: encerra o turno sozinho quando o tempo acaba
-	if GameConfig.TURN_TIME_LIMIT > 0 then
+	if TurnIsTimed(match) then
 		task.delay(GameConfig.TURN_TIME_LIMIT, function()
 			if not (MatchIsLive(match) and match.turn and match.turn.token == token and match.phase == "battle") then return end
 
@@ -1858,6 +1955,19 @@ local function AuthorizeAction(match, player, hero)
 	return true
 end
 
+local function FlameBias(match, hero)
+	if next(match.flames) == nil then return nil end
+
+	local converts = HasSkill(hero, "flameFury") or HasSkill(hero, "flameHeal")
+
+	return function(hexId)
+		local flame = match.flames[hexId]
+		if not flame then return 0 end
+		if flame.ownerId ~= hero.ownerId then return -4 end
+		return converts and 4 or -1
+	end
+end
+
 function MatchManager.MoveHero(player, heroUid, hexId, match)
 	match = match or MatchOfPlayer(player)
 	local hero = match and match.heroes[heroUid]
@@ -1869,7 +1979,8 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	if not IsFree(match, hexId) then return end
 
 	-- FindPath já garante alcance e caminho livre: substitui o ComputeReach
-	local path = HexGrid.FindPath(hero.position, hexId, MoveRangeOf(hero), FreeChecker(match))
+	local path = HexGrid.FindPath(hero.position, hexId, MoveRangeOf(match, hero),
+		FreeChecker(match), FlameBias(match, hero))
 	if not path then return end
 
 	local wasBonusMove = match.turn.bonusMove[heroUid] == true
@@ -2146,23 +2257,46 @@ function TryTriggerPromotion(match, hero)
 	if not side or side.promotionUsed then return end
 	if GameConfig.PROMOTION_HEX_FOR_SLOT[side.index] ~= hero.position then return end
 
+	local lantern = nil
 	local options = {}
 	for _, other in pairs(match.heroes) do
 		if other.ownerId == hero.ownerId and not other.isAlive and not other.graveDestroyed then
-			table.insert(options, other.uid)
+			if lantern == nil and HasSkill(other, "lanternReturn") then
+				lantern = other
+			else
+				table.insert(options, other.uid)
+			end
 		end
 	end
 	-- chegou, mas não tem ninguém pra trazer de volta: nenhum efeito, e o uso
 	-- da casa NÃO é gasto — continua disponível se uma lápide aparecer depois
-	if #options == 0 then return end
+	if lantern == nil and #options == 0 then return end
 
 	table.sort(options)
-	match.pendingPromotion = {
+	local pending = {
 		ownerId = hero.ownerId,
 		promotionHex = hero.position,
 		options = options,
 	}
-	Broadcast(match)
+
+	local message = nil
+	if lantern then
+		local revived = PerformResurrection(match, pending, lantern)
+		if revived then
+			side.promotionUsed = true
+			message = ("A lanterna de %s reacendeu sozinha!"):format(revived.name)
+			LogEvent(match, "skill", hero.sideIndex,
+				("%s voltou pela Luz que Volta"):format(revived.name))
+		end
+	end
+
+	if #options == 0 then
+		Broadcast(match, message)
+		return
+	end
+
+	match.pendingPromotion = pending
+	Broadcast(match, message)
 end
 
 -- player == nil é o bot resolvendo a própria escolha pendente (ver
@@ -2542,6 +2676,11 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		sideIndexById = sideIndexById,
 		vsBot = playerTwo == nil,
 
+		-- Revanche PvP: quem já pediu, e se a oferta ainda vale (o primeiro que
+		-- volta pro lobby fecha a porta pro outro).
+		rematch = {},
+		rematchOpen = true,
+
 		-- Confronto da campanha (ver Campaign). Segura o desbloqueio no fim da
 		-- partida e sobrevive à revanche, pra quem perdeu poder tentar de novo
 		-- contra o MESMO time.
@@ -2629,10 +2768,19 @@ function EndMatch(match)
 	matchBySlot[match.slot] = nil
 end
 
-function MatchManager.Replay(player)
-	local match = MatchOfPlayer(player)
-	if not match or match.phase ~= "finished" then return end
+-- O primeiro confronto ainda aberto da escada. É pra onde o "Próximo herói"
+-- leva quem acabou de vencer: o Campaign já sabe dizer o que está concluído e o
+-- que o grupo anterior liberou, então não existe segunda lista de progresso.
+local function NextOpenFight(player)
+	local owned = HeroUnlockService.GetPlayableIds(player)
 
+	for _, fight in ipairs(Campaign.FIGHTS) do
+		if Campaign.StateOf(owned, fight) == "open" then return fight end
+	end
+	return nil
+end
+
+local function RestartMatch(match, fight)
 	local playerOne = match.sides[1].player
 	local playerTwo = match.sides[2].player
 	local slot = match.slot
@@ -2650,9 +2798,42 @@ function MatchManager.Replay(player)
 	matches[match.id] = nil
 	matchBySlot[slot] = nil
 
-	-- a revanche de um confronto da campanha é contra o MESMO time do bot: quem
-	-- perdeu tenta de novo o mesmo cenário, e vencer ainda paga o herói
-	MatchManager.StartMatch(playerOne, playerTwo, slot, match.fight, { theme = match.theme })
+	MatchManager.StartMatch(playerOne, playerTwo, slot, fight, { theme = match.theme })
+end
+
+-- Contra bot é decisão de um só: não tem ninguém do outro lado pra concordar.
+-- No PvP a revanche precisa dos DOIS, e o pedido de quem clicou primeiro fica
+-- guardado no `match` até o outro responder ou sair.
+function MatchManager.Replay(player)
+	local match = MatchOfPlayer(player)
+	if not match or match.phase ~= "finished" then return end
+
+	if not match.vsBot then
+		local side = SideOfPlayer(match, player)
+		if not side or not match.rematchOpen then return end
+
+		match.rematch[side.id] = true
+
+		for _, other in ipairs(match.sides) do
+			if other.player and not match.rematch[other.id] then
+				Broadcast(match)
+				return
+			end
+		end
+
+		RestartMatch(match, match.fight)
+		return
+	end
+
+	-- Venceu o confronto da campanha: o botão vira "Próximo herói" e leva pro
+	-- próximo da escada. Perdeu, repete o MESMO cenário — que é o que a revanche
+	-- sempre fez, e o que quem perdeu quer.
+	local fight = match.fight
+	if fight and match.winner == tostring(player.UserId) then
+		fight = NextOpenFight(player) or fight
+	end
+
+	RestartMatch(match, fight)
 end
 
 -- Abandono: quem sai não leva XP; quem ficou recebe como vitória. Só vale pra
@@ -2668,11 +2849,32 @@ local function AwardAbandon(match, leavingSide)
 	AwardXp(match, stayingSide, "win", survivors)
 end
 
+-- Sair da TELA DE RESULTADO de um PvP não arrasta o adversário junto: ele pode
+-- continuar ali olhando o placar. O que a saída faz é fechar a porta da
+-- revanche, e o botão do outro vira "Voltar para a fila".
+--
+-- No meio da partida continua valendo o de sempre: abandonar entrega a vitória
+-- pro outro e encerra tudo.
 function MatchManager.LeaveMatch(player)
 	local match = MatchOfPlayer(player)
 	if not match then return end
 
 	local side = SideOfPlayer(match, player)
+
+	if match.phase == "finished" and side and not match.vsBot then
+		match.rematchOpen = false
+		side.player = nil
+
+		MatchUpdate:FireClient(player, { phase = "lobby" })
+
+		for _, other in ipairs(match.sides) do
+			if other.player then
+				Broadcast(match)
+				return
+			end
+		end
+	end
+
 	if side then AwardAbandon(match, side) end
 
 	EndMatch(match)

@@ -85,69 +85,30 @@ function GameConfig.IsNegativeEffect(effectType)
 	return GameConfig.NEGATIVE_EFFECTS[effectType] == true
 end
 
--- ===== FOGO (Karo) =====
--- O fogo do Caminho de Chamas é o primeiro efeito do jogo preso a uma CASA, e
--- não a um herói: ele continua queimando depois que o Karo saiu de cima. Por
--- isso não mora em hero.statusEffects como o veneno e o gelo.
---
--- Duração 2 é o que faz o rastro valer alguma coisa. O Karo anda 2 casas por
--- turno (BASE_MOVE_RANGE, ele não tem Sprint), então acende no máximo 2 casas
--- por vez; com duração 1 a primeira já teria apagado quando o inimigo chegasse
--- na segunda, e o "caminho" nunca seria um caminho.
 GameConfig.FLAME_DURATION = 2
 GameConfig.FLAME_DAMAGE = 2
-
--- Furor das Chamas: pisar numa casa que JÁ estava em chamas (do próprio Karo,
--- de um passo anterior) dá +2 de ATAQUE por casa. É EMPRÉSTIMO, não ficha
--- nova — mesmo padrão do bônus do barril (attackBonus num status effect,
--- devolvido sozinho pelo ProcessStatusEffects): dura 1 turno de uso e depois
--- volta pro normal, não empilha partida afora.
 GameConfig.FLAME_FURY_ATTACK = 2
 GameConfig.FLAME_FURY_DURATION = 1
-
--- Teto do ATAQUE do Karo com o empréstimo somado. Base 2 + no máximo +4 de
--- Furor: dois passos em fogo aceso enchem o teto, um terceiro não soma mais
--- nada. Sem isso, um caminho comprido cruzando várias chamas antigas vira
--- dano absurdo numa figura de ATK 2.
---
--- O TETO SOBE JUNTO COM O BÔNUS, e precisa mesmo. Com teto 4 e ficha 2 a folga
--- era de +2: dobrar o bônus por casa só faria ele encostar no máximo com UMA
--- casa em vez de duas, sem mexer no pico — buff que não se sente. Este é o
--- número a mexer primeiro se o Karo ficar forte demais; o bônus por casa é o
--- segundo.
 GameConfig.FLAME_FURY_MAX_ATTACK = 6
-
--- ===== LUCY (irmã do Karo) =====
--- Mesma casa em chamas do Karo (match.flames é por LADO, não por herói — ver
--- comentário acima), payoff oposto: ele ganha ataque, ela vida. Sem teto/
--- acúmulo como o Furor: ataque é status que pode empilhar turno a turno, cura é
--- HP instantâneo — não tem "empréstimo" pra desfazer depois.
-GameConfig.LUCY_FLAME_HEAL = 2 -- vida recuperada por casa em chamas atravessada
+GameConfig.LUCY_FLAME_HEAL = 2
 
 -- ===== ZEFF (vento) =====
 -- Dano de quem a Rajada tenta empurrar mas não tem pra onde ir (casa ocupada
 -- ou fora do tabuleiro) — mesmo raciocínio do RAGE_BLOCKED_BONUS do Bramm
 -- logo abaixo: o empurrão vira dano quando não pode virar reposicionamento.
 GameConfig.GUST_BLOCKED_DAMAGE = 1
-GameConfig.ZEFF_PUSH_BLOCKED_BONUS = 2
+GameConfig.ZEFF_PUSH_BLOCKED_BONUS = 1
 GameConfig.WIND_BOOST_MOVE_BONUS = 1
 
 -- ===== WREN (nome de trabalho — a atiradora, ver docs/HeroisFuturos.md) =====
--- Alcance e teto de dano são o MESMO número de propósito: o dano dela é a
--- própria distância até o alvo (1 a 5, nunca fora disso), então o range da
--- ficha já limita o dano sozinho — sem isso teria que manter dois números
--- amarrados à mão e um ajuste de balanceamento esqueceria o outro.
 GameConfig.WREN_RANGE = 5
 
+GameConfig.ESTOPIM_DAMAGE = 6
+
+GameConfig.MORN_SUMMON_IDS = { 21, 22 }
+GameConfig.MORN_SUMMON_COOLDOWN = 0
+
 -- ===== FÚRIA (Bramm) =====
--- Dano extra quando o empurrão NÃO acontece (a casa atrás do alvo está ocupada
--- ou é fora do tabuleiro). É a compensação por perder o reposicionamento, que é
--- o que a habilidade faz de melhor.
---
--- Vive aqui e não solto no Skills porque o número aparece em TRÊS lugares: o
--- golpe, a estimativa da IA (BotBrain.EstimateDamage — sem ela o bot subestima
--- o próprio Bramm) e o texto da ficha. Escrito à mão nos três, um ajuste de
--- balanceamento esquece um e a ficha passa a mentir.
 GameConfig.RAGE_BLOCKED_BONUS = 2
 
 -- ===== FURTIVIDADE (Shadow) =====
@@ -155,7 +116,7 @@ GameConfig.RAGE_BLOCKED_BONUS = 2
 -- some. Igual ao alcance de ataque dele (1, corpo a corpo): só quem está
 -- literalmente colado enxerga o vulto — de 2 casas pra longe ele já sumiu.
 GameConfig.STEALTH_RANGE = 1
-GameConfig.STEALTH_HEAL = 1 -- cura por turno enquanto invisível
+GameConfig.STEALTH_HEAL = 1
 
 -- Só o movimento do INIMIGO tira o Shadow da sombra. O movimento dele próprio
 -- não conta contra si mesmo, senão a Emboscada nunca aconteceria: ele precisa
@@ -309,6 +270,8 @@ GameConfig.PLAYER_STAND_SCALE = 2.2 -- tamanho dos personagens nas posições de
 -- Medium, e não Regular: sobre painel escuro o traço fino da Regular some.
 GameConfig.UI_FONT_BODY = Enum.Font.BuilderSansMedium
 
+GameConfig.MASTER_VOLUME = 0.55
+
 -- ===== COR DAS CASAS =====
 -- O xadrez do tabuleiro. Moram aqui, e não no BoardSpawner, porque os DOIS
 -- clientes também precisam deles: quando um destaque sai (fim do arraste, fim
@@ -359,6 +322,29 @@ GameConfig.ARENA_SPACING = 200
 -- Arena parada custa pouco (é cenário clonado, sem script), então o teto real
 -- é memória e replicação, não CPU.
 GameConfig.MAX_SIMULTANEOUS_MATCHES = 8
+
+-- ===== CÂMERA DA PARTIDA =====
+-- Moram aqui, e não no CameraController, porque duas coisas precisam do MESMO
+-- enquadramento: a câmera que o jogador vê e o foco que o BoardSpawner dá no
+-- Studio ao abrir uma ArenaMaster pra decorar.
+GameConfig.CAMERA_FOV = 38
+GameConfig.CAMERA_ELEVATION = 44
+GameConfig.CAMERA_AZIMUTH = 91
+GameConfig.CAMERA_DISTANCE = 75
+
+function GameConfig.MatchCameraCFrame(center, distance)
+	distance = distance or GameConfig.CAMERA_DISTANCE
+
+	local az = math.rad(GameConfig.CAMERA_AZIMUTH)
+	local el = math.rad(GameConfig.CAMERA_ELEVATION)
+	local horizontal = distance * math.cos(el)
+
+	return CFrame.new(center + Vector3.new(
+		math.sin(az) * horizontal,
+		distance * math.sin(el),
+		math.cos(az) * horizontal
+	), center)
+end
 
 function GameConfig.ArenaOrigin(slot)
 	return GameConfig.ARENA_ORIGIN + Vector3.new((slot - 1) * GameConfig.ARENA_SPACING, 0, 0)

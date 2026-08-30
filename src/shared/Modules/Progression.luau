@@ -47,7 +47,7 @@ Progression.MAX_LEVEL = 100
 -- Moeda NÃO compra mais herói. O elenco inteiro sai da escada de confrontos
 -- contra bot (ReplicatedStorage.Modules.Campaign), e o HERO_COST que morava
 -- aqui saiu junto com a vitrine de compra. Saldo e nível continuam de pé pro
--- apoio (Monetization) e pro que vier depois.
+-- moedas (Monetization) e pro que vier depois.
 Progression.WIN_COINS = 50
 Progression.LEVEL_UP_COINS = 500
 

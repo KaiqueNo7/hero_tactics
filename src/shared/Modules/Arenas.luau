@@ -5,6 +5,14 @@ local Arenas = {}
 local SMOKE = "rbxasset://textures/particles/smoke_main.dds"
 local SPARK = "rbxasset://textures/particles/sparkles_main.dds"
 
+-- Objeto quebrável de reserva, usado por qualquer tema sem `asset` próprio e
+-- por aquele cujo asset não carregar. Sem `asset` aqui, cada tema cai no `part`
+-- dele como antes.
+Arenas.DEFAULT_OBJECT = {
+	asset = 8605652118,
+	height = 5.6,
+}
+
 Arenas.THEMES = {
 	{
 		id = "clareira",
@@ -46,6 +54,8 @@ Arenas.THEMES = {
 			label = "Toco",
 			hitSound = "WoodHit",
 			breakSound = "WoodBreak",
+			asset = 5602834724,
+			height = 4.4,
 			part = {
 				size = Vector3.new(4.6, 4.4, 4.6),
 				color = Color3.fromRGB(112, 78, 48),
@@ -99,9 +109,17 @@ Arenas.THEMES = {
 			{ class = "PointLight", color = Color3.fromRGB(120, 220, 170), brightness = 1.1, range = 38, height = 8, offset = Vector3.new(-26, 0, -20) },
 		},
 		object = {
-			label = "Tronco Podre",
-			hitSound = "WoodHit",
-			breakSound = "WoodBreak",
+			label = "Cristal Espectral",
+			hitSound = "IceHit",
+			breakSound = "IceBreak",
+			asset = 8605652118,
+			height = 5.6,
+			skin = {
+				color = Color3.fromRGB(154, 140, 190),
+				material = Enum.Material.Glass,
+				transparency = 0.22,
+				reflectance = 0.14,
+			},
 			part = {
 				size = Vector3.new(4.8, 4.6, 4.8),
 				color = Color3.fromRGB(64, 54, 58),
@@ -187,13 +205,13 @@ Arenas.THEMES = {
 		master = nil,
 		music = "MusicForja",
 		tiles = { a = Color3.fromRGB(132, 100, 84), b = Color3.fromRGB(92, 70, 58) },
-		clockTime = 18.3,
-		contrast = 0.14,
+		clockTime = 17.4,
+		contrast = 0.10,
 		saturation = 0.12,
-		exposure = 0.06,
-		ambient = Color3.fromRGB(76, 52, 42),
-		outdoorAmbient = Color3.fromRGB(150, 110, 86),
-		brightness = 2.4,
+		exposure = 0.16,
+		ambient = Color3.fromRGB(108, 78, 64),
+		outdoorAmbient = Color3.fromRGB(184, 140, 108),
+		brightness = 3.0,
 		ground = { color = Color3.fromRGB(68, 56, 54), material = Enum.Material.Basalt },
 		trim = { color = Color3.fromRGB(44, 36, 35), material = Enum.Material.Slate },
 		backdrop = {
@@ -219,12 +237,20 @@ Arenas.THEMES = {
 			drift = Vector3.new(1.5, 7, 0),
 		},
 		lights = {
-			{ class = "PointLight", color = Color3.fromRGB(255, 158, 84), brightness = 1.5, range = 84, height = 26 },
+			{ class = "PointLight", color = Color3.fromRGB(255, 170, 100), brightness = 2.6, range = 104, height = 26 },
 		},
 		object = {
-			label = "Rocha de Brasa",
+			label = "Cristal de Magma",
 			hitSound = "StoneHit",
 			breakSound = "StoneBreak",
+			asset = 8605652118,
+			height = 5.6,
+			skin = {
+				color = Color3.fromRGB(255, 104, 40),
+				material = Enum.Material.CrackedLava,
+				transparency = 0,
+				reflectance = 0.05,
+			},
 			part = {
 				size = Vector3.new(4.8, 4.6, 4.8),
 				color = Color3.fromRGB(58, 44, 42),
@@ -273,9 +299,11 @@ Arenas.THEMES = {
 			{ class = "PointLight", color = Color3.fromRGB(255, 226, 186), brightness = 1.2, range = 80, height = 28 },
 		},
 		object = {
-			label = "Urna",
-			hitSound = "ClayHit",
-			breakSound = "ClayBreak",
+			label = "Árvore Seca",
+			hitSound = "WoodHit",
+			breakSound = "WoodBreak",
+			asset = 7056965539,
+			height = 7,
 			part = {
 				size = Vector3.new(4.4, 5, 4.4),
 				color = Color3.fromRGB(198, 168, 138),

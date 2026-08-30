@@ -14,6 +14,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
 
+local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+
 local Sounds = ReplicatedStorage:WaitForChild("Sounds")
 local MatchSound = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MatchSound")
 
@@ -60,7 +62,7 @@ MatchSound.OnClientEvent:Connect(function(name, volumeScale)
 	if not template or not template:IsA("Sound") then return end
 
 	local sound = acquire(template)
-	sound.Volume = template.Volume * (tonumber(volumeScale) or 1)
+	sound.Volume = template.Volume * GameConfig.MASTER_VOLUME * (tonumber(volumeScale) or 1)
 	sound.TimePosition = 0
 	sound:Play()
 end)
@@ -86,6 +88,8 @@ local MUSIC_FADE = TweenInfo.new(1.2)
 -- silêncio de propósito — é só criar o Sound com o nome que o tema pede (ver
 -- Arenas) que ele passa a valer sozinho, sem mexer em código.
 local SELECT_MUSIC = "BattleDefault"
+
+local MUSIC_ENABLED = false
 
 local playingName, playingTrack = nil, nil
 local warnedSelect = false
@@ -130,7 +134,7 @@ local function playArenaMusic(template)
 	track.Parent = SoundService
 	track:Play()
 
-	TweenService:Create(track, MUSIC_FADE, { Volume = template.Volume }):Play()
+	TweenService:Create(track, MUSIC_FADE, { Volume = template.Volume * GameConfig.MASTER_VOLUME }):Play()
 	playingTrack = track
 	playingName = template.Name
 end
@@ -139,6 +143,8 @@ end
 -- trilhas são diferentes, então a troca acontece sozinha no cruzamento — e um
 -- snapshot a mais da mesma fase não reinicia a música do zero.
 MatchUpdate.OnClientEvent:Connect(function(state)
+	if not MUSIC_ENABLED then return end
+
 	local template = state.phase ~= "lobby" and musicTemplate(state) or nil
 
 	if (template and template.Name or nil) == playingName then return end

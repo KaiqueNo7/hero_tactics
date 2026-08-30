@@ -2,7 +2,7 @@
 	LobbyMenu.client.lua
 	LocalScript — StarterPlayer/StarterPlayerScripts
 
-	Os painéis do lobby: mural de regras, campanha, elenco e apoio.
+	Os painéis do lobby: mural de regras, campanha e elenco.
 
 	A CAMPANHA é a progressão inteira do jogo: um quadrado por confronto contra
 	bot, e vencer entrega o herói daquele quadrado. Ela é GUI e não pad físico
@@ -24,7 +24,6 @@
 ]]
 
 local CollectionService = game:GetService("CollectionService")
-local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -268,23 +267,9 @@ local function refreshAllHeroRows()
 	end
 end
 
--- A linha "Seu saldo" do painel de apoio. Ela é construída junto com o painel,
--- e a compra acontece justamente com o painel ABERTO — sem esta referência o
--- saldo de lá continuava marcando o valor de antes da compra.
-local tipBalanceLabel = nil
-
-local function balanceText()
-	return ("Seu saldo: %s %s")
-		:format(Monetization.FormatCoins(myCoins), Monetization.COIN_NAME:lower())
-end
-
 local function renderWallet(payload)
 	myCoins = payload.coins or 0
 	coinLabel.Text = Monetization.FormatCoins(myCoins)
-
-	if tipBalanceLabel and tipBalanceLabel.Parent then
-		tipBalanceLabel.Text = balanceText()
-	end
 
 	-- o preço não muda, mas o "Faltam X" e a cor do botão dependem do saldo
 	refreshAllHeroRows()
@@ -567,7 +552,6 @@ end
 buildTab("REGRAS", "rules", 1)
 buildTab("CAMPANHA", "campaign", 2)
 buildTab("HERÓIS", "store", 3)
-buildTab("APOIAR", "tips", 4, GOLD)
 
 local body = Instance.new("ScrollingFrame")
 body.Name = "Body"
@@ -605,17 +589,21 @@ closeButton.MouseButton1Click:Connect(closeModal)
 backdrop.MouseButton1Click:Connect(closeModal)
 
 -- ===================== DESBLOQUEIO DE HERÓI (REVEAL) =====================
--- O RosterUpdate já manda `unlocked` (ver HeroUnlockService.Push) sempre que um
--- confronto da campanha paga um herói novo — mas isso acontece em PLENA
--- partida, às vezes antes mesmo do fim de jogo aparecer na tela. A tela de
--- comemoração só pode aparecer quando o MatchUpdate confirmar phase == "lobby",
--- senão ela cobre a batalha ou o placar de fim de partida. Por isso a fila:
--- guarda os ids que chegaram e só desenrola quando o jogador está mesmo aqui.
+-- A comemoração NUNCA sai do RosterUpdate, que chega em plena partida: quem
+-- guarda o que ainda não foi mostrado é o RewardQueueService, no servidor. O
+-- cliente pede a fila ao chegar no lobby e desenrola um card por vez, herói
+-- primeiro e o resumo de XP/moedas no fim. É o que faz a comemoração
+-- sobreviver a uma sequência de campanha inteira — e a fechar o jogo.
 local UNLOCK_GREEN = Color3.fromRGB(90, 235, 150)
 
 local inLobbyNow = true
 local pendingUnlockIds = {}
+local pendingXp, pendingCoins = 0, 0
 local showNextReward
+
+local function hasPendingReward()
+	return #pendingUnlockIds > 0 or pendingXp > 0 or pendingCoins > 0
+end
 
 local rewardGui = Instance.new("ScreenGui")
 rewardGui.Name = "HeroRewardGui"
@@ -651,17 +639,6 @@ rewardPanelSize.MinSize = Vector2.new(220, 280)
 rewardPanelSize.Parent = rewardPanel
 
 local rewardStroke = stroke(rewardPanel, UNLOCK_GREEN, 3, 0)
-
-local rewardGlow = Instance.new("Frame")
-rewardGlow.Name = "Glow"
-rewardGlow.AnchorPoint = Vector2.new(0.5, 0)
-rewardGlow.Position = UDim2.new(0.5, 0, 0, 34)
-rewardGlow.Size = UDim2.new(0, 150, 0, 150)
-rewardGlow.BackgroundColor3 = UNLOCK_GREEN
-rewardGlow.BackgroundTransparency = 0.55
-rewardGlow.BorderSizePixel = 0
-rewardGlow.Parent = rewardPanel
-corner(rewardGlow, 999)
 
 local rewardPortraitHolder = Instance.new("Frame")
 rewardPortraitHolder.Name = "PortraitHolder"
@@ -727,31 +704,73 @@ local rewardButtonLimit = Instance.new("UITextSizeConstraint")
 rewardButtonLimit.MaxTextSize = 16
 rewardButtonLimit.Parent = rewardButton
 
--- o brilho pulsa (mesmo truque do ícone de conexão): tamanho e transparência
--- do halo, e a espessura efetiva da borda via transparência, oscilando sem fim
-local rewardGlowTween = TweenService:Create(rewardGlow,
-	TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-	{ BackgroundTransparency = 0.15, Size = UDim2.new(0, 175, 0, 175) })
-
+-- a borda pulsa: a espessura efetiva sai da transparência, oscilando sem fim
 local rewardStrokeTween = TweenService:Create(rewardStroke,
 	TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
 	{ Transparency = 0.6 })
 
 local function closeReward()
-	rewardGlowTween:Cancel()
 	rewardStrokeTween:Cancel()
 	rewardGui.Enabled = false
 
 	-- outro herói já pode ter chegado enquanto este estava na tela (revanche
-	-- rápida, ou dois confrontos terminando perto um do outro)
-	if #pendingUnlockIds > 0 then
+	-- rápida, ou dois confrontos terminando perto um do outro), e depois dos
+	-- heróis ainda vem o resumo de XP e moedas
+	if hasPendingReward() then
 		task.defer(showNextReward)
 	end
 end
 
+local function openRewardPanel()
+	rewardGui.Enabled = true
+	rewardPanel.Size = UDim2.new(0.5, 0, 0.4, 0)
+	TweenService:Create(rewardPanel, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Size = UDim2.new(0.7, 0, 0.6, 0),
+	}):Play()
+
+	rewardStrokeTween:Play()
+end
+
+-- Fecha a sequência: depois dos heróis, UMA tela com o XP e as moedas juntados
+-- desde a última visita ao lobby. Sem herói novo, ela aparece sozinha.
+local function showProgressSummary()
+	local parts = {}
+	if pendingXp > 0 then
+		table.insert(parts, ("+%d XP"):format(pendingXp))
+	end
+	if pendingCoins > 0 then
+		table.insert(parts, ("+%s %s"):format(Monetization.FormatCoins(pendingCoins),
+			Monetization.COIN_NAME:lower()))
+	end
+	pendingXp, pendingCoins = 0, 0
+
+	for _, child in ipairs(rewardPortraitHolder:GetChildren()) do
+		child:Destroy()
+	end
+
+	rewardPortraitHolder.Visible = false
+
+	rewardTitle.Position = UDim2.new(0.5, 0, 0, 74)
+	rewardTitle.TextStrokeTransparency = 1
+	rewardTitle.Font = Enum.Font.GothamBold
+	rewardTitle.Text = "SEU PROGRESSO"
+
+	rewardName.Position = UDim2.new(0.5, 0, 0, 112)
+	rewardName.Size = UDim2.new(1, -32, 0, 44)
+	rewardName.Font = GameConfig.UI_FONT_BODY
+	rewardName.TextColor3 = UNLOCK_GREEN
+	rewardName.Text = table.concat(parts, "\n")
+
+	openRewardPanel()
+end
+
 function showNextReward()
 	local dataId = table.remove(pendingUnlockIds, 1)
-	if not dataId then return end
+
+	if not dataId then
+		if pendingXp > 0 or pendingCoins > 0 then showProgressSummary() end
+		return
+	end
 
 	local data = HeroData.GetById(dataId)
 	if not data then return end
@@ -763,32 +782,26 @@ function showNextReward()
 	portrait.Size = UDim2.fromScale(1, 1)
 	portrait.ZIndex = 3
 
+	rewardPortraitHolder.Visible = true
+
+	rewardTitle.Position = UDim2.new(0.5, 0, 0, 196)
+	rewardTitle.TextStrokeTransparency = 0.5
+	rewardTitle.Font = Enum.Font.GothamBlack
+	rewardTitle.Text = "HERÓI DESBLOQUEADO!"
+
+	rewardName.Position = UDim2.new(0.5, 0, 0, 228)
+	rewardName.Size = UDim2.new(1, -20, 0, 30)
+	rewardName.Font = Enum.Font.GothamBold
+	rewardName.TextColor3 = TEXT_MAIN
 	rewardName.Text = data.name
 
-	rewardGui.Enabled = true
-	rewardPanel.Size = UDim2.new(0.5, 0, 0.4, 0)
-	TweenService:Create(rewardPanel, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-		Size = UDim2.new(0.7, 0, 0.6, 0),
-	}):Play()
-
-	rewardGlowTween:Play()
-	rewardStrokeTween:Play()
+	openRewardPanel()
 end
 
 rewardButton.MouseButton1Click:Connect(closeReward)
 rewardBackdrop.MouseButton1Click:Connect(closeReward)
 
-RosterUpdate.OnClientEvent:Connect(function(payload)
-	if not payload.unlocked then return end
-
-	table.insert(pendingUnlockIds, payload.unlocked)
-	if inLobbyNow and not rewardGui.Enabled then
-		showNextReward()
-	end
-end)
-
 local function clearBody()
-	tipBalanceLabel = nil
 	for _, child in ipairs(body:GetChildren()) do
 		if not child:IsA("UILayout") and not child:IsA("UIPadding") then
 			child:Destroy()
@@ -1107,118 +1120,11 @@ local function buildStore()
 	paragraph(soon, Monetization.FUTURE_CONTENT_NOTICE, TEXT_SOFT, 13, 2)
 end
 
--- ===================== CONTEÚDO: APOIO =====================
-local function buildTipButton(tip, order)
-	local configured = Monetization.IsConfigured(tip)
-
-	local card = Instance.new("TextButton")
-	card.Name = tip.key
-	card.Size = UDim2.new(1, 0, 0, 0)
-	card.AutomaticSize = Enum.AutomaticSize.Y
-	card.BackgroundColor3 = configured and CARD_BG or Color3.fromRGB(30, 30, 34)
-	card.BorderSizePixel = 0
-	card.Text = ""
-	card.AutoButtonColor = configured
-	card.LayoutOrder = order
-	card.Parent = body
-	corner(card, 10)
-	padding(card, 10)
-	stroke(card, configured and ACCENT or Color3.fromRGB(70, 70, 76), 1, 0.4)
-
-	local layout = Instance.new("UIListLayout")
-	layout.Padding = UDim.new(0, 3)
-	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Parent = card
-
-	local titleLine = paragraph(card, tip.title, configured and TEXT_MAIN or Color3.fromRGB(150, 150, 158), 16, 1)
-	titleLine.Font = Enum.Font.GothamBlack
-
-	local reward = ("%s moedas   •   R$ %d"):format(Monetization.FormatCoins(tip.coins), tip.robux)
-	if tip.bonus then
-		reward = reward .. ("   •   %s"):format(tip.bonus)
-	end
-	paragraph(card, reward, configured and GOLD or Color3.fromRGB(130, 126, 110), 14, 2).Font = Enum.Font.GothamBold
-
-	paragraph(card, tip.blurb, TEXT_SOFT, 13, 3)
-
-	if not configured then
-		-- Sem id de produto o PromptProductPurchase erra e o jogador leva um
-		-- diálogo de falha sem entender — por isso o botão nasce desabilitado.
-		--
-		-- O QUE O JOGADOR LÊ é só "Em breve". A pendência é do desenvolvedor, e
-		-- despejar "falta cadastrar o id do Developer Product em
-		-- ReplicatedStorage.Modules.Monetization" na tela de quem está jogando
-		-- não conserta nada: expõe caminho interno do projeto e passa a
-		-- impressão de jogo quebrado. O recado técnico vai pro console.
-		paragraph(card, "Em breve.", Color3.fromRGB(150, 156, 170), 12, 4)
-		warn(("LobbyMenu: apoio '%s' sem Developer Product cadastrado — " ..
-			"preencha productId em ReplicatedStorage.Modules.Monetization."):format(tip.key))
-		return
-	end
-
-	card.MouseButton1Click:Connect(function()
-		local ok, err = pcall(function()
-			MarketplaceService:PromptProductPurchase(player, tip.productId)
-		end)
-		if not ok then
-			warn("LobbyMenu: não deu pra abrir a compra: " .. tostring(err))
-		end
-	end)
-end
-
-local function buildTips()
-	local intro = paragraph(body, Monetization.THANK_YOU, TEXT_MAIN, 14, 0)
-	intro.Font = Enum.Font.GothamBold
-
-	local balance = Instance.new("Frame")
-	balance.Size = UDim2.new(1, 0, 0, 34)
-	balance.BackgroundColor3 = Color3.fromRGB(30, 26, 18)
-	balance.BorderSizePixel = 0
-	balance.LayoutOrder = 1
-	balance.Parent = body
-	corner(balance, 8)
-
-	local balanceLabel = Instance.new("TextLabel")
-	balanceLabel.Size = UDim2.new(1, -20, 1, 0)
-	balanceLabel.Position = UDim2.new(0, 10, 0, 0)
-	balanceLabel.BackgroundTransparency = 1
-	balanceLabel.Text = balanceText()
-	balanceLabel.TextColor3 = GOLD
-	balanceLabel.TextXAlignment = Enum.TextXAlignment.Left
-	balanceLabel.TextSize = 15
-	balanceLabel.Font = Enum.Font.GothamBlack
-	balanceLabel.Parent = balance
-	tipBalanceLabel = balanceLabel
-
-	for index, tip in ipairs(Monetization.TIPS) do
-		buildTipButton(tip, index + 1)
-	end
-
-	local notice = Instance.new("Frame")
-	notice.Size = UDim2.new(1, 0, 0, 0)
-	notice.AutomaticSize = Enum.AutomaticSize.Y
-	notice.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
-	notice.BorderSizePixel = 0
-	notice.LayoutOrder = #Monetization.TIPS + 2
-	notice.Parent = body
-	corner(notice, 10)
-	padding(notice, 10)
-
-	local noticeLayout = Instance.new("UIListLayout")
-	noticeLayout.Padding = UDim.new(0, 4)
-	noticeLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	noticeLayout.Parent = notice
-
-	heading(notice, "Para que servem as moedas", 1)
-	paragraph(notice, Monetization.FUTURE_CONTENT_NOTICE, TEXT_SOFT, 13, 2)
-end
-
 -- ===================== ABERTURA =====================
 local PANELS = {
 	rules = { title = "MURAL DE REGRAS", build = buildRules },
 	campaign = { title = "CAMPANHA", build = buildCampaign },
 	store = { title = "HERÓIS", build = buildStore },
-	tips = { title = "SEJA UM APOIADOR", build = buildTips },
 }
 
 -- Redesenha o painel ABERTO sem fechar nem reabrir o modal: é o que o
@@ -1294,7 +1200,6 @@ end
 buildMenuButton("REGRAS", "rules", 1)
 buildMenuButton("CAMPANHA", "campaign", 2, Color3.fromRGB(120, 220, 170))
 buildMenuButton("HERÓIS", "store", 3)
-buildMenuButton("APOIAR", "tips", 4, GOLD)
 
 -- ===================== VISIBILIDADE =====================
 -- Mesma regra do crachá de nível: fora do lobby isso tudo sai da frente.
@@ -1305,8 +1210,38 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 		closeModal()
 	end
 
+	local justArrived = inLobby and not inLobbyNow
 	inLobbyNow = inLobby
-	if inLobby and #pendingUnlockIds > 0 and not rewardGui.Enabled then
+
+	-- Chegou no lobby: pede o que ficou guardado desde a última vez que ele viu
+	-- a comemoração. Cobre a sequência de campanha (várias partidas sem passar
+	-- por aqui) e quem fechou o jogo e voltou depois.
+	if justArrived then
+		GameAction:FireServer("claimRewards")
+	end
+
+	if inLobby and not rewardGui.Enabled then
 		showNextReward()
 	end
+end)
+
+GameAction.OnClientEvent:Connect(function(action, payload)
+	if action ~= "rewards" or type(payload) ~= "table" then return end
+
+	for _, dataId in ipairs(payload.heroes or {}) do
+		table.insert(pendingUnlockIds, dataId)
+	end
+
+	pendingXp += payload.xp or 0
+	pendingCoins += payload.coins or 0
+
+	if inLobbyNow and not rewardGui.Enabled then
+		showNextReward()
+	end
+end)
+
+-- O jogador pode entrar direto no lobby (login, ou volta depois de fechar o
+-- jogo) sem nenhum MatchUpdate de transição — aí o pedido acima nunca sairia.
+task.defer(function()
+	GameAction:FireServer("claimRewards")
 end)

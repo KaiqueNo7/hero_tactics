@@ -78,42 +78,42 @@ function HeroData.GetPoisonStageIndex(durationRemaining)
 end
 
 HeroData.CATALOG = {
-	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true, sprite = "136396565767790", spriteSize = Vector2.new(301, 441) },
-	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 21, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90), sprite = "122742882947541", spriteSize = Vector2.new(855, 1024) },
-	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), sprite = "139532054857999", spriteSize = Vector2.new(385, 439) },
-	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165), sprite = "100992479929680", spriteSize = Vector2.new(400, 429) },
-	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true, sprite = "76020534312617", spriteSize = Vector2.new(407, 426) },
-	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true, sprite = "125070102363421", spriteSize = Vector2.new(438, 454) },
+	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true, sprite = "136396565767790", spriteSize = Vector2.new(301, 441), scale = 0.84 },
+	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 21, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90), sprite = "122742882947541", spriteSize = Vector2.new(855, 1024), scale = 0.98 },
+	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), sprite = "139532054857999", spriteSize = Vector2.new(385, 439), scale = 1.03 },
+	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165), sprite = "100992479929680", spriteSize = Vector2.new(400, 429), scale = 1.09 },
+	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true, sprite = "76020534312617", spriteSize = Vector2.new(407, 426), scale = 1.12 },
+	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true, sprite = "125070102363421", spriteSize = Vector2.new(438, 454), scale = 1.26 },
 	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110), sprite = "126479088125110", spriteSize = Vector2.new(256, 307), scale = 0.85 },
-	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "98874918804932", spriteSize = Vector2.new(254, 323), scale = 0.85 },
-	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "97869309543381", spriteSize = Vector2.new(358, 319), scale = 1.25 },
+	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "98874918804932", spriteSize = Vector2.new(254, 323), scale = 0.92 },
+	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "97869309543381", spriteSize = Vector2.new(358, 319), scale = 1.47 },
 
 	{ id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged", attackRange = 3,
 		abilities = { "iceEffect", "iceStorm" },
 		color = Color3.fromRGB(150, 210, 240),
-		sprite = "127914513925837", spriteSize = Vector2.new(299, 358)
+		sprite = "127914513925837", spriteSize = Vector2.new(299, 358), scale = 0.98
 	},
 
 	{ id = 11, name = "Merlin", attack = 2, hp = 22, ability = nil,
 		abilities = { "bloodScent", "frenzy" },
 		color = Color3.fromRGB(150, 70, 60),
-		sprite = "85377589727040", spriteSize = Vector2.new(259, 348) 
+		sprite = "85377589727040", spriteSize = Vector2.new(259, 348), scale = 0.87 
 	},
 
 	{ id = 12, name = "Karo", attack = 2, hp = 19, ability = nil,
 		abilities = { "flamePath", "flameStrike", "flameFury" },
 		color = Color3.fromRGB(255, 140, 70),
-		sprite = "73283114537576", spriteSize = Vector2.new(304, 354) },
+		sprite = "73283114537576", spriteSize = Vector2.new(304, 354), scale = 1.01 },
 
 	{ id = 13, name = "Nash", attack = 2, hp = 14, ability = "Sprint",
 		abilities = { "stealth", "stealthHeal", "ambush", "huntInstinct" },
 		color = Color3.fromRGB(80, 90, 120),
-		sprite = "95643253305726", spriteSize = Vector2.new(312, 306) },
+		sprite = "95643253305726", spriteSize = Vector2.new(312, 306), scale = 1.04 },
 
 	{ id = 14, name = "Golem", attack = 1, hp = 40, ability = "Taunt",
 		abilities = { "shatter" },
 		color = Color3.fromRGB(140, 140, 140),
-		sprite = "95596148134035", spriteSize = Vector2.new(447, 361), scale = 1.4 },
+		sprite = "95596148134035", spriteSize = Vector2.new(447, 361), scale = 1.62 },
 
 	-- Lucy — irmã do Karo. `flamePath` é literalmente a MESMA skill dele, não uma
 	-- cópia: o rastro de fogo já é por lado (match.flames[hexId].ownerId), não por
@@ -124,7 +124,7 @@ HeroData.CATALOG = {
 	{ id = 17, name = "Lucy", attack = 1, hp = 22, ability = nil,
 		abilities = { "flamePath", "flameHeal", "emberShield" },
 		color = Color3.fromRGB(240, 150, 120),
-		sprite = "108465334355138", spriteSize = Vector2.new(312, 416) },
+		sprite = "108465334355138", spriteSize = Vector2.new(312, 416), scale = 0.88 },
 
 	-- Zeff — controle de posicionamento, não dano. Empurra os aliados do ALVO
 	-- pra longe dele (não os do próprio Zeff) e o alvo pra longe do Zeff,
@@ -147,7 +147,7 @@ HeroData.CATALOG = {
 		attackRange = GameConfig.RANGED_ATTACK_RANGE,
 		abilities = { "gustPush", "tailwind" },
 		color = Color3.fromRGB(150, 230, 220),
-		sprite = "120553491509947", spriteSize = Vector2.new(412, 405), scale = 1.15 },
+		sprite = "86076939045382", spriteSize = Vector2.new(412, 405), scale = 1.19 },
 
 	-- Wren — atiradora. `ability = "Ranged"` com `attackRange` próprio é o
 	-- mesmo arranjo que o Kor usava quando atirava mais longe que os outros
@@ -162,7 +162,17 @@ HeroData.CATALOG = {
 		attackRange = GameConfig.WREN_RANGE,
 		abilities = { "longShot" },
 		color = Color3.fromRGB(100, 210, 180),
-		sprite = "78823127008143", spriteSize = Vector2.new(382, 412) },
+		sprite = "94273398199775", spriteSize = Vector2.new(382, 412), scale = 1.09 },
+
+	{ id = 20, name = "Morn", attack = 1, hp = 18, ability = nil,
+		abilities = { "raiseSkulls", "lanternReturn", "estopim" },
+		color = Color3.fromRGB(90, 160, 150),
+		sprite = "106777398591637", spriteSize = Vector2.new(400, 601), scale = 0.84 },
+
+	{ id = 23, name = "Doutor Maluco", attack = 1, hp = 10, ability = nil,
+		abilities = { "poisonFlask", "estopim" }, attackSound = "PoisonFlask",
+		color = Color3.fromRGB(120, 190, 110),
+		sprite = "125043635721594", spriteSize = Vector2.new(734, 866), scale = 0.99 },
 }
 
 -- ===== TAMANHO APARENTE =====
@@ -186,6 +196,14 @@ local MINI_GOLEM_SPRITE = "125545602412754"
 local MINI_GOLEM_SIZE = Vector2.new(251, 202)
 local MINI_GOLEM_SCALE = 0.6
 
+local SKULL_SPRITE = "96246085775941"
+local SKULL_SIZE = Vector2.new(418, 504)
+local SKULL_SCALE = MINI_GOLEM_SCALE
+local SKULL_ATTACK = 1
+local SKULL_HP = 1
+local SKULL_MOVE = 1
+local SKULL_DEATH_SOUND = "SkullBreak"
+
 HeroData.SUMMONS = {
 	{ id = 15, name = "Golem", attack = 2, hp = 5, ability = nil,
 		abilities = {},
@@ -196,6 +214,16 @@ HeroData.SUMMONS = {
 		abilities = {},
 		color = Color3.fromRGB(100, 100, 100),
 		sprite = MINI_GOLEM_SPRITE, spriteSize = MINI_GOLEM_SIZE, scale = MINI_GOLEM_SCALE },
+
+	{ id = 21, name = "Caveira", attack = SKULL_ATTACK, hp = SKULL_HP, ability = nil,
+		abilities = {}, moveRange = SKULL_MOVE, deathSound = SKULL_DEATH_SOUND,
+		color = Color3.fromRGB(120, 200, 120),
+		sprite = SKULL_SPRITE, spriteSize = SKULL_SIZE, scale = SKULL_SCALE },
+
+	{ id = 22, name = "Caveira", attack = SKULL_ATTACK, hp = SKULL_HP, ability = nil,
+		abilities = {}, moveRange = SKULL_MOVE, deathSound = SKULL_DEATH_SOUND,
+		color = Color3.fromRGB(105, 180, 105),
+		sprite = SKULL_SPRITE, spriteSize = SKULL_SIZE, scale = SKULL_SCALE },
 }
 
 function HeroData.IsStarter(data)
@@ -206,6 +234,8 @@ HeroData.SKILL_INFO = {
 	firstPunch    = { name = "First Punch",    desc = "O primeiro ataque do herói na partida causa +2 de dano." },
 	autoDefense   = { name = "Auto Defense",   desc = "Recebe 1 ponto a menos de dano ao sofrer contra-ataques." },
 	poisonAttack  = { name = "Poison Attack",  desc = "Envenena o inimigo por 3 turnos." },
+	poisonFlask   = { name = "Frasco de Veneno", desc = ("Golpe simples que envenena por %d turnos. Não causa dano extra em quem já está envenenado.")
+		:format(GameConfig.POISON_DURATION) },
 	goodLuck      = { name = "Good Luck",      desc = "Tem 50% de chance de ganhar +1 de ataque ao mudar o turno." },
 	beyondFront   = { name = "Beyond Front",   desc = "Ataca em linha reta na direção do ataque, atingindo inimigos enfileirados." },
 	brokenDefense = { name = "Broken Defense", desc = "Causa +1 de dano contra inimigos com Taunt." },
@@ -240,12 +270,20 @@ HeroData.SKILL_INFO = {
 	-- Zeff
 	gustPush = { name = "Rajada", desc = ("Ao atacar, empurra 1 casa para longe do alvo todo aliado do alvo que estiver colado nele, e o próprio alvo 1 casa para trás. Colado sem para onde ir leva %d de dano; alvo sem para onde ir não se move e o golpe causa +%d.")
 		:format(GameConfig.GUST_BLOCKED_DAMAGE, GameConfig.ZEFF_PUSH_BLOCKED_BONUS) },
-	tailwind = { name = "Vento a Favor", desc = ("Aliados colados em Zeff andam +%d casa no turno.")
+	tailwind = { name = "Vento a Favor", desc = ("Aliados colados em Zeff andam +%d casa. Vale enquanto estiverem ao lado dele — basta o Zeff chegar perto no meio do turno.")
 		:format(GameConfig.WIND_BOOST_MOVE_BONUS) },
 
 	-- Wren (nome de trabalho)
 	longShot = { name = "Tiro Longo", desc = ("Causa dano igual à distância até o alvo (mínimo 1, máximo %d) em vez do ataque de ficha. Quanto mais perto o alvo, mais fraco o tiro.")
 		:format(GameConfig.WREN_RANGE) },
+
+	estopim = { name = "Estopim", desc = ("Ao morrer, causa %d de dano em todos os inimigos a uma casa de distância e envenena por %d turnos quem sobreviver.")
+		:format(GameConfig.ESTOPIM_DAMAGE, GameConfig.POISON_DURATION) },
+
+	raiseSkulls = { name = "Chamado da Lanterna", desc = ("Ergue caveiras de %d de ataque e %d de vida ao lado dele, até %d em campo. No início de cada turno dele, repõe as que caíram.")
+		:format(SKULL_ATTACK, SKULL_HP, #GameConfig.MORN_SUMMON_IDS) },
+	lanternReturn = { name = "Luz que Volta", desc = ("Quando um aliado chega na Casa de Promoção, Morn levanta sozinho com %d de vida — sem gastar a escolha, que continua valendo pra outro herói.")
+		:format(GameConfig.RESURRECT_HP) },
 }
 
 HeroData.ABILITY_INFO = {
@@ -294,6 +332,8 @@ function HeroData.GetAbilityDescription(data)
 end
 
 function HeroData.GetMoveRange(data)
+	if data.moveRange then return data.moveRange end
+
 	return data.ability == GameConfig.ABILITIES.SPRINT
 		and GameConfig.SPRINT_MOVE_RANGE
 		or GameConfig.BASE_MOVE_RANGE

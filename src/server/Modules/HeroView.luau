@@ -28,6 +28,7 @@ local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local PixelIcons = require(ReplicatedStorage.Modules.PixelIcons)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local Arenas = require(ReplicatedStorage.Modules.Arenas)
 
 local Sounds = ReplicatedStorage:WaitForChild("Sounds")
 
@@ -68,6 +69,8 @@ local SPRITE_PIXEL_FLOOR_H = 18
 local SPRITE_PIXEL_FLOOR_W = 13 -- mesma proporção do quadro (165x231)
 
 local TILE_TOP_Y = 0.5
+
+local HERO_GUI_MAX_DISTANCE = 200
 local MOVE_STEP_TIME = 0.22
 local BOT_ID = "BOT"
 
@@ -276,6 +279,11 @@ local function Hidden(hero)
 end
 
 function HeroView.PlayAttackSound(hero)
+	if hero.attackSound then
+		PlaySound(hero.attackSound, hero.view)
+		return
+	end
+
 	-- Por HABILIDADE, não por nome: nome de herói pode mudar (Shadow virou
 	-- Nash no meio do projeto) e quebraria esta checagem em silêncio. Blade,
 	-- Kor e Dante continuam por nome porque são anteriores a essa lição — sem
@@ -286,6 +294,8 @@ function HeroView.PlayAttackSound(hero)
 		PlaySound("IceSwing", hero.view)
 	elseif hero.name == "Dante" then
 		PlaySound("arrowSwing", hero.view)
+	elseif table.find(hero.abilities, "raiseSkulls") then
+		PlaySound("SoulPull", hero.view)
 	elseif table.find(hero.abilities, "poisonAttack") then
 		PlaySound("PoisonHiss", hero.view)
 	elseif table.find(hero.abilities, "flameStrike") then
@@ -315,6 +325,7 @@ local SKILL_SOUNDS = {
 	aloneIsBetter = "SkillAlone",
 	brokenDefense = "SkillBrokenDefense",
 	clean = "SkillClean",
+	gustPush = "SkillGust", -- Zeff
 
 	-- Ainda sem asset próprio. O PlaySound sai calado quando o som não existe em
 	-- ReplicatedStorage.Sounds, então isto é o gancho pronto pro dia em que o
@@ -323,6 +334,8 @@ local SKILL_SOUNDS = {
 	stealth = "SkillStealth", -- Nash: entrando na sombra
 	shatter = "SkillShatter", -- Golem: partindo em dois
 	iceStorm = "SkillIceStorm", -- Kor: a nevasca da morte dele
+	estopim = "SkillEstopim",
+	raiseSkulls = "SkillRaiseSkulls",
 }
 
 function HeroView.PlaySkillSound(key, view)
@@ -353,6 +366,7 @@ local FX_SMOKE = "rbxasset://textures/particles/smoke_main.dds"
 -- ser visto de onde o jogador está olhando.
 local SKILL_EFFECTS = {
 	poisonAttack  = { color = Color3.fromRGB(120, 235, 90),  texture = FX_SMOKE, shape = "rise",  count = 18, size = 2.6, speed = 7 },
+	poisonFlask   = { color = Color3.fromRGB(150, 245, 110), texture = FX_SMOKE, shape = "burst", count = 20, size = 2.4, speed = 12 },
 	rage          = { color = Color3.fromRGB(255, 120, 45),  texture = FX_SMOKE, shape = "burst", count = 20, size = 3.2, speed = 17 },
 	brokenDefense = { color = Color3.fromRGB(255, 170, 90),  texture = FX_SPARK, shape = "burst", count = 18, size = 2.5, speed = 15 },
 	aloneIsBetter = { color = Color3.fromRGB(190, 140, 255), texture = FX_SMOKE, shape = "burst", count = 22, size = 3.0, speed = 14 },
@@ -415,12 +429,16 @@ local SKILL_EFFECTS = {
 	-- rastro de vento a cada passo: discreto de propósito, mesmo raciocínio do
 	-- bloodScent do Merlin — dispara TODO passo, não pode competir com o golpe
 	windStep      = { color = Color3.fromRGB(170, 235, 225), texture = FX_SMOKE, shape = "rise",  count = 8,  size = 1.8, speed = 5 },
+	tailwind      = { color = Color3.fromRGB(190, 250, 240), texture = FX_SPARK, shape = "rise",  count = 16, size = 2.2, speed = 9 },
 
 	-- ===== WREN =====
 	-- Estoura NO ALVO (é lá que a skill chama o Effect), não nela: o tiro dela
 	-- já tem a bolinha do ShowRangedAttack cruzando o tabuleiro, e o que falta
 	-- é a marca do impacto na outra ponta. Verde-espectral, a cor dela.
 	longShot = { color = Color3.fromRGB(120, 225, 190), texture = FX_SPARK, shape = "burst", count = 24, size = 2.6, speed = 17 },
+
+	raiseSkulls = { color = Color3.fromRGB(120, 245, 110), texture = FX_SMOKE, shape = "rise",  count = 24, size = 2.8, speed = 8 },
+	estopim     = { color = Color3.fromRGB(150, 255, 120), texture = FX_SMOKE, shape = "burst", count = 32, size = 3.2, speed = 20 },
 }
 
 -- ===== CORTE DO BLADE (IMAGEM ANIMADA) =====
@@ -751,22 +769,31 @@ local function ModelFromAsset(assetId)
 	return template or nil
 end
 
--- Modelo, malha ou peça crua, nessa ordem de preferência.
+local function AssetVisual(assetId, height, skin)
+	if not assetId then return nil end
+
+	local template = ModelFromAsset(assetId)
+	if not template then return nil end
+
+	local extents = template:GetExtentsSize()
+	local scale = height and (height / math.max(extents.Y, 0.001)) or 1
+	return { model = template, scale = scale, size = extents * scale, skin = skin }
+end
+
 local function ObjectVisual(view)
 	local spec = ObjectSpec(view)
 	if not spec then return nil end
 
-	if spec.asset then
-		local template = ModelFromAsset(spec.asset)
-		if template then
-			local extents = template:GetExtentsSize()
-			local scale = spec.height and (spec.height / math.max(extents.Y, 0.001)) or 1
-			return { model = template, scale = scale, size = extents * scale, skin = spec.skin }
-		end
-	elseif spec.mesh then
-		return { mesh = spec.mesh }
+	local visual = AssetVisual(spec.asset, spec.height, spec.skin)
+	if visual then return visual end
+
+	local fallback = Arenas.DEFAULT_OBJECT
+	if fallback then
+		visual = AssetVisual(fallback.asset, spec.height or fallback.height, spec.skin or fallback.skin)
+		if visual then return visual end
 	end
 
+	if spec.mesh then return { mesh = spec.mesh } end
 	if spec.part then return { part = spec.part } end
 	return nil
 end
@@ -837,6 +864,7 @@ local BARREL_PIP = 9
 
 local function BuildBarrelBadge(part, barrel)
 	local gui = Instance.new("BillboardGui")
+	gui.MaxDistance = HERO_GUI_MAX_DISTANCE
 	gui.Name = "BarrelInfo"
 	gui.Size = UDim2.new(0, barrel.hitsLeft * (BARREL_PIP + 3) + 7, 0, BARREL_PIP + 8)
 	gui.StudsOffset = Vector3.new(0, ObjectSize(barrel).Y * 0.72, 0)
@@ -1124,11 +1152,13 @@ end
 local FLAME_COLOR = Color3.fromRGB(255, 140, 60)
 local FLAME_CORE = Color3.fromRGB(255, 225, 150)
 
+local SideColor, AttachTo, BuildTeamRing
+
 local function FlameName(hexId)
 	return "Flame_" .. hexId
 end
 
-function HeroView.CreateFlame(view, hexId)
+function HeroView.CreateFlame(view, hexId, sideIndex)
 	if not view then return end
 
 	local existing = view.heroesFolder:FindFirstChild(FlameName(hexId))
@@ -1152,6 +1182,10 @@ function HeroView.CreateFlame(view, hexId)
 	part.CanQuery = false
 	part.CastShadow = false
 	part.Parent = view.heroesFolder
+
+	if sideIndex then
+		BuildTeamRing(part, hexId, SideColor(sideIndex), view.origin)
+	end
 
 	local attachment = Instance.new("Attachment")
 	attachment.Parent = part
@@ -1277,9 +1311,125 @@ function HeroView.FlashAttackRange(view, hexIds, coreColor, edgeColor)
 	end
 end
 
+local POISON_CORE = Color3.fromRGB(196, 255, 150)
+local POISON_EDGE = Color3.fromRGB(96, 200, 70)
+local POISON_BOMB_TIME = 0.55
+
+function HeroView.PlayPoisonBomb(view, hexId)
+	if not view then return end
+
+	local size = HexGrid.GetHexSize()
+	local center = HexGrid.GetWorldPosition(hexId, view.origin)
+
+	local hexIds = { hexId }
+	for _, hex in ipairs(HexGrid.GetNeighbors(hexId)) do
+		table.insert(hexIds, hex.id)
+	end
+	HeroView.FlashAttackRange(view, hexIds, POISON_CORE, POISON_EDGE)
+
+	local cloud = Instance.new("Part")
+	cloud.Name = "PoisonBomb"
+	cloud.Shape = Enum.PartType.Ball
+	cloud.Size = Vector3.new(size * 0.5, size * 0.5, size * 0.5)
+	cloud.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y + size * 0.4, 0))
+	cloud.Color = POISON_CORE
+	cloud.Material = Enum.Material.Neon
+	cloud.Transparency = 0.45
+	cloud.Anchored = true
+	cloud.CanCollide = false
+	cloud.CanQuery = false
+	cloud.CastShadow = false
+	cloud.Parent = view.heroesFolder
+
+	local blast = size * 3.6
+	TweenService:Create(cloud,
+		TweenInfo.new(POISON_BOMB_TIME, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+			Size = Vector3.new(blast, blast, blast),
+			Transparency = 1,
+			Color = POISON_EDGE,
+		}):Play()
+
+	Debris:AddItem(cloud, POISON_BOMB_TIME + 0.15)
+end
+
 local ICE_CORE = Color3.fromRGB(236, 252, 255)
 local ICE_EDGE = Color3.fromRGB(120, 200, 245)
 local ICE_STORM_TIME = 0.7
+
+local FIRE_CIRCLE_SOURCE = "Fire Circle"
+local FIRE_CIRCLE_GROW = 0.22
+local FIRE_CIRCLE_HOLD = 0.14
+local FIRE_CIRCLE_CLOSE = 0.26
+local FIRE_CIRCLE_SEED = 0.06
+local FIRE_CIRCLE_TAIL = 1.6
+
+local function SetEmitters(model, enabled)
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("ParticleEmitter") then descendant.Enabled = enabled end
+	end
+end
+
+local fireCircleTemplate = (function()
+	local source = Workspace:FindFirstChild(FIRE_CIRCLE_SOURCE)
+	if not (source and source:FindFirstChildWhichIsA("BasePart", true)) then
+		warn(("HeroView: nao achei Workspace['%s'] com uma peca dentro — o giro do Karo sai sem o anel de fogo.")
+			:format(FIRE_CIRCLE_SOURCE))
+		return nil
+	end
+
+	SetEmitters(source, false)
+	for _, descendant in ipairs(source:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanQuery = false
+			descendant.CanTouch = false
+			descendant.CastShadow = false
+		end
+	end
+
+	source.Parent = nil
+	return source
+end)()
+
+function HeroView.PlayFireCircle(view, hexId)
+	if not (view and fireCircleTemplate) then return end
+
+	local circle = fireCircleTemplate:Clone()
+	local part = circle:FindFirstChildWhichIsA("BasePart", true)
+	if not part then
+		circle:Destroy()
+		return
+	end
+
+	local full = part.Size
+	local seed = Vector3.new(full.X, full.Y * FIRE_CIRCLE_SEED, full.Z * FIRE_CIRCLE_SEED)
+	local spin = part.CFrame.Rotation
+	local center = HexGrid.GetWorldPosition(hexId, view.origin)
+
+	part.Size = seed
+	part.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y + 0.15, 0)) * spin
+	circle.Parent = view.heroesFolder
+	SetEmitters(circle, true)
+
+	TweenService:Create(part,
+		TweenInfo.new(FIRE_CIRCLE_GROW, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+		{ Size = full }):Play()
+
+	task.delay(FIRE_CIRCLE_GROW + FIRE_CIRCLE_HOLD, function()
+		if not part.Parent then return end
+
+		TweenService:Create(part,
+			TweenInfo.new(FIRE_CIRCLE_CLOSE, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			{ Size = seed }):Play()
+
+		task.delay(FIRE_CIRCLE_CLOSE, function()
+			if circle.Parent then SetEmitters(circle, false) end
+		end)
+	end)
+
+	Debris:AddItem(circle, FIRE_CIRCLE_GROW + FIRE_CIRCLE_HOLD + FIRE_CIRCLE_CLOSE + FIRE_CIRCLE_TAIL)
+end
 
 function HeroView.PlayIceStorm(view, hexId)
 	if not view then return end
@@ -1337,13 +1487,17 @@ end
 
 -- A cor vem do lado (1 = azul, 2 = vermelho), não de "é o bot?": em PvP os
 -- dois lados são jogadores e a câmera é a mesma pros dois.
+function SideColor(sideIndex)
+	return sideIndex == 2 and TEAM_COLOR_PLAYER_2 or TEAM_COLOR_PLAYER_1
+end
+
 local function TeamColor(hero)
-	return hero.sideIndex == 2 and TEAM_COLOR_PLAYER_2 or TEAM_COLOR_PLAYER_1
+	return SideColor(hero.sideIndex)
 end
 
 -- Pendura uma parte na âncora: sem Anchored e presa por WeldConstraint,
 -- então acompanha qualquer movimento/tween da âncora.
-local function AttachTo(anchor, part)
+function AttachTo(anchor, part)
 	part.Anchored = false
 	part.CanCollide = false
 	part.CanQuery = false
@@ -1356,7 +1510,7 @@ local function AttachTo(anchor, part)
 	weld.Parent = anchor
 end
 
-local function BuildTeamRing(anchor, hexId, color, origin)
+function BuildTeamRing(anchor, hexId, color, origin)
 	local center = HexGrid.GetWorldPosition(hexId, origin) + Vector3.new(0, TILE_TOP_Y + RING_HEIGHT, 0)
 	local circumradius = HexGrid.GetHexSize() * RING_SCALE
 	local apothem = circumradius * math.sqrt(3) / 2
@@ -1499,6 +1653,7 @@ function HeroView.Create(hero)
 		local scale = data.scale or 1
 
 		local spriteGui = Instance.new("BillboardGui")
+		spriteGui.MaxDistance = HERO_GUI_MAX_DISTANCE
 		spriteGui.Name = "Sprite"
 		spriteGui.Size = UDim2.new(
 			SPRITE_WIDTH * scale, SPRITE_PIXEL_FLOOR_W * scale,
@@ -1546,6 +1701,7 @@ function HeroView.Create(hero)
 	-- Balão de texto flutuante, montado UMA vez e reaproveitado a cada mensagem
 	-- (ver ShowBubble). Nasce desligado.
 	local bubble = Instance.new("BillboardGui")
+	bubble.MaxDistance = HERO_GUI_MAX_DISTANCE
 	bubble.Name = "FloatingText"
 	-- Precisa caber o MAIOR corpo de TEXT_STYLES com folga: o TextLabel ocupa a
 	-- caixa inteira e o Roblox recorta o que passar dela. Com os 38px antigos e
@@ -1570,6 +1726,7 @@ function HeroView.Create(hero)
 	-- gelo); o UIListLayout centraliza o que existir, então herói sem passiva
 	-- continua com o crachá curtinho e centrado.
 	local statsGui = Instance.new("BillboardGui")
+	statsGui.MaxDistance = HERO_GUI_MAX_DISTANCE
 	statsGui.Name = "HeroInfo"
 	statsGui.Size = UDim2.new(0, 148, 0, BADGE_HEIGHT + 2)
 	statsGui.StudsOffset = Vector3.new(0, -SPRITE_HEIGHT * 0.34, 0)
@@ -1876,7 +2033,7 @@ function HeroView.PlayAnimation(hero, animationName, silent)
 		if not silent then PlaySound("Hit", hero.view) end
 
 	elseif animationName == "die" then
-		PlaySound("HeroDeath", hero.view)
+		PlaySound(hero.deathSound or "HeroDeath", hero.view)
 
 	elseif animationName == "attack" then
 		local base = hero.part.CFrame
@@ -1922,6 +2079,7 @@ local GRAVE_PIP = 8
 
 local function BuildGraveBadge(part, hero)
 	local gui = Instance.new("BillboardGui")
+	gui.MaxDistance = HERO_GUI_MAX_DISTANCE
 	gui.Name = "GraveInfo"
 	gui.Size = UDim2.new(0, hero.graveHitsLeft * (GRAVE_PIP + 3) + 7, 0, GRAVE_PIP + 8)
 	-- acima da etiqueta do nome, que já ocupa o pé da lápide
@@ -2037,6 +2195,7 @@ function HeroView.CreateGrave(hero)
 	-- é uma etiqueta pequena no pé do túmulo, dentro da própria casa, e sem a
 	-- caveira (que só engordava o texto).
 	local label = Instance.new("BillboardGui")
+	label.MaxDistance = HERO_GUI_MAX_DISTANCE
 	label.Name = "GraveLabel"
 	label.Size = UDim2.new(0, 52, 0, 12)
 	label.StudsOffset = Vector3.new(0, -1.75, 0)

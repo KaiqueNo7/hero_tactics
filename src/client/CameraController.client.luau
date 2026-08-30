@@ -31,10 +31,10 @@ local camera = workspace.CurrentCamera
 -- O azimute saiu de 16° pra 91°: o tabuleiro passou a ser visto quase de lado,
 -- não mais de frente. Com a câmera um pouco mais alta e bem mais perto
 -- (95 -> 75) as casas pegam mais luz e o hexágono fica menos achatado.
-local FIELD_OF_VIEW = 38
-local ELEVATION = 44
-local AZIMUTH = 91
-local DEFAULT_DISTANCE = 75
+local FIELD_OF_VIEW = GameConfig.CAMERA_FOV
+local ELEVATION = GameConfig.CAMERA_ELEVATION
+local AZIMUTH = GameConfig.CAMERA_AZIMUTH
+local DEFAULT_DISTANCE = GameConfig.CAMERA_DISTANCE
 local FRAMING = 1.12
 
 -- ===== ZOOM =====
@@ -71,7 +71,31 @@ local freeFlying = false
 local flyLooking = false
 local flyYaw, flyPitch = 0, 0
 
+local FINISH_IN = 0.42
+local FINISH_HOLD = 0.85
+local FINISH_OUT = 0.5
+local FINISH_RADIUS_FACTOR = 0.34
+local FINISH_DRIFT = 0.9
+local FINISH_FOV = 38
+local FINISH_EYE_HEIGHT = 4
+local FINISH_NAME_LIFT = 1.2
+
+local finishToken = 0
+
+local function orbitCFrame(center, distance)
+	local az, el = math.rad(AZIMUTH), math.rad(ELEVATION)
+	local horizontal = distance * math.cos(el)
+
+	return CFrame.new(center + Vector3.new(
+		math.sin(az) * horizontal,
+		distance * math.sin(el),
+		math.cos(az) * horizontal
+	), center)
+end
+
 local function applyCamera()
+	finishToken += 1
+
 	local az, el = math.rad(AZIMUTH), math.rad(ELEVATION)
 	local horizontal = radius * math.cos(el)
 
@@ -498,8 +522,145 @@ end)
 
 BoardReady.OnClientEvent:Connect(activateBoardCamera)
 
+local function buildFinishNameplate(position, name, sideIndex)
+	local anchor = Instance.new("Part")
+	anchor.Name = "FinishNameplate"
+	anchor.Size = Vector3.new(0.2, 0.2, 0.2)
+	anchor.CFrame = CFrame.new(position + Vector3.new(0, FINISH_NAME_LIFT, 0))
+	anchor.Transparency = 1
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CanQuery = false
+	anchor.CanTouch = false
+	anchor.CastShadow = false
+	anchor.Parent = workspace
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "Name"
+	billboard.Size = UDim2.fromOffset(420, 64)
+	billboard.AlwaysOnTop = true
+	billboard.LightInfluence = 0
+	billboard.MaxDistance = math.huge
+	billboard.Parent = anchor
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = name:upper()
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextStrokeColor3 = sideIndex == 2
+		and Color3.fromRGB(70, 8, 10) or Color3.fromRGB(6, 18, 48)
+	label.TextScaled = true
+	label.Font = Enum.Font.GothamBlack
+
+	local limit = Instance.new("UITextSizeConstraint")
+	limit.MaxTextSize = 38
+	limit.Parent = label
+
+	local outlines = {}
+	for _, shift in ipairs({ { -2, 0 }, { 2, 0 }, { 0, -2 }, { 0, 2 } }) do
+		local copy = label:Clone()
+		copy.Position = UDim2.fromOffset(shift[1], shift[2])
+		copy.TextColor3 = label.TextStrokeColor3
+		copy.TextStrokeTransparency = 1
+		copy.ZIndex = 1
+		copy.Parent = billboard
+		table.insert(outlines, copy)
+	end
+
+	label.ZIndex = 2
+	label.Parent = billboard
+
+	return anchor, label, outlines
+end
+
+local function playFinishCam(info)
+	if not (activated and boardCenter and info and info.hex) then return end
+	if freeFlying then return end
+
+	local ok, target = pcall(HexGrid.GetWorldPosition, info.hex)
+	if not (ok and target) then return end
+
+	local focus = target + Vector3.new(0, FINISH_EYE_HEIGHT, 0)
+	local wide = camera.CFrame
+	local baseFov = camera.FieldOfView
+	local close = math.max(radius * FINISH_RADIUS_FACTOR, minRadius * 0.5)
+
+	finishToken += 1
+	local token = finishToken
+
+	local plate, label, outlines = nil, nil, {}
+	if info.name then
+		plate, label, outlines = buildFinishNameplate(target, info.name, info.sideIndex)
+	end
+
+	local function fadeName(alpha)
+		if not label then return end
+
+		label.TextTransparency = alpha
+		label.TextStrokeTransparency = alpha
+		for _, copy in ipairs(outlines) do
+			copy.TextTransparency = alpha
+		end
+	end
+
+	local function dropName()
+		if plate then plate:Destroy() end
+		plate, label, outlines = nil, nil, {}
+	end
+
+	fadeName(1)
+
+	task.spawn(function()
+		local elapsed = 0
+		while elapsed < FINISH_IN do
+			elapsed += RunService.RenderStepped:Wait()
+			if finishToken ~= token then dropName() return end
+
+			local a = math.min(elapsed / FINISH_IN, 1)
+			a = a * a * (3 - 2 * a)
+			camera.CFrame = wide:Lerp(orbitCFrame(focus, close), a)
+			camera.FieldOfView = baseFov + (FINISH_FOV - baseFov) * a
+			fadeName(1 - a)
+		end
+
+		elapsed = 0
+		while elapsed < FINISH_HOLD do
+			elapsed += RunService.RenderStepped:Wait()
+			if finishToken ~= token then dropName() return end
+
+			local a = math.min(elapsed / FINISH_HOLD, 1)
+			camera.CFrame = orbitCFrame(focus, close - FINISH_DRIFT * a)
+		end
+
+		local from = camera.CFrame
+		elapsed = 0
+		while elapsed < FINISH_OUT do
+			elapsed += RunService.RenderStepped:Wait()
+			if finishToken ~= token then dropName() return end
+
+			local a = math.min(elapsed / FINISH_OUT, 1)
+			a = a * a * (3 - 2 * a)
+			camera.CFrame = from:Lerp(wide, a)
+			camera.FieldOfView = FINISH_FOV + (baseFov - FINISH_FOV) * a
+			fadeName(a)
+		end
+
+		dropName()
+
+		if finishToken ~= token then return end
+		camera.FieldOfView = baseFov
+		applyCamera()
+	end)
+end
+
 MatchUpdate.OnClientEvent:Connect(function(state)
 	if state.phase == "lobby" then
 		returnToLobby()
+		return
+	end
+
+	if state.finisher and state.phase ~= "finished" then
+		playFinishCam(state.finisher)
 	end
 end)

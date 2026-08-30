@@ -84,8 +84,17 @@ local RANGED = GameConfig.ABILITIES.RANGED
 -- linha aqui em vez de um caso especial espalhado pelo código. Vale pro resto
 -- desta seção inteira.
 local function ThreatScore(hero)
+	if hero.summoner then return 1 end
+
 	local threat = hero.attack * 3
 	if GameConfig.IsRangedAttack(hero.attackRange) then threat += 2 end
+
+	if HasSkill(hero, "longShot") then threat += GameConfig.WREN_RANGE * 2 end
+	if HasSkill(hero, "raiseSkulls") then threat += 12 end
+	if HasSkill(hero, "estopim") then threat += 3 end
+	if HasSkill(hero, "gustPush") then threat += 6 end
+	if HasSkill(hero, "tailwind") then threat += 4 end
+	if HasSkill(hero, "emberShield") then threat += 7 end
 
 	-- Elaria acima de todos: enquanto ela estiver de pé, o dano que a IA gasta
 	-- no time inimigo volta como cura. Ela vale mais que o inimigo com menos HP.
@@ -98,6 +107,7 @@ local function ThreatScore(hero)
 	if HasSkill(hero, "ambush") then threat += 12 end
 
 	if HasSkill(hero, "poisonAttack") then threat += 4 end
+	if HasSkill(hero, "poisonFlask") then threat += 3 end
 	if HasSkill(hero, "beyondFront") then threat += 3 end
 	if HasSkill(hero, "aloneIsBetter") then threat += 3 end
 	if HasSkill(hero, "iceEffect") then threat += 5 end -- controle: rouba turno inteiro
@@ -117,7 +127,10 @@ local function CarryValue(hero)
 	if HasSkill(hero, "ambush") then value += 5 end
 	if HasSkill(hero, "flameStrike") then value += 3 end
 	if HasSkill(hero, "health") then value += 6 end -- cura é dano que não se perde
+	if HasSkill(hero, "longShot") then value += GameConfig.WREN_RANGE end
+	if HasSkill(hero, "raiseSkulls") then value += 5 end
 	if hero.ability == TAUNT then value -= 8 end
+	if hero.summoner then value -= 30 end
 
 	return value - math.floor(hero.maxHp / 6)
 end
@@ -125,9 +138,9 @@ end
 -- Este inimigo alcança aquele herói AGORA ou no próximo passo dele? É a
 -- pergunta que separa "carry exposto" de "carry longe do perigo", e a mesma que
 -- diz se vale a pena um Taunt se meter no caminho.
-local function Threatens(enemy, hero)
+local function Threatens(match, enemy, hero)
 	return HexGrid.Distance(enemy.position, hero.position)
-		<= MoveRangeOf(enemy) + enemy.attackRange
+		<= MoveRangeOf(match, enemy) + enemy.attackRange
 end
 
 -- ===================== LEITURA DO TABULEIRO =====================
@@ -148,6 +161,15 @@ local function BuildBoardContext(match, botId, enemies)
 		enemies = enemies,
 		allies = allies,
 		turn = match.turn and match.turn.number or 0,
+		ownFlame = function(hexId)
+			local flame = match.flames[hexId]
+			return flame ~= nil and flame.ownerId == botId
+		end,
+		flameBias = function(hexId)
+			local flame = match.flames[hexId]
+			if not flame then return 0 end
+			return flame.ownerId == botId and 4 or -4
+		end,
 	}
 
 	-- O carry do PRÓPRIO time: quem os Taunt vão cobrir e quem não pode ficar
@@ -228,6 +250,10 @@ local function TauntBlocks(match, attacker, target, fromPos)
 end
 
 local function EstimateDamage(match, attacker, target, fromPos)
+	if HasSkill(attacker, "longShot") then
+		return math.clamp(HexGrid.Distance(fromPos, target.position), 1, GameConfig.WREN_RANGE)
+	end
+
 	local damage = attacker.attack
 
 	-- trustInTeam recalcula no onMove: prevê o ataque já pós-movimento. Lê a
@@ -321,7 +347,7 @@ local function BuildLineBlocks(match, ctx)
 			-- de onde ele pode bater neste turno: a casa atual mais as que alcança
 			local positions = { [cutter.position] = true }
 			if not match.turn.moved[cutter.uid] then
-				for hexId in pairs(HexGrid.ComputeReach(cutter.position, MoveRangeOf(cutter), FreeChecker(match))) do
+				for hexId in pairs(HexGrid.ComputeReach(cutter.position, MoveRangeOf(match, cutter), FreeChecker(match))) do
 					if IsFree(match, hexId) then positions[hexId] = true end
 				end
 			end
@@ -395,7 +421,7 @@ local function PushValue(match, attacker, target, fromPos, ctx, damage)
 	local remaining = target.currentHp - damage
 
 	for _, ally in ipairs(ctx.allies) do
-		local reach = match.turn.moved[ally.uid] and 0 or MoveRangeOf(ally)
+		local reach = match.turn.moved[ally.uid] and 0 or MoveRangeOf(match, ally)
 
 		if ally ~= attacker and HasSkill(ally, "aloneIsBetter")
 			and not match.turn.attacked[ally.uid]
@@ -434,13 +460,13 @@ local function ScoreAttack(match, attacker, target, fromPos, ctx)
 	if TauntBlocks(match, attacker, target, fromPos) then return nil end
 
 	local damage = EstimateDamage(match, attacker, target, fromPos)
-	local score = damage * 10
+	local score = math.min(damage, target.currentHp) * 10
 
 	-- o que este golpe deixa MONTADO pro resto do time (ver PushValue)
 	score += PushValue(match, attacker, target, fromPos, ctx, damage)
 
 	if damage >= target.currentHp then
-		score += 120 + ThreatScore(target) * 4 -- abater é sempre a prioridade
+		score += (target.summoner and 20 or 120) + ThreatScore(target) * 4
 	else
 		score += (target.maxHp - target.currentHp) * 2 -- concentra fogo no ferido
 		score += ThreatScore(target) * 2
@@ -469,7 +495,8 @@ local function ScoreAttack(match, attacker, target, fromPos, ctx)
 	end
 
 	-- veneno novo rende dano ao longo dos turnos seguintes
-	if HasSkill(attacker, "poisonAttack") and not FindStatusEffect(target, "poison") then
+	if (HasSkill(attacker, "poisonAttack") or HasSkill(attacker, "poisonFlask"))
+		and not FindStatusEffect(target, "poison") then
 		score += 15
 	end
 
@@ -525,6 +552,39 @@ local function ScorePosition(match, hero, fromPos, ctx)
 		score += #AlliesAdjacentTo(match, hero, fromPos) * 10
 	end
 
+	if HasSkill(hero, "tailwind") then
+		for _, ally in ipairs(AlliesAdjacentTo(match, hero, fromPos)) do
+			if not match.turn.moved[ally.uid] then score += 12 end
+		end
+	end
+
+	if HasSkill(hero, "raiseSkulls") then
+		for _, enemy in ipairs(enemies) do
+			if HexGrid.Distance(fromPos, enemy.position) <= 1 then score -= 14 end
+		end
+		for _, ally in ipairs(AlliesAdjacentTo(match, hero, fromPos)) do
+			if ally.summoner then score += 8 end
+		end
+	end
+
+	if HasSkill(hero, "flameFury") or HasSkill(hero, "flameHeal") then
+		local crossed = 0
+		if fromPos ~= hero.position then
+			local path = HexGrid.FindPath(hero.position, fromPos,
+				MoveRangeOf(match, hero), FreeChecker(match), ctx.flameBias)
+			for _, hexId in ipairs(path or {}) do
+				if ctx.ownFlame(hexId) then crossed += 1 end
+			end
+		end
+
+		if HasSkill(hero, "flameFury") and hero.attack < GameConfig.FLAME_FURY_MAX_ATTACK then
+			score += crossed * 22
+		end
+		if HasSkill(hero, "flameHeal") and hero.currentHp < hero.maxHp then
+			score += crossed * 20
+		end
+	end
+
 	-- Elaria cura e limpa vizinhos: cola em quem precisa
 	if HasSkill(hero, "health") or HasSkill(hero, "clean") then
 		for _, ally in ipairs(AlliesAdjacentTo(match, hero, fromPos)) do
@@ -559,7 +619,7 @@ local function ScorePosition(match, hero, fromPos, ctx)
 		local carryPos = ctx.carry.position
 
 		for _, enemy in ipairs(enemies) do
-			if Threatens(enemy, ctx.carry) then
+			if Threatens(match, enemy, ctx.carry) then
 				if HexGrid.Distance(fromPos, enemy.position) <= 1 then
 					score += 34 -- Taunt ligado: este inimigo não alcança mais o carry
 				end
@@ -691,7 +751,7 @@ local function PlanFor(match, hero, ctx)
 
 	local positions = { [hero.position] = true }
 	if canMove then
-		for hexId in pairs(HexGrid.ComputeReach(hero.position, MoveRangeOf(hero), FreeChecker(match))) do
+		for hexId in pairs(HexGrid.ComputeReach(hero.position, MoveRangeOf(match, hero), FreeChecker(match))) do
 			if IsFree(match, hexId) then positions[hexId] = true end
 		end
 	end

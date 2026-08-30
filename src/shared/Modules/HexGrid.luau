@@ -368,10 +368,11 @@ end
 -- Caminho mais curto atravessando só casas livres, respeitando maxSteps.
 -- Retorna a lista de hexes do primeiro passo até o destino (sem a origem),
 -- ou nil se não houver caminho. Usado pra animar o herói casa por casa.
-function HexGrid.FindPath(fromId, toId, maxSteps, isFree)
+function HexGrid.FindPath(fromId, toId, maxSteps, isFree, bias)
 	isFree = isFree or AlwaysFree
 
 	local dist = { [fromId] = 0 }
+	local gain = { [fromId] = 0 }
 	local cameFrom = {}
 	local queue = { fromId }
 	local head = 1
@@ -380,15 +381,24 @@ function HexGrid.FindPath(fromId, toId, maxSteps, isFree)
 		local id = queue[head]
 		head += 1
 
-		if id == toId then break end
+		if id == toId and not bias then break end
 
 		local d = dist[id]
 		if d < maxSteps then
 			for _, neighbor in ipairs(HexGrid.GetNeighbors(id)) do
-				if dist[neighbor.id] == nil and isFree(neighbor.id) then
-					dist[neighbor.id] = d + 1
-					cameFrom[neighbor.id] = id
-					table.insert(queue, neighbor.id)
+				local nid = neighbor.id
+				if isFree(nid) then
+					local value = (gain[id] or 0) + (bias and bias(nid) or 0)
+
+					if dist[nid] == nil then
+						dist[nid] = d + 1
+						gain[nid] = value
+						cameFrom[nid] = id
+						table.insert(queue, nid)
+					elseif bias and dist[nid] == d + 1 and value > gain[nid] then
+						gain[nid] = value
+						cameFrom[nid] = id
+					end
 				end
 			end
 		end

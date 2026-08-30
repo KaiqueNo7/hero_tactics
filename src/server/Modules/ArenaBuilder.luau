@@ -511,7 +511,7 @@ function ArenaBuilder.Build(theme, origin, folderName)
 	MakePart({
 		Name = "FloorTrim",
 		Size = Vector3.new(width + TRIM_OUTSET, FLOOR_THICKNESS + TRIM_DROP, depth + TRIM_OUTSET),
-		CFrame = CFrame.new(bounds.centerX, floorY - FLOOR_THICKNESS / 2 - TRIM_DROP / 2, bounds.centerZ),
+		CFrame = CFrame.new(bounds.centerX, floorY - FLOOR_THICKNESS - (FLOOR_THICKNESS + TRIM_DROP) / 2, bounds.centerZ),
 		Color = theme.trim.color,
 		Material = theme.trim.material,
 	}, folder)
@@ -557,6 +557,12 @@ function ArenaBuilder.CloneMaster(master, theme, origin, folderName)
 			descendant.CastShadow = false
 		end
 	end
+
+	BuildLights(folder, theme, {
+		boardCenterX = center.X,
+		boardCenterZ = center.Z,
+		floorY = origin.Y - 0.5,
+	})
 
 	folder.Parent = Workspace
 	return folder

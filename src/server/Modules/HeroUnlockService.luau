@@ -31,6 +31,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local DevAccess = require(ServerScriptService.Modules.DevAccess)
 local SafeStore = require(ServerScriptService.Modules.SafeStore)
+local RewardQueueService = require(ServerScriptService.Modules.RewardQueueService)
 
 local HERO_STORE_NAME = "HeroTactics_Heroes_v1"
 local heroStore = DataStoreService:GetDataStore(HERO_STORE_NAME)
@@ -171,6 +172,7 @@ function HeroUnlockService.Unlock(player, dataId)
 	end
 
 	owned[userId] = set
+	RewardQueueService.Push(userId, { hero = dataId })
 	Push(player, dataId)
 
 	print(("HeroUnlockService: %s desbloqueou %s."):format(player.Name, data.name))

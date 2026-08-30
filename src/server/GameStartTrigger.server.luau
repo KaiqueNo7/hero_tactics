@@ -30,6 +30,7 @@ local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local LobbyZoneBuilder = require(ServerScriptService.Modules.LobbyZoneBuilder)
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
+local RewardQueueService = require(ServerScriptService.Modules.RewardQueueService)
 
 -- Mesmo motivo do Store.server acordar o CoinService: o TutorialService cria o
 -- remote e escuta entrada/saída de jogador ao ser exigido, e ninguém mais o
@@ -238,6 +239,8 @@ local function EnsureFightPad(fight)
 		pad.Size = FIGHT_PAD_SIZE
 		pad.Position = DefaultFightPadPosition(fight)
 		pad.Parent = Workspace:FindFirstChild("Base") or Workspace
+
+		pad:SetAttribute("TrailPending", true)
 	end
 
 	pad.Anchored = true
@@ -562,6 +565,13 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 		GameAction:FireClient(player, "matchLog", MatchManager.GetLog(player))
 	elseif action == "cancelQueue" then
 		LeaveQueue(player, true)
+	elseif action == "queue" then
+		OnPvpPadTouched(player)
+	elseif action == "claimRewards" then
+		local pending = RewardQueueService.Take(player)
+		if pending then
+			GameAction:FireClient(player, "rewards", pending)
+		end
 	elseif action == "fight" then
 		OnFightRequested(player, arg1)
 	end

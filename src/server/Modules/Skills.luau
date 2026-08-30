@@ -161,6 +161,22 @@ Skills.poisonAttack = {
 	end,
 }
 
+Skills.poisonFlask = {
+	triggers = { "onAttack", "onCounterAttack" },
+	apply = function(ctx)
+		ctx.api.Effect(ctx.target)
+
+		if ctx.target.isAlive then
+			ctx.api.ApplyStatusEffect(ctx.target, {
+				type = "poison",
+				duration = GameConfig.POISON_DURATION,
+				damagePerTurn = 1,
+				ticksEveryTurn = true,
+			})
+		end
+	end,
+}
+
 -- Dante — +1 de ataque com aliado adjacente, volta ao normal quando fica sozinho
 Skills.trustInTeam = {
 	triggers = { "onMove", "onTurnStart", "onDie" },
@@ -490,6 +506,7 @@ Skills.flameStrike = {
 	triggers = { "onAttack" },
 	apply = function(ctx)
 		ctx.api.Effect(ctx.hero)
+		ctx.api.FireCircle(ctx.hero)
 		-- só cosmético: mostra as 6 casas a distância 1 que o giro alcança,
 		-- não muda quem é atingido (isso é o GetEnemiesInRange logo abaixo)
 		ctx.api.FlashAttackRange(ctx.hero)
@@ -529,14 +546,21 @@ Skills.flameFury = {
 		-- dois passos em fogo em turnos diferentes se somariam sem nunca
 		-- esbarrar no teto.
 		local existing = ctx.api.FindStatusEffect(ctx.hero, "flameFury")
+		local previous = existing and existing.attackBonus or 0
 		if existing then
-			ctx.api.IncreaseAttack(ctx.hero, -existing.attackBonus)
+			ctx.api.IncreaseAttack(ctx.hero, -previous)
 		end
 
-		-- Teto: FLAME_FURY_MAX_ATTACK vale pro ataque TOTAL, não é "+2 sempre".
-		-- Cruzar 3 chamas acesas não estoura o limite, só encosta nele.
-		local room = GameConfig.FLAME_FURY_MAX_ATTACK - ctx.hero.attack
-		local bonus = math.min(ctx.enteredFlameCount * GameConfig.FLAME_FURY_ATTACK, room)
+		local base = ctx.hero.attack
+		for _, effect in ipairs(ctx.hero.statusEffects) do
+			if effect ~= existing then
+				base -= effect.attackBonus or 0
+			end
+		end
+
+		local room = GameConfig.FLAME_FURY_MAX_ATTACK - base
+		local gained = ctx.enteredFlameCount * GameConfig.FLAME_FURY_ATTACK
+		local bonus = math.clamp(math.max(previous, gained), 0, room)
 		if bonus <= 0 then return end
 
 		ctx.api.IncreaseAttack(ctx.hero, bonus)
@@ -602,6 +626,7 @@ Skills.gustPush = {
 	triggers = { "onAttack" },
 	apply = function(ctx)
 		ctx.api.Effect(ctx.hero) -- a rajada saindo dele, além do que acontece em quem é empurrado
+		ctx.api.PlaySkillSound("gustPush")
 
 		-- aliados do ALVO = inimigos de quem atacou. GetAlliesInRange nunca
 		-- devolve o próprio ctx.target, então ele fica parado sozinho sem
@@ -634,18 +659,19 @@ Skills.gustPush = {
 }
 
 Skills.tailwind = {
-	triggers = { "onTurnStart" },
+	triggers = { "onMove" },
 	apply = function(ctx)
-		for _, ally in ipairs(ctx.api.GetAlliesInRange(ctx.hero, 1)) do
-			if not ctx.api.FindStatusEffect(ally, "windBoost") then
-				ctx.api.Effect(ally)
-			end
+		local moved = ctx.movedHero
+		if moved.ownerId ~= ctx.hero.ownerId then return end
 
-			ctx.api.ApplyStatusEffect(ally, {
-				type = "windBoost",
-				duration = 1,
-				ticksEveryTurn = true,
-			})
+		local allies = ctx.api.GetAlliesInRange(ctx.hero, 1)
+		if moved ~= ctx.hero then
+			allies = table.find(allies, moved) and { moved } or {}
+		end
+		if #allies == 0 then return end
+
+		for _, ally in ipairs(allies) do
+			ctx.api.Effect(ally)
 		end
 	end,
 }
@@ -849,6 +875,77 @@ Skills.shatter = {
 		end
 
 		ctx.api.DeferGrave(ctx.hero, minions)
+	end,
+}
+
+Skills.raiseSkulls = {
+	triggers = { "onTurnStart", "onDie" },
+	apply = function(ctx)
+		if ctx.trigger == "onDie" then
+			for _, dataId in ipairs(GameConfig.MORN_SUMMON_IDS) do
+				local minion = ctx.api.GetAllyByData(ctx.hero, dataId)
+				if minion and minion.isAlive then
+					ctx.api.Effect(minion)
+					ctx.api.ApplyDamage(minion, minion.currentHp, nil, false, "summonerFell")
+				end
+			end
+			return
+		end
+
+		if not ctx.api.IsMyTurn(ctx.hero) then return end
+
+		local cooldown = ctx.hero.skullCooldown or 0
+		if cooldown > 0 then
+			ctx.hero.skullCooldown = cooldown - 1
+			return
+		end
+
+		local raised = false
+		for _, dataId in ipairs(GameConfig.MORN_SUMMON_IDS) do
+			local existing = ctx.api.GetAllyByData(ctx.hero, dataId)
+			if not (existing and existing.isAlive) then
+				local minion = ctx.api.Summon(ctx.hero, dataId)
+				if minion then
+					minion.noGrave = true
+					ctx.api.Effect(minion)
+					raised = true
+				end
+			end
+		end
+
+		if not raised then return end
+
+		ctx.api.Effect(ctx.hero)
+		ctx.api.PlaySkillSound("raiseSkulls")
+		ctx.hero.skullCooldown = GameConfig.MORN_SUMMON_COOLDOWN
+	end,
+}
+
+Skills.lanternReturn = {
+	passive = true,
+	triggers = {},
+}
+
+Skills.estopim = {
+	triggers = { "onDie" },
+	apply = function(ctx)
+		ctx.api.Effect(ctx.hero)
+		ctx.api.PoisonBomb(ctx.hero)
+		ctx.api.PlaySkillSound("estopim")
+
+		for _, enemy in ipairs(ctx.api.GetEnemiesInRange(ctx.hero, 1)) do
+			ctx.api.Effect(enemy)
+			ctx.api.ApplyDamage(enemy, GameConfig.ESTOPIM_DAMAGE, ctx.hero, false)
+
+			if enemy.isAlive then
+				ctx.api.ApplyStatusEffect(enemy, {
+					type = "poison",
+					duration = GameConfig.POISON_DURATION,
+					damagePerTurn = 1,
+					ticksEveryTurn = true,
+				})
+			end
+		end
 	end,
 }
 

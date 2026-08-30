@@ -76,6 +76,7 @@ local function PlayUiSound(name)
 	local template = ReplicatedStorage.Sounds:FindFirstChild(name)
 	if not template then return end
 	local sound = template:Clone()
+	sound.Volume = template.Volume * GameConfig.MASTER_VOLUME
 	sound.Parent = SoundService
 	sound:Play()
 	Debris:AddItem(sound, 3)
@@ -466,7 +467,7 @@ local function buildTeamColumn(alignLeft)
 			-- a vida zerada, contradizendo as sub-linhas logo acima. Quem está em
 			-- jogo é o pedaço, então é a ficha dele que abre.
 			for _, piece in ipairs(hero.summons or {}) do
-				if piece.isAlive then
+				if piece.isAlive and piece.sameBody then
 					hero = piece
 					break
 				end
@@ -690,6 +691,7 @@ showHeroDetail = function(hero)
 
 	local statusBits = {}
 	if not alive then table.insert(statusBits, "Abatido") end
+	if hero.hidden then table.insert(statusBits, "Na sombra") end
 	if hero.attack > (hero.baseAttack or hero.attack) then table.insert(statusBits, "ATK buffado") end
 	if hero.frozen then table.insert(statusBits, "Congelado") end
 	if (hero.poisonTurns or 0) > 0 then
@@ -867,14 +869,8 @@ end
 -- antes desta guarda — ou seja, continua sempre fresco sem forçar re-render.
 local function rowSignature(hero)
 	if not hero then return "vazio" end
-	-- O registro do invisível vem oco (sem dataId, vida ou ataque): formatar com
-	-- %d estouraria. E ele tem assinatura PRÓPRIA e constante, pra que o card de
-	-- interrogação não seja redesenhado a cada snapshot enquanto ele fica na
-	-- sombra.
-	if hero.hidden then return "oculto" end
-
-	local signature = ("%d|%d|%d|%s|%s"):format(hero.dataId, hero.currentHp, hero.attack,
-		tostring(hero.isAlive), tostring(hero.sideIndex))
+	local signature = ("%d|%d|%d|%s|%s|%s"):format(hero.dataId, hero.currentHp, hero.attack,
+		tostring(hero.isAlive), tostring(hero.sideIndex), tostring(hero.hidden))
 
 	-- OS PEDAÇOS ENTRAM NA ASSINATURA. O card do Golem partido é desenhado com
 	-- dados que NÃO estão no herói pai — o corpo já morreu e não muda mais nunca.
@@ -903,43 +899,6 @@ local function renderRow(row, hero)
 		return
 	end
 
-	-- ===== O ADVERSÁRIO ESCONDIDO =====
-	-- Card de interrogação, e NÃO card escondido. Nesta coluna retrato apagado
-	-- significa uma coisa só — morreu —, então sumir com o Shadow enquanto ele
-	-- está na sombra contaria uma mentira pior do que não contar nada: o
-	-- adversário jogaria o resto do turno achando que está num 3v2.
-	--
-	-- Vida e ataque ficam de fora porque o servidor não os manda (ver Snapshot).
-	-- É o que a furtividade esconde: onde ele está e como ele está, não que ele
-	-- existe.
-	if hero.hidden then
-		row.card.Visible = true
-		row.portrait.Image = ""
-		row.portrait.BackgroundTransparency = 0
-		row.portrait.BackgroundColor3 = Color3.fromRGB(30, 32, 44)
-		row.portrait.ImageColor3 = Color3.new(1, 1, 1)
-		row.portrait.ImageTransparency = 0
-		row.heroName.Text = "?"
-		row.heroName.TextColor3 = Color3.fromRGB(150, 156, 180)
-		row.card.BackgroundColor3 = Color3.fromRGB(24, 27, 37)
-		row.stroke.Color = Color3.fromRGB(90, 94, 120)
-		row.stroke.Transparency = 0.35
-
-		for _, dash in ipairs(row.cross) do
-			dash.Visible = false
-		end
-
-		row.hpTrack.Visible = false
-		row.hpLabel.Visible = false
-		row.atkLabel.Visible = false
-		-- a vaga pode ter sido de um Golem partido antes de o Shadow sumir nela:
-		-- sem isto, as sub-linhas velhas ficariam penduradas no card de "?"
-		for _, sub in ipairs(row.subs) do
-			sub.line.Visible = false
-		end
-		return
-	end
-
 	local data = HeroData.GetById(hero.dataId)
 	local accent = hero.sideIndex == 2 and SIDE_TWO_COLOR or SIDE_ONE_COLOR
 
@@ -954,7 +913,7 @@ local function renderRow(row, hero)
 	-- exatamente quando a lápide do corpo sobe no servidor.
 	local pieces = {}
 	for _, piece in ipairs(hero.summons or {}) do
-		if piece.isAlive then table.insert(pieces, piece) end
+		if piece.isAlive and piece.sameBody then table.insert(pieces, piece) end
 	end
 
 	local alive = hero.isAlive
@@ -1027,6 +986,13 @@ local function renderRow(row, hero)
 
 		row.atkLabel.Text = tostring(hero.attack)
 	end
+
+	if hero.hidden then
+		row.portrait.ImageTransparency = 0.55
+		row.stroke.Color = Color3.fromRGB(90, 94, 120)
+		row.stroke.Transparency = 0.35
+		row.heroName.TextColor3 = Color3.fromRGB(150, 156, 180)
+	end
 end
 
 -- Pendura cada invocação no herói que a gerou e devolve só os "pais", que são as
@@ -1098,158 +1064,6 @@ local function hideTeams()
 		end
 	end
 	counterShown = nil
-end
-
--- ===== DESTAQUE DE FINALIZAÇÃO =====
--- Faixa diagonal com o retrato ampliado de quem abateu. Só dispara em abate por
--- herói: o servidor não manda destaque pra morte por veneno ou Morte Súbita,
--- que não têm autor.
---
--- Vale pros DOIS lados, e é por isso que a faixa muda de cor: um abate seu entra
--- azul e comemorativo, um abate do adversário entra vermelho. Mostrar só as suas
--- vitórias esconderia justamente o golpe que você precisa entender.
-local FINISHER_HOLD = 0.85
-local FINISHER_IN = 0.26
-local FINISHER_OUT = 0.3
-local FINISHER_TILT = -6
-
-local finisherLayer = Instance.new("Frame")
-finisherLayer.Name = "Finisher"
-finisherLayer.Size = UDim2.fromScale(1, 1)
-finisherLayer.BackgroundTransparency = 1
-finisherLayer.ClipsDescendants = true
-finisherLayer.Visible = false
-finisherLayer.ZIndex = 30
-finisherLayer.Parent = gui
-
-local finisherBand = Instance.new("Frame")
-finisherBand.Name = "Band"
-finisherBand.AnchorPoint = Vector2.new(0.5, 0.5)
-finisherBand.Size = UDim2.new(1.6, 0, 0, 150)
-finisherBand.Rotation = FINISHER_TILT
-finisherBand.BorderSizePixel = 0
-finisherBand.ZIndex = 30
-finisherBand.Parent = finisherLayer
-
--- some nas duas pontas pra faixa não virar um retângulo colado na tela
-local bandGradient = Instance.new("UIGradient")
-bandGradient.Transparency = NumberSequence.new({
-	NumberSequenceKeypoint.new(0, 1),
-	NumberSequenceKeypoint.new(0.18, 0.1),
-	NumberSequenceKeypoint.new(0.82, 0.1),
-	NumberSequenceKeypoint.new(1, 1),
-})
-bandGradient.Parent = finisherBand
-
--- riscos finos acompanhando a inclinação, pra faixa ter movimento
-local finisherStreaks = {}
-for index, spec in ipairs({ { -34, 5, 0.45 }, { 30, 3, 0.6 }, { 52, 2, 0.75 } }) do
-	local streak = Instance.new("Frame")
-	streak.Name = "Streak" .. index
-	streak.AnchorPoint = Vector2.new(0.5, 0.5)
-	streak.Position = UDim2.new(0.5, 0, 0.5, spec[1])
-	streak.Size = UDim2.new(1, 0, 0, spec[2])
-	streak.BorderSizePixel = 0
-	streak.BackgroundTransparency = spec[3]
-	streak.ZIndex = 31
-	streak.Parent = finisherBand
-	finisherStreaks[index] = streak
-end
-
--- Retrato fora da faixa (e não dentro): a faixa corta o que passa dela, e a
--- graça é justamente o boneco estourar pra fora em cima e embaixo.
-local finisherPortrait = Instance.new("ImageLabel")
-finisherPortrait.Name = "Portrait"
-finisherPortrait.AnchorPoint = Vector2.new(0.5, 0.5)
-finisherPortrait.Size = UDim2.new(0, 230, 0, 290)
-finisherPortrait.BackgroundTransparency = 1
-finisherPortrait.ScaleType = Enum.ScaleType.Fit
-finisherPortrait.ResampleMode = Enum.ResamplerMode.Pixelated
-finisherPortrait.Rotation = FINISHER_TILT
-finisherPortrait.ZIndex = 33
-finisherPortrait.Parent = finisherLayer
-
-local finisherCaption = Instance.new("TextLabel")
-finisherCaption.Name = "Caption"
-finisherCaption.AnchorPoint = Vector2.new(0, 0.5)
-finisherCaption.Size = UDim2.new(0, 420, 0, 46)
-finisherCaption.BackgroundTransparency = 1
-finisherCaption.TextColor3 = Color3.new(1, 1, 1)
-finisherCaption.TextStrokeColor3 = Color3.fromRGB(10, 6, 8)
-finisherCaption.TextStrokeTransparency = 0.2
-finisherCaption.TextXAlignment = Enum.TextXAlignment.Left
-finisherCaption.TextScaled = true
-finisherCaption.Font = Enum.Font.GothamBlack
-finisherCaption.Rotation = FINISHER_TILT
-finisherCaption.ZIndex = 34
-finisherCaption.Parent = finisherLayer
-
-local finisherToken = 0
-
-local function playFinisher(info)
-	local data = HeroData.GetById(info.dataId)
-	local spriteId = spriteOf(data)
-	if not spriteId then return end
-
-	finisherToken += 1
-	local token = finisherToken
-
-	local accent = info.sideIndex == 2 and SIDE_TWO_COLOR or SIDE_ONE_COLOR
-	local deep = info.sideIndex == 2
-		and Color3.fromRGB(52, 10, 12) or Color3.fromRGB(12, 26, 58)
-
-	finisherBand.BackgroundColor3 = deep
-	bandGradient.Color = ColorSequence.new(deep, accent)
-	for _, streak in ipairs(finisherStreaks) do
-		streak.BackgroundColor3 = accent
-	end
-
-	finisherPortrait.Image = spriteId
-	finisherPortrait.ImageRectSize = HeroData.GetFrameSize(data)
-	finisherPortrait.ImageRectOffset = HeroData.GetFrameOffset(data)
-	finisherPortrait.ImageTransparency = 0
-
-	finisherCaption.Text = ("%s FINALIZOU %s"):format(
-		info.name:upper(), (info.victim or "?"):upper())
-	finisherCaption.TextTransparency = 0
-	finisherCaption.TextStrokeTransparency = 0.2
-
-	-- entram da esquerda; o retrato chega um pouco depois da faixa, e essa
-	-- defasagem é o que dá sensação de profundidade em vez de bloco só
-	finisherBand.Position = UDim2.new(-0.9, 0, 0.42, 0)
-	finisherPortrait.Position = UDim2.new(-0.4, 0, 0.42, 0)
-	finisherCaption.Position = UDim2.new(-0.4, 0, 0.42, 0)
-	finisherLayer.Visible = true
-
-	local enter = TweenInfo.new(FINISHER_IN, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-	TweenService:Create(finisherBand, enter, { Position = UDim2.new(0.5, 0, 0.42, 0) }):Play()
-	TweenService:Create(finisherPortrait,
-		TweenInfo.new(FINISHER_IN, Enum.EasingStyle.Back, Enum.EasingDirection.Out, 0, false, 0.05),
-		{ Position = UDim2.new(0.26, 0, 0.42, 0) }):Play()
-	TweenService:Create(finisherCaption,
-		TweenInfo.new(FINISHER_IN, Enum.EasingStyle.Quint, Enum.EasingDirection.Out, 0, false, 0.09),
-		{ Position = UDim2.new(0.42, 0, 0.42, 0) }):Play()
-
-	task.delay(FINISHER_IN + FINISHER_HOLD, function()
-		if finisherToken ~= token then return end
-
-		local leave = TweenInfo.new(FINISHER_OUT, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		TweenService:Create(finisherBand, leave, {
-			Position = UDim2.new(1.7, 0, 0.42, 0), BackgroundTransparency = 1,
-		}):Play()
-		TweenService:Create(finisherPortrait, leave, {
-			Position = UDim2.new(1.5, 0, 0.42, 0), ImageTransparency = 1,
-		}):Play()
-		TweenService:Create(finisherCaption, leave, {
-			Position = UDim2.new(1.6, 0, 0.42, 0), TextTransparency = 1, TextStrokeTransparency = 1,
-		}):Play()
-
-		task.delay(FINISHER_OUT, function()
-			if finisherToken ~= token then return end
-			finisherLayer.Visible = false
-			finisherBand.BackgroundTransparency = 0
-		end)
-	end)
 end
 
 -- ===== "SUA VEZ" / "ESPERE SUA VEZ" (flash centralizado na tela) =====
@@ -1515,6 +1329,8 @@ end)
 local RESULT_CARD_W = 148
 local RESULT_CARD_H = 176
 local RESULT_CARD_GAP = 10
+local RESULT_PAGE_TOP = 76
+local RESULT_ROW_TOP = 98
 
 local resultPanel = Instance.new("Frame")
 resultPanel.Size = UDim2.new(0, 520, 0, 412)
@@ -1554,7 +1370,7 @@ resultSubtitle.Parent = resultPanel
 -- 3 heróis ou 4 (o Golem estilhaçado vira dois) caberem sem recalcular posição.
 local resultTeam = Instance.new("Frame")
 resultTeam.Name = "TeamRow"
-resultTeam.Position = UDim2.new(0, 0, 0, 82)
+resultTeam.Position = UDim2.new(0, 0, 0, RESULT_ROW_TOP)
 resultTeam.Size = UDim2.new(1, 0, 0, RESULT_CARD_H)
 resultTeam.BackgroundTransparency = 1
 resultTeam.Parent = resultPanel
@@ -1566,6 +1382,53 @@ resultTeamLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 resultTeamLayout.Padding = UDim.new(0, RESULT_CARD_GAP)
 resultTeamLayout.SortOrder = Enum.SortOrder.LayoutOrder
 resultTeamLayout.Parent = resultTeam
+
+local resultPage = "mine"
+local renderResultTeam
+
+local function buildPagerArrow(text, alignRight)
+	local arrow = Instance.new("TextButton")
+	arrow.Name = "Pager" .. text
+	arrow.AnchorPoint = Vector2.new(alignRight and 1 or 0, 0.5)
+	arrow.Position = UDim2.new(alignRight and 1 or 0, alignRight and -14 or 14,
+		0, RESULT_ROW_TOP + RESULT_CARD_H / 2)
+	arrow.Size = UDim2.fromOffset(30, 30)
+	arrow.BackgroundColor3 = Color3.fromRGB(38, 44, 60)
+	arrow.BorderSizePixel = 0
+	arrow.Text = text
+	arrow.TextColor3 = Color3.fromRGB(225, 232, 245)
+	arrow.TextSize = 20
+	arrow.Font = Enum.Font.GothamBold
+	arrow.Parent = resultPanel
+
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(1, 0)
+	round.Parent = arrow
+
+	return arrow
+end
+
+local resultPageLabel = Instance.new("TextLabel")
+resultPageLabel.Name = "PageLabel"
+resultPageLabel.AnchorPoint = Vector2.new(0.5, 0)
+resultPageLabel.Position = UDim2.new(0.5, 0, 0, RESULT_PAGE_TOP)
+resultPageLabel.Size = UDim2.new(0, 220, 0, 18)
+resultPageLabel.BackgroundTransparency = 1
+resultPageLabel.TextColor3 = Color3.fromRGB(170, 180, 200)
+resultPageLabel.TextSize = 13
+resultPageLabel.Font = Enum.Font.GothamBold
+resultPageLabel.Parent = resultPanel
+
+local resultPrev = buildPagerArrow("‹", false)
+local resultNext = buildPagerArrow("›", true)
+
+local function flipResultPage()
+	resultPage = (resultPage == "mine") and "theirs" or "mine"
+	if state then renderResultTeam(state) end
+end
+
+resultPrev.MouseButton1Click:Connect(flipResultPage)
+resultNext.MouseButton1Click:Connect(flipResultPage)
 
 local replayButton = Instance.new("TextButton")
 replayButton.Size = UDim2.new(1, -60, 0, 46)
@@ -1597,7 +1460,65 @@ local lobbyCorner = Instance.new("UICorner")
 lobbyCorner.CornerRadius = UDim.new(0, 8)
 lobbyCorner.Parent = lobbyButton
 
+-- O botão de cima muda de papel conforme a partida. Contra bot ele é decisão de
+-- um só; no PvP ele vira um convite que o adversário precisa aceitar, e some se
+-- ele já voltou pro lobby.
+local replayAction = "replay"
+local renderReplayButton
+
+function renderReplayButton(state)
+	local rematch = state.rematch
+
+	if not rematch then
+		replayAction = "replay"
+		replayButton.Visible = true
+		replayButton.AutoButtonColor = true
+		replayButton.BackgroundColor3 = Color3.fromRGB(70, 150, 90)
+
+		if state.campaign and state.winner == "win" then
+			replayButton.Text = "Próximo herói"
+		elseif state.campaign then
+			replayButton.Text = "Tentar de novo"
+		else
+			replayButton.Text = "Jogar novamente"
+		end
+		return
+	end
+
+	if not rematch.open then
+		replayAction = "queue"
+		replayButton.Visible = true
+		replayButton.AutoButtonColor = true
+		replayButton.BackgroundColor3 = Color3.fromRGB(70, 110, 170)
+		replayButton.Text = "Voltar para a fila"
+		return
+	end
+
+	replayAction = "replay"
+	replayButton.Visible = true
+
+	if rematch.mine then
+		replayButton.AutoButtonColor = false
+		replayButton.BackgroundColor3 = Color3.fromRGB(70, 80, 96)
+		replayButton.Text = "Aguardando o oponente..."
+	elseif rematch.theirs then
+		replayButton.AutoButtonColor = true
+		replayButton.BackgroundColor3 = Color3.fromRGB(210, 160, 60)
+		replayButton.Text = "Aceitar revanche"
+	else
+		replayButton.AutoButtonColor = true
+		replayButton.BackgroundColor3 = Color3.fromRGB(70, 150, 90)
+		replayButton.Text = "Pedir revanche"
+	end
+end
+
 replayButton.MouseButton1Click:Connect(function()
+	if replayAction == "queue" then
+		GameAction:FireServer("leaveMatch")
+		GameAction:FireServer("queue")
+		return
+	end
+
 	GameAction:FireServer("replay")
 end)
 
@@ -1613,7 +1534,6 @@ end)
 local RESULT_BADGES = {
 	{ key = "mvp",       text = "DESTAQUE",   color = Color3.fromRGB(240, 196, 84) },
 	{ key = "protector", text = "ESCUDO",     color = Color3.fromRGB(110, 180, 240) },
-	{ key = "biggest",   text = "MAIOR GOLPE", color = Color3.fromRGB(232, 122, 108) },
 }
 
 -- Rótulo à esquerda, número à direita. Duas TextLabels e não uma string
@@ -1663,8 +1583,6 @@ local function mergedStats(hero)
 			total.taken = (total.taken or 0) + (s.taken or 0)
 			total.healed = (total.healed or 0) + (s.healed or 0)
 			total.kills = (total.kills or 0) + (s.kills or 0)
-			-- maior golpe é MÁXIMO, não soma: é "o maior que esta peça deu"
-			total.biggestHit = math.max(total.biggestHit or 0, s.biggestHit or 0)
 		end
 	end
 	return total
@@ -1678,7 +1596,7 @@ local function buildResultCard(hero, badgeKey, order)
 	-- com meio Golem em campo não perdeu a peça.
 	local standing = hero.isAlive
 	for _, piece in ipairs(hero.summons or {}) do
-		if piece.isAlive then standing = true break end
+		if piece.isAlive and piece.sameBody then standing = true break end
 	end
 
 	local card = Instance.new("Frame")
@@ -1754,7 +1672,7 @@ local function buildResultCard(hero, badgeKey, order)
 	-- "sobreviveu" nem "caiu" — dizer qualquer um dos dois seria mentira.
 	local pecasVivas = 0
 	for _, piece in ipairs(hero.summons or {}) do
-		if piece.isAlive then pecasVivas += 1 end
+		if piece.isAlive and piece.sameBody then pecasVivas += 1 end
 	end
 
 	local statusLabel = Instance.new("TextLabel")
@@ -1762,7 +1680,7 @@ local function buildResultCard(hero, badgeKey, order)
 	statusLabel.Size = UDim2.new(1, -8, 0, 12)
 	statusLabel.BackgroundTransparency = 1
 	if hero.isAlive then
-		statusLabel.Text = ("sobreviveu · %d/%d"):format(math.max(hero.currentHp, 0), hero.maxHp)
+		statusLabel.Text = ""
 	elseif pecasVivas > 0 then
 		statusLabel.Text = ("em pedaços · %d de pé"):format(pecasVivas)
 	else
@@ -1777,32 +1695,33 @@ local function buildResultCard(hero, badgeKey, order)
 	buildResultStat(card, 0, "Dano causado", stats.dealt or 0, Color3.fromRGB(255, 186, 120))
 	buildResultStat(card, 1, "Dano recebido", stats.taken or 0, Color3.fromRGB(150, 190, 245))
 
-	-- A terceira linha muda conforme o herói: cura pra quem curou, abates pra
-	-- quem abateu, e o maior golpe pra quem só bateu. Três linhas fixas
-	-- deixariam dois zeros em quase todo card, e zero não informa nada — o
-	-- espaço vale mais mostrando o que aquele herói de fato fez.
+	local order = 2
+	if (stats.kills or 0) > 0 then
+		buildResultStat(card, order, "Abates", stats.kills, Color3.fromRGB(238, 170, 160))
+		order += 1
+	end
 	if (stats.healed or 0) > 0 then
-		buildResultStat(card, 2, "Cura", stats.healed, Color3.fromRGB(150, 225, 175))
-	elseif (stats.kills or 0) > 0 then
-		buildResultStat(card, 2, "Abates", stats.kills, Color3.fromRGB(238, 170, 160))
-	elseif (stats.biggestHit or 0) > 0 then
-		buildResultStat(card, 2, "Maior golpe", stats.biggestHit, Color3.fromRGB(200, 200, 214))
+		buildResultStat(card, order, "Cura", stats.healed, Color3.fromRGB(150, 225, 175))
 	end
 end
 
 -- Redesenha a fileira inteira. Os cards são descartáveis: a partida acabou, não
 -- há atualização incremental pra otimizar, e recriar é o que garante que uma
 -- revanche não herde os números da anterior.
-local function renderResultTeam(state)
+function renderResultTeam(state)
 	for _, child in ipairs(resultTeam:GetChildren()) do
 		if child:IsA("Frame") then child:Destroy() end
 	end
 
-	local summary = state.summary or {}
+	local showingMine = resultPage == "mine"
+	local summary = showingMine and (state.summary or {}) or {}
+
 	local mine = {}
 	for _, hero in ipairs(state.heroes) do
-		if hero.isMine then table.insert(mine, hero) end
+		if hero.isMine == showingMine then table.insert(mine, hero) end
 	end
+
+	resultPageLabel.Text = showingMine and "SEU TIME" or "ADVERSÁRIO"
 
 	-- Mesmo agrupamento da coluna lateral: os pedaços do Golem entram no card do
 	-- corpo em vez de virarem cards próprios. A ordem já vem pronta do servidor
@@ -1832,19 +1751,12 @@ local function renderResultTeam(state)
 	for index, hero in ipairs(mine) do
 		local badgeKey = nil
 		if wearsBadge(hero, summary.mvpUid) then badgeKey = "mvp"
-		elseif wearsBadge(hero, summary.protectorUid) then badgeKey = "protector"
-		elseif wearsBadge(hero, summary.biggestHitUid) then badgeKey = "biggest" end
+		elseif wearsBadge(hero, summary.protectorUid) then badgeKey = "protector" end
 
 		buildResultCard(hero, badgeKey, index)
 	end
 
-	if summary.turns then
-		local biggest = (summary.biggestHit or 0) > 0
-			and ("   ·   maior golpe: %d de dano"):format(summary.biggestHit) or ""
-		resultSubtitle.Text = ("%d turnos%s"):format(summary.turns, biggest)
-	else
-		resultSubtitle.Text = ""
-	end
+	resultSubtitle.Text = summary.turns and ("%d turnos"):format(summary.turns) or ""
 end
 
 -- Implementacao do heroByUid declarado la em cima. Em Lua uma funcao so enxerga
@@ -2499,12 +2411,6 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		queueMessage(state.message)
 	end
 
-	-- antes de decidir a fase: o golpe que encerra a partida também merece o
-	-- destaque, e ele chega no mesmo snapshot que marca "finished"
-	if state.finisher then
-		playFinisher(state.finisher)
-	end
-
 	-- ANTES do desvio por fase: as casas de promoção são pintadas em TODAS as
 	-- fases, inclusive no posicionamento. Elas fazem parte do tabuleiro desde o
 	-- começo da partida, e ver as duas apagadas enquanto se escolhe onde largar
@@ -2528,6 +2434,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		-- "voltar pro lobby"
 		surrenderButton.Visible = false
 		closeConfirm()
+		if not resultPanel.Visible then resultPage = "mine" end
 		resultPanel.Visible = true
 		secondsLeft = nil
 		wasMyTurn = false
@@ -2539,6 +2446,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		-- o time DELE, com o que cada herói fez. O servidor já mandou o resumo
 		-- do ponto de vista deste espectador (ver Snapshot.summary).
 		renderResultTeam(state)
+		renderReplayButton(state)
 
 		-- o servidor já manda o resultado do ponto de vista de quem recebe
 		if state.winner == "draw" then

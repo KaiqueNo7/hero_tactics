@@ -17,6 +17,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local Progression = require(ReplicatedStorage.Modules.Progression)
 local CoinService = require(ServerScriptService.Modules.CoinService)
+local RewardQueueService = require(ServerScriptService.Modules.RewardQueueService)
 local SafeStore = require(ServerScriptService.Modules.SafeStore)
 
 local XP_STORE_NAME = "HeroTactics_Xp_v1"
@@ -70,6 +71,7 @@ function ProgressionService.AwardMatchXp(player, result, survivors, vsBot)
 	local matchCoins = Progression.MatchCoins(result)
 	if matchCoins > 0 then
 		CoinService.Award(userId, matchCoins)
+		RewardQueueService.Push(userId, { coins = matchCoins })
 	end
 
 	local amount = Progression.MatchReward(result, survivors, vsBot)
@@ -101,9 +103,12 @@ function ProgressionService.AwardMatchXp(player, result, survivors, vsBot)
 	-- gravação de propósito: só paga por nível que o jogador realmente tem.
 	local levelsGained = Progression.FromTotalXp(totalXp[userId]).level - levelBefore
 	if levelsGained > 0 then
-		CoinService.Award(userId, levelsGained * Progression.LEVEL_UP_COINS)
+		local levelCoins = levelsGained * Progression.LEVEL_UP_COINS
+		CoinService.Award(userId, levelCoins)
+		RewardQueueService.Push(userId, { coins = levelCoins })
 	end
 
+	RewardQueueService.Push(userId, { xp = amount })
 	Push(player, amount)
 end
 
