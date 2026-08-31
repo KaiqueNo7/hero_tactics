@@ -103,10 +103,15 @@ GameConfig.WIND_BOOST_MOVE_BONUS = 1
 -- ===== WREN (nome de trabalho — a atiradora, ver docs/HeroisFuturos.md) =====
 GameConfig.WREN_RANGE = 5
 
-GameConfig.ESTOPIM_DAMAGE = 6
+GameConfig.ESTOPIM_DAMAGE = 10
+GameConfig.ESTOPIM_DEATH_HOLD = 1.25
 
 GameConfig.MORN_SUMMON_IDS = { 21, 22 }
 GameConfig.MORN_SUMMON_COOLDOWN = 0
+
+GameConfig.RUSH_MOVE_RANGE = 4
+GameConfig.MOMENTUM_PER_HEX = 1
+GameConfig.DODGE_MIN_DISTANCE = 2
 
 -- ===== FÚRIA (Bramm) =====
 GameConfig.RAGE_BLOCKED_BONUS = 2

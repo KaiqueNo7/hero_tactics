@@ -949,4 +949,35 @@ Skills.estopim = {
 	end,
 }
 
+Skills.momentum = {
+	triggers = { "onMove", "onAttackResolved", "onTurnEnd" },
+	apply = function(ctx)
+		if ctx.trigger ~= "onMove" then
+			ctx.api.RemoveStatusEffect(ctx.hero, "momentum")
+			return
+		end
+
+		if ctx.movedHero ~= ctx.hero then return end
+
+		ctx.api.RemoveStatusEffect(ctx.hero, "momentum")
+
+		local steps = #(ctx.path or {})
+		local bonus = steps * GameConfig.MOMENTUM_PER_HEX
+		if bonus <= 0 then return end
+
+		ctx.api.IncreaseAttack(ctx.hero, bonus)
+		ctx.api.ApplyStatusEffect(ctx.hero, {
+			type = "momentum",
+			duration = 1,
+			attackBonus = bonus,
+		})
+		ctx.api.Effect(ctx.hero)
+	end,
+}
+
+Skills.dodge = {
+	passive = true,
+	triggers = {},
+}
+
 return Skills

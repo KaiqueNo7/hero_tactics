@@ -71,6 +71,7 @@ local IsFree = MatchQuery.IsFree
 local LivingHeroesOf = MatchQuery.LivingHeroesOf
 local MoveRangeOf = MatchQuery.MoveRangeOf
 local SideOf = MatchQuery.SideOf
+local TauntBlocks = MatchQuery.TauntBlocks
 
 local BotBrain = {}
 
@@ -235,20 +236,6 @@ local function ReachFrom(match, hero, fromPos, range)
 end
 
 -- Um Taunt inimigo adjacente trava o ataque em qualquer outro alvo
-local function TauntBlocks(match, attacker, target, fromPos)
-	if target.ability == TAUNT then return false end
-
-	for _, neighbor in ipairs(HexGrid.GetNeighbors(fromPos)) do
-		local occupant = GetHeroAt(match, neighbor.id)
-		if occupant and occupant.isAlive
-			and occupant.ownerId ~= attacker.ownerId
-			and occupant.ability == TAUNT then
-			return true
-		end
-	end
-	return false
-end
-
 local function EstimateDamage(match, attacker, target, fromPos)
 	if HasSkill(attacker, "longShot") then
 		return math.clamp(HexGrid.Distance(fromPos, target.position), 1, GameConfig.WREN_RANGE)
@@ -299,6 +286,10 @@ local function EstimateDamage(match, attacker, target, fromPos)
 	-- turno em que está invisível, e só naquele.
 	if HasSkill(attacker, "ambush") and attacker.stealth then
 		damage += GameConfig.AMBUSH_BONUS_DAMAGE
+	end
+
+	if HasSkill(attacker, "momentum") then
+		damage += HexGrid.Distance(attacker.position, fromPos) * GameConfig.MOMENTUM_PER_HEX
 	end
 
 	return damage
@@ -458,6 +449,7 @@ end
 
 local function ScoreAttack(match, attacker, target, fromPos, ctx)
 	if TauntBlocks(match, attacker, target, fromPos) then return nil end
+	if HasSkill(target, "dodge") and MatchQuery.DodgeHexFor(match, target, fromPos) then return nil end
 
 	local damage = EstimateDamage(match, attacker, target, fromPos)
 	local score = math.min(damage, target.currentHp) * 10

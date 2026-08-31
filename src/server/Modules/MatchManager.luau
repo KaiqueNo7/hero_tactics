@@ -68,6 +68,8 @@ local MatchManager = {}
 -- ===== AJUSTE FINO =====
 local BOT_ACTION_DELAY = 0.7
 local COUNTER_ATTACK_DELAY = 0.4
+local DODGE_CORE = Color3.fromRGB(190, 235, 255)
+local DODGE_EDGE = Color3.fromRGB(70, 160, 255)
 
 local BOT_ID = "BOT"
 local BOT_ONE_ID = "BOT_A"
@@ -407,6 +409,13 @@ function KillHero(match, hero, attacker)
 	-- pedaço acabou de liberar já entra na busca por casa livre, então o mais
 	-- comum é a pedra nascer exatamente onde o último caiu.
 	ResolvePendingGraves(match)
+
+	if hero.deathHold then
+		local wasBusy = match.busy
+		match.busy = true
+		task.wait(hero.deathHold)
+		match.busy = wasBusy
+	end
 end
 
 local DAMAGE_SOURCES = {
@@ -763,6 +772,19 @@ local function BuildSkillApi(match)
 		ApplyStatusEffect = function(hero, effect)
 			effect.appliedTurnToken = match.turnToken
 			ApplyStatusEffect(match, hero, effect)
+		end,
+
+		RemoveStatusEffect = function(hero, effectType)
+			for index = #hero.statusEffects, 1, -1 do
+				local effect = hero.statusEffects[index]
+				if effect.type == effectType then
+					table.remove(hero.statusEffects, index)
+					if effect.attackBonus then
+						IncreaseAttack(match, hero, -effect.attackBonus)
+					end
+				end
+			end
+			HeroView.UpdateStats(hero)
 		end,
 
 		ClearStatusEffects = ClearStatusEffects,
@@ -1275,6 +1297,7 @@ function CreateHero(match, dataId, ownerId, hexId)
 		attackRange = HeroData.GetAttackRange(data),
 		moveRange = HeroData.GetMoveRange(data),
 		deathSound = data.deathSound,
+		deathHold = data.deathHold,
 		attackSound = data.attackSound,
 		position = hexId,
 		isAlive = true,
@@ -1658,6 +1681,23 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 		HeroView.ShowRangedAttack(attacker, target)
 	end
 
+	if HasSkill(target, "dodge") and target.isAlive then
+		local escape = MatchQuery.DodgeHexFor(match, target, attacker.position)
+		if escape then
+			local from = target.position
+			ForceMove(match, target, escape)
+			HeroView.FlashAttackRange(match.view, { from }, DODGE_CORE, DODGE_EDGE)
+			HeroView.PlaySkillEffect(target, "dodge")
+			HeroView.PlaySkillSound("dodge", match.view)
+			LogEvent(match, "skill", target.sideIndex,
+				("%s desviou do ataque de %s"):format(target.name, attacker.name))
+
+			attacker.firstAttack = true
+			HeroView.UpdateStats(attacker)
+			return { damageApplied = true, dodged = true }
+		end
+	end
+
 	-- O carimbo de furtividade sai ANTES das skills correrem. A Emboscada e a
 	-- quebra da invisibilidade moram em skills diferentes do MESMO herói e
 	-- disparam no mesmo gatilho: lendo `attacker.stealth` direto, qual das duas
@@ -1710,7 +1750,7 @@ end
 local function BotPickResurrection(match, botId, options)
 	local hasTank = false
 	for _, ally in ipairs(LivingHeroesOf(match, botId)) do
-		if ally.ability == TAUNT then hasTank = true break end
+		if ally.ability == GameConfig.ABILITIES.TAUNT then hasTank = true break end
 	end
 
 	local best, bestScore = options[1], -math.huge
@@ -1720,7 +1760,7 @@ local function BotPickResurrection(match, botId, options)
 
 		if hero and data then
 			local score = BotBrain.ThreatScore(hero) * 2 + data.hp / 3
-			if not hasTank and data.ability == TAUNT then score += 25 end
+			if not hasTank and data.ability == GameConfig.ABILITIES.TAUNT then score += 25 end
 
 			if score > bestScore then
 				best, bestScore = uid, score
@@ -2021,12 +2061,12 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	local origin = hero.position
 
 	match.busy = true
-	for _, stepHex in ipairs(path) do
+	for step, stepHex in ipairs(path) do
 		match.occupied[hero.position] = nil
 		hero.position = stepHex
 		match.occupied[stepHex] = hero
 
-		HeroView.WalkStep(hero, stepHex)
+		HeroView.WalkStep(hero, stepHex, step)
 
 		-- o próprio Karo cruzando o rastro dele: sem dano (o bônus de ataque do
 		-- Furor já foi contado ANTES deste loop, em enteredFlameCount)
@@ -2121,17 +2161,12 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[target.position] then return end
 
-	-- Taunt: inimigo com Taunt adjacente ao atacante trava o ataque em outro alvo
-	if target.ability ~= GameConfig.ABILITIES.TAUNT then
-		for _, neighbor in ipairs(HexGrid.GetNeighbors(attacker.position)) do
-			local occupant = GetHeroAt(match, neighbor.id)
-			if occupant and occupant.isAlive
-				and occupant.ownerId ~= attacker.ownerId
-				and occupant.ability == GameConfig.ABILITIES.TAUNT then
-				Broadcast(match, ("%s está bloqueado por Taunt de %s"):format(attacker.name, occupant.name))
-				return
-			end
-		end
+	-- Taunt: trava o ataque em outro alvo quando está colado no ATACANTE, ou
+	-- quando um tiro à distância teria que atravessar a casa dele (ver MatchQuery.TauntBlocks)
+	local tauntBlocker = MatchQuery.TauntBlocks(match, attacker, target)
+	if tauntBlocker then
+		Broadcast(match, ("%s está bloqueado por Taunt de %s"):format(attacker.name, tauntBlocker.name))
+		return
 	end
 
 	match.turn.attacked[attackerUid] = true
@@ -2425,7 +2460,7 @@ local function BotPickHex(data, zone, free)
 	table.sort(free, function(a, b)
 		local da, db = offsetFromCenter(a), offsetFromCenter(b)
 		if da == db then return jitter[a] < jitter[b] end
-		if data.ability == RANGED then return da > db end
+		if data.ability == GameConfig.ABILITIES.RANGED then return da > db end
 		return da < db
 	end)
 

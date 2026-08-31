@@ -110,6 +110,15 @@ local function FakeApi()
 		CountDeaths = function() return 0 end,
 		LightFlame = function(hexId) table.insert(log.flames, hexId) end,
 		FindStatusEffect = MatchQuery.FindStatusEffect,
+		RemoveStatusEffect = function(hero, effectType)
+			for index = #hero.statusEffects, 1, -1 do
+				local effect = hero.statusEffects[index]
+				if effect.type == effectType then
+					table.remove(hero.statusEffects, index)
+					if effect.attackBonus then hero.attack -= effect.attackBonus end
+				end
+			end
+		end,
 		ApplyStatusEffect = function(hero, effect)
 			table.insert(hero.statusEffects, effect)
 			table.insert(log.status, effect)
@@ -403,7 +412,7 @@ do
 	}
 
 	local function mirrorOf(hexId)
-		local letter, row = hexId:match("^(%a)(%d+) )
+		local letter, row = hexId:match("^(%a)(%d+)$")
 		if not letter or not rows[letter] then return nil end
 		return letter .. tostring(rows[letter].min + rows[letter].max - tonumber(row))
 	end
@@ -431,6 +440,160 @@ do
 				GameConfig.PROMOTION_HEX_FOR_SLOT[1] ~= hexId and GameConfig.PROMOTION_HEX_FOR_SLOT[2] ~= hexId, hexId)
 			check(theme.id .. ": disposicao simetrica", set[mirrorOf(hexId)] == true, hexId)
 		end
+	end
+end
+
+do
+	local RUSH_ID = 24
+	local rush = FakeHero(RUSH_ID, "A", lineA)
+	local base = rush.attack
+
+	local api = FakeApi()
+	Skills.momentum.apply({ hero = rush, movedHero = rush, trigger = "onMove",
+		path = { "B2", "B3", "B4" }, api = api })
+	check("Embalo soma uma casa andada por ponto", rush.attack == base + 3, rush.attack)
+
+	Skills.momentum.apply({ hero = rush, movedHero = rush, trigger = "onMove",
+		path = { "B5" }, api = api })
+	check("Embalo do passo novo substitui o anterior", rush.attack == base + 1, rush.attack)
+
+	Skills.momentum.apply({ hero = rush, trigger = "onAttackResolved", api = api })
+	check("Embalo e gasto no ataque", rush.attack == base, rush.attack)
+
+	Skills.momentum.apply({ hero = rush, movedHero = rush, trigger = "onMove",
+		path = { "B6", "B7" }, api = api })
+	Skills.momentum.apply({ hero = rush, trigger = "onTurnEnd", api = api })
+	check("Embalo nao passa do turno", rush.attack == base, rush.attack)
+
+	local other = FakeHero(1, "A", lineB)
+	Skills.momentum.apply({ hero = rush, movedHero = other, trigger = "onMove",
+		path = { "C1", "C2" }, api = api })
+	check("Embalo ignora o passo alheio", rush.attack == base, rush.attack)
+
+	check("Rush anda 4 casas", HeroData.GetMoveRange(HeroData.GetById(RUSH_ID)) == 4)
+	check("Reflexo Supersonico e passivo sem gatilho",
+		Skills.dodge.passive == true and #Skills.dodge.triggers == 0)
+end
+
+
+do
+	local ahead = lineB and lineC and HexGrid.GetLineBeyond(lineB, lineC, 1)
+	local lineD = ahead and ahead[1]
+	local behindTarget = lineD and HexGrid.GetLineBeyond(lineC, lineD, 1)
+	local behindShooter = lineA and lineB and HexGrid.GetLineBeyond(lineB, lineA, 1)
+
+	if lineD then
+		local lateral
+		for _, neighbor in ipairs(HexGrid.GetNeighbors(lineB)) do
+			local span = HexGrid.Distance(lineA, neighbor.id) + HexGrid.Distance(neighbor.id, lineD)
+			if span > HexGrid.Distance(lineA, lineD) then
+				lateral = neighbor.id
+				break
+			end
+		end
+
+		local shooter = FakeHero(19, "A", lineA)
+		local melee = FakeHero(1, "A", lineA)
+		local victim = FakeHero(1, "B", lineD)
+		local wall = FakeHero(6, "B", lineB)
+
+		local board = { occupied = {}, heroes = {} }
+		local function put(hero, hexId)
+			if hero.position then board.occupied[hero.position] = nil end
+			hero.position = hexId
+			board.occupied[hexId] = hero
+			board.heroes[hero.uid] = hero
+		end
+
+		put(shooter, lineA)
+		put(victim, lineD)
+
+		check("sem Taunt o tiro passa", MatchQuery.TauntBlocks(board, shooter, victim) == nil)
+
+		put(wall, lineB)
+		check("Taunt no corredor bloqueia mesmo longe do alvo",
+			MatchQuery.TauntBlocks(board, shooter, victim) == wall, lineB)
+		check("o bloqueador nao encosta no alvo", HexGrid.Distance(lineB, lineD) > 1)
+
+		put(wall, lineC)
+		check("Taunt no corredor colado no alvo bloqueia",
+			MatchQuery.TauntBlocks(board, shooter, victim) == wall, lineC)
+
+		if behindTarget and behindTarget[1] then
+			put(wall, behindTarget[1])
+			check("Taunt atras do alvo nao bloqueia",
+				MatchQuery.TauntBlocks(board, shooter, victim) == nil, behindTarget[1])
+		end
+
+		if behindShooter and behindShooter[1] then
+			put(wall, behindShooter[1])
+			check("Taunt atras do atirador nao bloqueia",
+				MatchQuery.TauntBlocks(board, shooter, victim) == nil, behindShooter[1])
+		end
+
+		if lateral then
+			put(wall, lateral)
+			check("Taunt fora do corredor nao bloqueia",
+				MatchQuery.TauntBlocks(board, shooter, victim) == nil, lateral)
+		end
+
+		put(wall, lineB)
+		check("alvo com Taunt continua atacavel",
+			MatchQuery.TauntBlocks(board, shooter, wall) == nil)
+
+		put(melee, lineA)
+		put(wall, lineC)
+		check("melee nao trava com Taunt longe",
+			MatchQuery.TauntBlocks(board, melee, victim) == nil)
+		put(wall, lineB)
+		check("melee trava com Taunt colado",
+			MatchQuery.TauntBlocks(board, melee, victim) == wall)
+	end
+end
+
+do
+	local core
+	for _, hex in ipairs(hexes) do
+		local id = idOf(hex)
+		if #HexGrid.GetNeighbors(id) == 6 then
+			core = id
+			break
+		end
+	end
+
+	if core then
+		local corner = HexGrid.GetNeighbors(core)[1].id
+		local rush = FakeHero(24, "A", core)
+		local bully = FakeHero(1, "B", corner)
+		local board = { occupied = {}, heroes = {} }
+
+		local function put(hero, hexId)
+			hero.position = hexId
+			board.occupied[hexId] = hero
+			board.heroes[hero.uid] = hero
+		end
+		put(rush, core)
+		put(bully, corner)
+
+		local escape = MatchQuery.DodgeHexFor(board, rush, corner)
+		check("Rush esquiva com espaco aberto", escape ~= nil)
+		check("a esquiva termina longe do atacante",
+			escape ~= nil and HexGrid.Distance(escape, corner) >= GameConfig.DODGE_MIN_DISTANCE,
+			escape and HexGrid.Distance(escape, corner))
+
+		local blocked = 0
+		for _, neighbor in ipairs(HexGrid.GetNeighbors(core)) do
+			if HexGrid.Distance(neighbor.id, corner) >= GameConfig.DODGE_MIN_DISTANCE then
+				put(FakeHero(1, "B", neighbor.id), neighbor.id)
+				blocked += 1
+			end
+		end
+		check("o cerco tem casas pra fechar", blocked > 0, blocked)
+		check("sem saida a 2 casas o Rush leva o golpe",
+			MatchQuery.DodgeHexFor(board, rush, corner) == nil)
+
+		check("vizinho colado no atacante nao serve de fuga",
+			HexGrid.Distance(corner, core) < GameConfig.DODGE_MIN_DISTANCE)
 	end
 end
 

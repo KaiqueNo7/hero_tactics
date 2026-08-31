@@ -2274,13 +2274,26 @@ mouse.Button1Down:Connect(function()
 		return
 	end
 
-	-- Túmulo azul da Casa de Promoção: clique direto revive ali mesmo, sem
-	-- passar pela seleção normal de herói. Checado ANTES do resto porque uma
-	-- lápide também bate `heroUid and hero.isMine` lá embaixo — sem este desvio,
-	-- clicar nela cairia em `selectHero`, que descarta herói morto e não faz
-	-- nada.
+	-- Casa azul da Casa de Promoção: o clique revive direto, sem passar pela
+	-- seleção normal de herói. Vale na lápide E em qualquer ponto do hexágono
+	-- dela — a pedra é só o desenho, a casa inteira é a área clicável.
+	-- Checado ANTES do resto porque uma lápide também bate `heroUid and
+	-- hero.isMine` lá embaixo, e a casa cairia no movimento do herói selecionado.
+	local resurrectUid = nil
 	if heroUid and promotionOptionUids[heroUid] then
-		GameAction:FireServer("resurrect", heroUid)
+		resurrectUid = heroUid
+	elseif hexId then
+		for uid in pairs(promotionOptionUids) do
+			local option = heroByUid(uid)
+			if option and option.position == hexId then
+				resurrectUid = uid
+				break
+			end
+		end
+	end
+
+	if resurrectUid then
+		GameAction:FireServer("resurrect", resurrectUid)
 		return
 	end
 

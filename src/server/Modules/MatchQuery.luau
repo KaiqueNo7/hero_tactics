@@ -167,4 +167,60 @@ function MatchQuery.MoveRangeOf(match, hero)
 	return math.max(1, range)
 end
 
+function MatchQuery.DodgeHexFor(match, hero, attackerPos)
+	local best, bestAway, bestExposure = nil, -1, math.huge
+
+	for _, neighbor in ipairs(HexGrid.GetNeighbors(hero.position)) do
+		local away = HexGrid.Distance(neighbor.id, attackerPos)
+
+		if away >= GameConfig.DODGE_MIN_DISTANCE and MatchQuery.IsFree(match, neighbor.id) then
+			local exposure = 0
+			for _, other in pairs(match.heroes) do
+				if other.isAlive and other ~= hero and other.ownerId ~= hero.ownerId
+					and HexGrid.Distance(neighbor.id, other.position) <= other.attackRange then
+					exposure += 1
+				end
+			end
+
+			if away > bestAway or (away == bestAway and exposure < bestExposure) then
+				best, bestAway, bestExposure = neighbor.id, away, exposure
+			end
+		end
+	end
+
+	return best
+end
+
+function MatchQuery.TauntBlocks(match, attacker, target, fromPos)
+	if target.ability == GameConfig.ABILITIES.TAUNT then return nil end
+	fromPos = fromPos or attacker.position
+
+	local function isGuard(hero)
+		return hero ~= nil and hero.isAlive
+			and hero.ownerId ~= attacker.ownerId
+			and hero.ability == GameConfig.ABILITIES.TAUNT
+	end
+
+	if not GameConfig.IsRangedAttack(attacker.attackRange) then
+		for _, neighbor in ipairs(HexGrid.GetNeighbors(fromPos)) do
+			local occupant = MatchQuery.GetHeroAt(match, neighbor.id)
+			if isGuard(occupant) then return occupant end
+		end
+		return nil
+	end
+
+	local span = HexGrid.Distance(fromPos, target.position)
+	for _, other in pairs(match.heroes) do
+		if isGuard(other) and other ~= target then
+			local ahead = HexGrid.Distance(fromPos, other.position)
+			local rest = HexGrid.Distance(other.position, target.position)
+			if ahead > 0 and rest > 0 and ahead + rest == span then
+				return other
+			end
+		end
+	end
+
+	return nil
+end
+
 return MatchQuery

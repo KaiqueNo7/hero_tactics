@@ -165,14 +165,21 @@ HeroData.CATALOG = {
 		sprite = "94273398199775", spriteSize = Vector2.new(382, 412), scale = 1.09 },
 
 	{ id = 20, name = "Morn", attack = 1, hp = 18, ability = nil,
-		abilities = { "raiseSkulls", "lanternReturn", "estopim" },
+		abilities = { "raiseSkulls", "lanternReturn"},
 		color = Color3.fromRGB(90, 160, 150),
 		sprite = "106777398591637", spriteSize = Vector2.new(400, 601), scale = 0.84 },
 
-	{ id = 23, name = "Doutor Maluco", attack = 1, hp = 10, ability = nil,
+	{ id = 23, name = "Dr. Maluco", attack = 1, hp = 10, ability = nil,
 		abilities = { "poisonFlask", "estopim" }, attackSound = "PoisonFlask",
+		deathHold = GameConfig.ESTOPIM_DEATH_HOLD,
 		color = Color3.fromRGB(120, 190, 110),
 		sprite = "125043635721594", spriteSize = Vector2.new(734, 866), scale = 0.99 },
+
+	{ id = 24, name = "Rush", attack = 1, hp = 11, ability = GameConfig.ABILITIES.SPRINT,
+		moveRange = GameConfig.RUSH_MOVE_RANGE,
+		abilities = { "momentum", "dodge" },
+		color = Color3.fromRGB(80, 170, 255),
+		sprite = "99684090577497", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 }
 
 -- ===== TAMANHO APARENTE =====
@@ -233,6 +240,10 @@ end
 HeroData.SKILL_INFO = {
 	firstPunch    = { name = "First Punch",    desc = "O primeiro ataque do herói na partida causa +2 de dano." },
 	autoDefense   = { name = "Auto Defense",   desc = "Recebe 1 ponto a menos de dano ao sofrer contra-ataques." },
+	momentum      = { name = "Embalo",         desc = ("Cada casa andada no próprio turno vale +%d de ataque no próximo golpe daquele turno. O bônus é gasto no ataque e não passa para o turno seguinte.")
+		:format(GameConfig.MOMENTUM_PER_HEX) },
+	dodge         = { name = "Reflexo Supersônico", desc = ("Ao ser alvo de um ataque, escapa 1 casa e evita o golpe por completo — mas só para um vizinho livre que o deixe a %d casas ou mais do atacante. Sem essa saída, leva o ataque normalmente.")
+		:format(GameConfig.DODGE_MIN_DISTANCE) },
 	poisonAttack  = { name = "Poison Attack",  desc = "Envenena o inimigo por 3 turnos." },
 	poisonFlask   = { name = "Frasco de Veneno", desc = ("Golpe simples que envenena por %d turnos. Não causa dano extra em quem já está envenenado.")
 		:format(GameConfig.POISON_DURATION) },

@@ -336,6 +336,7 @@ local SKILL_SOUNDS = {
 	iceStorm = "SkillIceStorm", -- Kor: a nevasca da morte dele
 	estopim = "SkillEstopim",
 	raiseSkulls = "SkillRaiseSkulls",
+	dodge = "SkillDodge",
 }
 
 function HeroView.PlaySkillSound(key, view)
@@ -429,6 +430,8 @@ local SKILL_EFFECTS = {
 	-- rastro de vento a cada passo: discreto de propósito, mesmo raciocínio do
 	-- bloodScent do Merlin — dispara TODO passo, não pode competir com o golpe
 	windStep      = { color = Color3.fromRGB(170, 235, 225), texture = FX_SMOKE, shape = "rise",  count = 8,  size = 1.8, speed = 5 },
+	momentum      = { color = Color3.fromRGB(90, 180, 255),   texture = FX_SPARK, shape = "rise",  count = 10, size = 2.0, speed = 11 },
+	dodge         = { color = Color3.fromRGB(150, 220, 255),  texture = FX_SPARK, shape = "burst", count = 26, size = 2.2, speed = 22 },
 	tailwind      = { color = Color3.fromRGB(190, 250, 240), texture = FX_SPARK, shape = "rise",  count = 16, size = 2.2, speed = 9 },
 
 	-- ===== WREN =====
@@ -531,7 +534,7 @@ local function EnsureFlipbook(hero)
 	return emitter
 end
 
-function HeroView.PlaySkillEffect(hero, key)
+function HeroView.PlaySkillEffect(hero, key, boost)
 	if Hidden(hero) then return end
 
 	local slash = FLIPBOOK_EFFECTS[key]
@@ -578,7 +581,7 @@ function HeroView.PlaySkillEffect(hero, key)
 	emitter.SpreadAngle = rise and Vector2.new(28, 28) or Vector2.new(180, 180)
 	emitter.Acceleration = rise and Vector3.new(0, 7, 0) or Vector3.new(0, -7, 0)
 
-	emitter:Emit(spec.count)
+	emitter:Emit(math.floor(spec.count * (boost or 1)))
 end
 
 -- As duas peças do tiro (a bolinha e a retícula) são criadas UMA vez por
@@ -1313,7 +1316,7 @@ end
 
 local POISON_CORE = Color3.fromRGB(196, 255, 150)
 local POISON_EDGE = Color3.fromRGB(96, 200, 70)
-local POISON_BOMB_TIME = 0.55
+local POISON_BOMB_TIME = 1.1
 
 function HeroView.PlayPoisonBomb(view, hexId)
 	if not view then return end
@@ -1526,7 +1529,7 @@ function BuildTeamRing(anchor, hexId, color, origin)
 		edge.Size = Vector3.new(RING_THICKNESS, RING_THICKNESS, circumradius + RING_THICKNESS)
 		edge.CFrame = CFrame.new(position, position + tangent)
 		edge.Color = color
-		edge.Material = Enum.Material.Neon
+		edge.Material = Enum.Material.SmoothPlastic
 		AttachTo(anchor, edge)
 	end
 end
@@ -1988,7 +1991,7 @@ end
 -- pra separar do que o Karo precisa fazer casa por casa (cobrar pedágio de
 -- fogo com o herói já logicamente NAQUELA casa) — ver MatchManager.MoveHero.
 -- Devolve `false` se o modelo sumiu no meio do caminho (herói destruído).
-function HeroView.WalkStep(hero, hexId)
+function HeroView.WalkStep(hero, hexId, step)
 	if not (hero.part and hero.part.Parent) then return false end
 
 	local tween = TweenService:Create(
@@ -2004,6 +2007,9 @@ function HeroView.WalkStep(hero, hexId)
 	if table.find(hero.abilities, "gustPush") then
 		PlaySound("WindStep", hero.view)
 		HeroView.PlaySkillEffect(hero, "windStep")
+	elseif table.find(hero.abilities, "momentum") then
+		PlaySound("WindStep", hero.view)
+		HeroView.PlaySkillEffect(hero, "momentum", step or 1)
 	else
 		PlaySound("FootstepWood", hero.view)
 	end

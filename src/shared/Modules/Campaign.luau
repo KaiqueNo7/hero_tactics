@@ -52,6 +52,7 @@ Campaign.FIGHTS = {
 
 	{ hero = 23, group = 6, team = { 23, 20, 2 } },
 	{ hero = 20, group = 6, team = { 23, 20, 2 } },
+	{ hero = 24, group = 6, team = { 24, 23, 13 } },
 }
 
 -- Quantos heróis abrem o PvP. A condição é a CONTAGEM, não a lista: seis

@@ -135,6 +135,11 @@ local function ParkLegacyArena(slot)
 		:format(legacy.Name, LEGACY_STORE))
 end
 
+function BoardSpawner.MasterFor(theme)
+	local name = theme.master or (ARENA_MASTER_PREFIX .. theme.id)
+	return Workspace:FindFirstChild(name, true), name
+end
+
 -- Levanta a arena do TEMA pedido no slot, derrubando a que estiver lá. É o que
 -- faz a partida seguinte no mesmo slot acontecer noutra região.
 function BoardSpawner.EnsureArena(slot, theme)
@@ -151,10 +156,16 @@ function BoardSpawner.EnsureArena(slot, theme)
 	if existing then existing:Destroy() end
 
 	local origin = GameConfig.ArenaOrigin(slot)
-	local master = Workspace:FindFirstChild(theme.master or (ARENA_MASTER_PREFIX .. theme.id))
+	local master, masterName = BoardSpawner.MasterFor(theme)
 
 	local folder = master and ArenaBuilder.CloneMaster(master, theme, origin, name)
-		or ArenaBuilder.Build(theme, origin, name)
+	if folder then
+		print(("BoardSpawner: %s clonada de %s."):format(name, master:GetFullName()))
+	else
+		warn(("BoardSpawner: %s montada por codigo — nao achei %s no Workspace. Cenario feito a mao no Studio NAO vai aparecer nesta arena.")
+			:format(name, masterName))
+		folder = ArenaBuilder.Build(theme, origin, name)
+	end
 
 	LightingSetup.LightArena(folder)
 
@@ -196,8 +207,7 @@ function BoardSpawner.BuildMaster(themeId, force)
 		return nil
 	end
 
-	local masterName = ARENA_MASTER_PREFIX .. theme.id
-	local previous = Workspace:FindFirstChild(masterName)
+	local previous, masterName = BoardSpawner.MasterFor(theme)
 	if previous and not force then
 		print(("BoardSpawner: %s ja existe — mantido como esta. BuildMaster('%s', true) descarta e gera de novo.")
 			:format(masterName, theme.id))
@@ -222,6 +232,19 @@ function BoardSpawner.BuildMaster(themeId, force)
 	FocusInStudio(folder)
 	return folder
 end
+
+function BoardSpawner.ReportMasters()
+	for _, theme in ipairs(Arenas.THEMES) do
+		local master, name = BoardSpawner.MasterFor(theme)
+		if master then
+			print(("BoardSpawner: %s -> %s"):format(theme.id, master:GetFullName()))
+		else
+			warn(("BoardSpawner: %s -> SEM TEMPLATE (esperado um Model/Folder chamado %s no Workspace)")
+				:format(theme.id, name))
+		end
+	end
+end
+
 
 function BoardSpawner.BuildAllMasters(force)
 	local folders, first = {}, nil
