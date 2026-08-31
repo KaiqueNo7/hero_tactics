@@ -99,7 +99,7 @@ function LeaderboardBoardView.EnsureBoard()
 	title.Name = "Title"
 	title.Size = UDim2.new(1, 0, 0, 46)
 	title.BackgroundTransparency = 1
-	title.Text = "RANKING DE VITÓRIAS"
+	title.Text = "RANKING — VITÓRIAS PVP"
 	title.TextColor3 = Color3.fromRGB(255, 214, 120)
 	title.TextStrokeTransparency = 0.5
 	title.TextScaled = true

@@ -883,7 +883,7 @@ local function BuildSkillApi(match)
 				local current = table.remove(queue, 1)
 				for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
 					local occupant = match.occupied[neighbor.id]
-					if occupant and not visited[neighbor.id] then
+					if occupant and occupant ~= origin and not visited[neighbor.id] then
 						visited[neighbor.id] = true
 						depth[neighbor.id] = depth[current] + 1
 						table.insert(queue, neighbor.id)
@@ -1804,6 +1804,18 @@ local function RecordHeroStats(match)
 end
 
 -- ===================== FIM DE JOGO =====================
+local function IsRankedPvp(match)
+	if match.simulated then return nil, "BalanceSim" end
+	if match.fight then return nil, "campanha" end
+	if not match.turn then return nil, "partida nao chegou a comecar" end
+
+	for _, side in ipairs(match.sides) do
+		if side.isBot or not side.player then return nil, "envolve bot" end
+	end
+
+	return true
+end
+
 function CheckGameOver(match)
 	local aliveOne = #LivingHeroesOf(match, match.sides[1].id)
 	local aliveTwo = #LivingHeroesOf(match, match.sides[2].id)
@@ -1831,9 +1843,18 @@ function CheckGameOver(match)
 
 		match.winner = winningSide.id
 
-		-- ranking global conta vitória em qualquer modo, menos do próprio bot
-		if not winningSide.isBot then
-			LeaderboardService.RecordWin(tonumber(winningSide.id))
+		-- Ranking = SÓ humano contra humano. Uma vez por partida (rankingDone),
+		-- porque o encerramento pode ser reentrado por desconexão.
+		if not match.rankingDone then
+			match.rankingDone = true
+
+			local ranked, why = IsRankedPvp(match)
+			if ranked then
+				print(("[Ranking] PvP valido — vitoria registrada para %s"):format(winningSide.player.Name))
+				LeaderboardService.RecordWin(tonumber(winningSide.id))
+			else
+				print(("[Ranking] resultado ignorado — %s"):format(why))
+			end
 		end
 
 		-- a vitória paga pela margem (heróis vivos), a derrota paga fixo

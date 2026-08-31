@@ -623,7 +623,7 @@ do
 			local current = table.remove(queue, 1)
 			for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
 				local occupant = occupied[neighbor.id]
-				if occupant and not visited[neighbor.id] then
+				if occupant and occupant ~= origin and not visited[neighbor.id] then
 					visited[neighbor.id] = true
 					table.insert(queue, neighbor.id)
 					if occupant.isAlive and occupant.ownerId ~= origin.ownerId then
@@ -831,6 +831,65 @@ do
 	nash.stealth = false
 	check("Nash visivel devolve a reacao", CanReact(rush, nash) == true)
 end
+do
+	local occupied = {}
+	local function ChainFrom(origin, hexId)
+		local visited = { [hexId] = true }
+		local queue, hit = { hexId }, {}
+		while #queue > 0 do
+			local current = table.remove(queue, 1)
+			for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
+				local occupant = occupied[neighbor.id]
+				if occupant and occupant ~= origin and not visited[neighbor.id] then
+					visited[neighbor.id] = true
+					table.insert(queue, neighbor.id)
+					if occupant.isAlive and occupant.ownerId ~= origin.ownerId then
+						table.insert(hit, occupant)
+					end
+				end
+			end
+		end
+		return hit
+	end
+
+	local core
+	for _, hex in ipairs(hexes) do
+		if #HexGrid.GetNeighbors(idOf(hex)) == 6 then
+			core = idOf(hex)
+			break
+		end
+	end
+
+	if core then
+		local ring = HexGrid.GetNeighbors(core)
+		local volt = FakeHero(25, "A", core)
+		occupied[core] = volt
+
+		local target, isolated
+		for _, neighbor in ipairs(ring) do
+			if not target then
+				target = FakeHero(1, "B", neighbor.id)
+				occupied[neighbor.id] = target
+			elseif not isolated and HexGrid.Distance(neighbor.id, target.position) > 1 then
+				isolated = FakeHero(1, "B", neighbor.id)
+				occupied[neighbor.id] = isolated
+			end
+		end
+
+		if target and isolated then
+			local hit = ChainFrom(volt, target.position)
+			local reached = false
+			for _, victim in ipairs(hit) do
+				if victim == isolated then reached = true end
+			end
+			check("Volt nao e ponte: vizinho isolado fica de fora", reached == false)
+			check("o isolado encosta no Volt", HexGrid.Distance(isolated.position, core) == 1)
+			check("o isolado nao encosta no alvo",
+				HexGrid.Distance(isolated.position, target.position) > 1)
+		end
+	end
+end
+
 if #failures == 0 then
 	print(("CoreChecks: %d verificacoes, tudo certo."):format(passed))
 else

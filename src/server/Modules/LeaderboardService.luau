@@ -16,7 +16,7 @@ local Players = game:GetService("Players")
 
 local LeaderboardService = {}
 
-local WINS_STORE_NAME = "HeroTactics_Wins_v1"
+local WINS_STORE_NAME = "HeroTactics_PvpWins_v2"
 local winsStore = DataStoreService:GetOrderedDataStore(WINS_STORE_NAME)
 
 local updatedEvent = Instance.new("BindableEvent")
