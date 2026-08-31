@@ -1115,6 +1115,26 @@ local function warnNotYourTurn()
 	PlayUiSound("ActionBlocked")
 end
 
+local REJECTION_TEXT = {
+	PARALYZED = "Este herói está paralisado.",
+	NOT_YOUR_TURN = "Não é o turno deste herói.",
+	OUT_OF_RANGE = "Alvo fora do alcance.",
+	OCCUPIED = "Esta casa está ocupada.",
+	INVALID_TARGET = "Alvo inválido.",
+	INVALID_MOVE = "Movimento inválido.",
+	TAUNTED = "Bloqueado por Taunt.",
+}
+
+GameAction.OnClientEvent:Connect(function(action, payload)
+	if action ~= "reject" then return end
+
+	local text = REJECTION_TEXT[payload]
+	if not text then return end
+
+	flashTurnBanner(text, WAIT_TURN_COLOR)
+	PlayUiSound("ActionBlocked")
+end)
+
 local messageLabel = Instance.new("TextLabel")
 messageLabel.Size = UDim2.new(0, 460, 0, 30)
 messageLabel.Position = UDim2.new(0.5, -230, 0, 58)

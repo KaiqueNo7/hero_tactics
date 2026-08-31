@@ -77,6 +77,8 @@ GameConfig.MERLIN_FRENZY_KILL_HEAL = 2 -- cura por inimigo abatido durante o Fre
 -- entra nesta lista e ganha a regra; buff novo não precisa saber que ela existe.
 GameConfig.NEGATIVE_EFFECTS = {
 	poison = true,
+	charge = true,
+	paralysis = true,
 	freeze = true,
 	wound = true,
 }
@@ -105,6 +107,14 @@ GameConfig.WREN_RANGE = 5
 
 GameConfig.ESTOPIM_DAMAGE = 10
 GameConfig.ESTOPIM_DEATH_HOLD = 1.25
+
+GameConfig.FINISH_HOLD_FINAL = 2.2
+GameConfig.FINAL_KILL_HOLD = 3.3
+
+GameConfig.VOLT_CHAIN_DAMAGE = 1
+GameConfig.VOLT_CHARGES_TO_PARALYZE = 3
+GameConfig.VOLT_CHARGE_DURATION = 2
+GameConfig.PARALYSIS_DURATION = 1
 
 GameConfig.MORN_SUMMON_IDS = { 21, 22 }
 GameConfig.MORN_SUMMON_COOLDOWN = 0

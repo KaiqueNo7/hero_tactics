@@ -169,7 +169,7 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(90, 160, 150),
 		sprite = "106777398591637", spriteSize = Vector2.new(400, 601), scale = 0.84 },
 
-	{ id = 23, name = "Dr. Maluco", attack = 1, hp = 10, ability = nil,
+	{ id = 23, name = "Dr. Maluco", attack = 1, hp = 11, ability = nil,
 		abilities = { "poisonFlask", "estopim" }, attackSound = "PoisonFlask",
 		deathHold = GameConfig.ESTOPIM_DEATH_HOLD,
 		color = Color3.fromRGB(120, 190, 110),
@@ -180,6 +180,11 @@ HeroData.CATALOG = {
 		abilities = { "momentum", "dodge" },
 		color = Color3.fromRGB(80, 170, 255),
 		sprite = "99684090577497", spriteSize = Vector2.new(400, 400), scale = 1.00 },
+
+	{ id = 25, name = "Volt", attack = 2, hp = 18, ability = nil,
+		abilities = { "voltChain" }, attackSound = "VoltAttack",
+		color = Color3.fromRGB(120, 200, 255),
+		sprite = "78746546330925", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 }
 
 -- ===== TAMANHO APARENTE =====
@@ -233,6 +238,15 @@ HeroData.SUMMONS = {
 		sprite = SKULL_SPRITE, spriteSize = SKULL_SIZE, scale = SKULL_SCALE },
 }
 
+local SUMMON_IDS = {}
+for _, data in ipairs(HeroData.SUMMONS) do
+	SUMMON_IDS[data.id] = true
+end
+
+function HeroData.IsSummon(dataId)
+	return SUMMON_IDS[dataId] == true
+end
+
 function HeroData.IsStarter(data)
 	return data ~= nil and data.starter == true
 end
@@ -240,6 +254,8 @@ end
 HeroData.SKILL_INFO = {
 	firstPunch    = { name = "First Punch",    desc = "O primeiro ataque do herói na partida causa +2 de dano." },
 	autoDefense   = { name = "Auto Defense",   desc = "Recebe 1 ponto a menos de dano ao sofrer contra-ataques." },
+	voltChain     = { name = "Corrente Elétrica", desc = ("Ataques espalham %d de dano entre inimigos e objetos conectados. Todo inimigo atingido recebe 1 Carga Elétrica por %d turnos. Ao acumular %d Cargas, fica Paralisado no próximo turno.")
+		:format(GameConfig.VOLT_CHAIN_DAMAGE, GameConfig.VOLT_CHARGE_DURATION, GameConfig.VOLT_CHARGES_TO_PARALYZE) },
 	momentum      = { name = "Embalo",         desc = ("Cada casa andada no próprio turno vale +%d de ataque no próximo golpe daquele turno. O bônus é gasto no ataque e não passa para o turno seguinte.")
 		:format(GameConfig.MOMENTUM_PER_HEX) },
 	dodge         = { name = "Reflexo Supersônico", desc = ("Ao ser alvo de um ataque, escapa 1 casa e evita o golpe por completo — mas só para um vizinho livre que o deixe a %d casas ou mais do atacante. Sem essa saída, leva o ataque normalmente.")

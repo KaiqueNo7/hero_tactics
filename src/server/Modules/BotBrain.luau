@@ -292,6 +292,10 @@ local function EstimateDamage(match, attacker, target, fromPos)
 		damage += HexGrid.Distance(attacker.position, fromPos) * GameConfig.MOMENTUM_PER_HEX
 	end
 
+	if HasSkill(attacker, "voltChain") and FindStatusEffect(target, "charge") then
+		damage += GameConfig.VOLT_CHAIN_DAMAGE
+	end
+
 	return damage
 end
 
@@ -737,6 +741,7 @@ end
 
 -- Melhor jogada de um herói: para onde ir e quem bater
 local function PlanFor(match, hero, ctx)
+	if FindStatusEffect(hero, "paralysis") then return nil end
 	local canMove = not match.turn.moved[hero.uid] and not match.turn.attacked[hero.uid]
 	local canAttack = not match.turn.attacked[hero.uid]
 	if not canMove and not canAttack then return nil end

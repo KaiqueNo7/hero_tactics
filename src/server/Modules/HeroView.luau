@@ -432,6 +432,7 @@ local SKILL_EFFECTS = {
 	windStep      = { color = Color3.fromRGB(170, 235, 225), texture = FX_SMOKE, shape = "rise",  count = 8,  size = 1.8, speed = 5 },
 	momentum      = { color = Color3.fromRGB(90, 180, 255),   texture = FX_SPARK, shape = "rise",  count = 10, size = 2.0, speed = 11 },
 	dodge         = { color = Color3.fromRGB(150, 220, 255),  texture = FX_SPARK, shape = "burst", count = 26, size = 2.2, speed = 22 },
+	voltChain     = { color = Color3.fromRGB(255, 226, 90),  texture = FX_SPARK, shape = "burst", count = 16, size = 1.8, speed = 18 },
 	tailwind      = { color = Color3.fromRGB(190, 250, 240), texture = FX_SPARK, shape = "rise",  count = 16, size = 2.2, speed = 9 },
 
 	-- ===== WREN =====
@@ -654,13 +655,14 @@ function HeroView.ShowRangedAttack(attacker, target)
 end
 
 -- ===== HELPERS =====
-local function GetFolder(name)
+local function GetFolder(name, matchId)
 	local folder = Workspace:FindFirstChild(name)
 	if not folder then
 		folder = Instance.new("Folder")
 		folder.Name = name
 		folder.Parent = Workspace
 	end
+	folder:SetAttribute("MatchId", matchId)
 	return folder
 end
 
@@ -672,8 +674,8 @@ function HeroView.CreateView(matchId, origin, players, theme)
 		origin = origin,
 		players = players,
 		theme = theme,
-		heroesFolder = GetFolder("Heroes_" .. matchId),
-		gravesFolder = GetFolder("Graves_" .. matchId),
+		heroesFolder = GetFolder("Heroes_" .. matchId, matchId),
+		gravesFolder = GetFolder("Graves_" .. matchId, matchId),
 	}
 end
 
@@ -1372,16 +1374,61 @@ local function SetEmitters(model, enabled)
 	end
 end
 
-local fireCircleTemplate = (function()
-	local source = Workspace:FindFirstChild(FIRE_CIRCLE_SOURCE)
-	if not (source and source:FindFirstChildWhichIsA("BasePart", true)) then
-		warn(("HeroView: nao achei Workspace['%s'] com uma peca dentro — o giro do Karo sai sem o anel de fogo.")
-			:format(FIRE_CIRCLE_SOURCE))
+local FIRE_CIRCLE_HOME = { "VFX", "Karo", "FireCircle" }
+local FIRE_CIRCLE_LEGACY = { "Fire Circle", "FireCircle", "KaroFireCircle", "Fire Ring" }
+
+local function DescendFrom(root, path)
+	local node = root
+	for _, name in ipairs(path) do
+		node = node and node:FindFirstChild(name)
+	end
+	return node
+end
+
+local function UsableAsVfx(instance)
+	if not instance then return false end
+	if instance:IsA("BasePart") then return true end
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("BasePart") or descendant:IsA("ParticleEmitter")
+			or descendant:IsA("Beam") or descendant:IsA("Trail") then
+			return true
+		end
+	end
+	return false
+end
+
+local function FindFireCircleSource()
+	local home = DescendFrom(ReplicatedStorage, FIRE_CIRCLE_HOME)
+	if UsableAsVfx(home) then return home end
+
+	for _, container in ipairs({ ReplicatedStorage, Workspace }) do
+		for _, name in ipairs(FIRE_CIRCLE_LEGACY) do
+			local found = container:FindFirstChild(name)
+			if UsableAsVfx(found) then return found end
+		end
+	end
+
+	return nil
+end
+
+local fireCircleTemplate, fireCircleWarned = nil, false
+
+local function FireCircleTemplate()
+	if fireCircleTemplate then return fireCircleTemplate end
+
+	local source = FindFireCircleSource()
+	if not source then
+		if not fireCircleWarned then
+			fireCircleWarned = true
+			warn(("HeroView: VFX/Karo/FireCircle nao encontrado em ReplicatedStorage (nem como %s no Workspace) — o giro do Karo sai sem o anel de fogo.")
+				:format(table.concat(FIRE_CIRCLE_LEGACY, " / ")))
+		end
 		return nil
 	end
 
-	SetEmitters(source, false)
-	for _, descendant in ipairs(source:GetDescendants()) do
+	local template = source:Clone()
+	SetEmitters(template, false)
+	for _, descendant in ipairs(template:GetDescendants()) do
 		if descendant:IsA("BasePart") then
 			descendant.Anchored = true
 			descendant.CanCollide = false
@@ -1391,40 +1438,69 @@ local fireCircleTemplate = (function()
 		end
 	end
 
-	source.Parent = nil
-	return source
-end)()
+	fireCircleTemplate = template
+	return template
+end
 
 function HeroView.PlayFireCircle(view, hexId)
-	if not (view and fireCircleTemplate) then return end
+	if not view then return end
 
-	local circle = fireCircleTemplate:Clone()
-	local part = circle:FindFirstChildWhichIsA("BasePart", true)
-	if not part then
-		circle:Destroy()
-		return
+	local template = FireCircleTemplate()
+	if not template then return end
+
+	local circle = template:Clone()
+	local center = HexGrid.GetWorldPosition(hexId, view.origin)
+		+ Vector3.new(0, TILE_TOP_Y + 0.15, 0)
+
+	local part = circle:IsA("BasePart") and circle or circle:FindFirstChildWhichIsA("BasePart", true)
+
+	if not part and not circle:IsA("PVInstance") then
+		local host = Instance.new("Part")
+		host.Name = "FireCircleHost"
+		host.Size = Vector3.new(0.2, 0.2, 0.2)
+		host.Transparency = 1
+		host.Anchored = true
+		host.CanCollide = false
+		host.CanQuery = false
+		host.CastShadow = false
+		circle.Parent = host
+		circle = host
+		part = host
 	end
 
-	local full = part.Size
-	local seed = Vector3.new(full.X, full.Y * FIRE_CIRCLE_SEED, full.Z * FIRE_CIRCLE_SEED)
-	local spin = part.CFrame.Rotation
-	local center = HexGrid.GetWorldPosition(hexId, view.origin)
+	local anchor = part or circle
+	local spin = part and part.CFrame.Rotation or CFrame.identity
+	local full, seed = nil, nil
 
-	part.Size = seed
-	part.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y + 0.15, 0)) * spin
+	if part then
+		full = part.Size
+		seed = Vector3.new(full.X, full.Y * FIRE_CIRCLE_SEED, full.Z * FIRE_CIRCLE_SEED)
+		part.Size = seed
+	end
+
+	if anchor:IsA("BasePart") then
+		anchor.CFrame = CFrame.new(center) * spin
+	else
+		anchor:PivotTo(CFrame.new(center) * spin)
+	end
+
 	circle.Parent = view.heroesFolder
 	SetEmitters(circle, true)
 
-	TweenService:Create(part,
-		TweenInfo.new(FIRE_CIRCLE_GROW, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-		{ Size = full }):Play()
+	if part then
+		TweenService:Create(part,
+			TweenInfo.new(FIRE_CIRCLE_GROW, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+			{ Size = full }):Play()
+	end
 
 	task.delay(FIRE_CIRCLE_GROW + FIRE_CIRCLE_HOLD, function()
-		if not part.Parent then return end
+		if not circle.Parent then return end
 
-		TweenService:Create(part,
-			TweenInfo.new(FIRE_CIRCLE_CLOSE, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-			{ Size = seed }):Play()
+		if part and part.Parent then
+			TweenService:Create(part,
+				TweenInfo.new(FIRE_CIRCLE_CLOSE, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+				{ Size = seed }):Play()
+		end
 
 		task.delay(FIRE_CIRCLE_CLOSE, function()
 			if circle.Parent then SetEmitters(circle, false) end
@@ -1432,6 +1508,74 @@ function HeroView.PlayFireCircle(view, hexId)
 	end)
 
 	Debris:AddItem(circle, FIRE_CIRCLE_GROW + FIRE_CIRCLE_HOLD + FIRE_CIRCLE_CLOSE + FIRE_CIRCLE_TAIL)
+end
+
+local CHAIN_CORE_COLOR = Color3.fromRGB(255, 250, 190)
+local CHAIN_GLOW_COLOR = Color3.fromRGB(255, 214, 40)
+local CHAIN_STEP = 0.07
+local CHAIN_LIFE = 0.26
+local CHAIN_SEGMENTS = 3
+local CHAIN_JITTER = 0.9
+local CHAIN_THICKNESS = 0.22
+
+local function BuildArcSegment(parent, fromPoint, toPoint, thickness, color)
+	local delta = toPoint - fromPoint
+	local segment = Instance.new("Part")
+	segment.Name = "ChainArc"
+	segment.Size = Vector3.new(thickness, thickness, delta.Magnitude)
+	segment.CFrame = CFrame.new(fromPoint + delta * 0.5, toPoint)
+	segment.Color = color
+	segment.Material = Enum.Material.Neon
+	segment.Anchored = true
+	segment.CanCollide = false
+	segment.CanQuery = false
+	segment.CastShadow = false
+	segment.Parent = parent
+	return segment
+end
+
+local function PlayArc(view, fromHex, toHex)
+	local lift = Vector3.new(0, TILE_TOP_Y + SPRITE_HEIGHT * 0.35, 0)
+	local origin = HexGrid.GetWorldPosition(fromHex, view.origin) + lift
+	local target = HexGrid.GetWorldPosition(toHex, view.origin) + lift
+
+	local previous = origin
+	for index = 1, CHAIN_SEGMENTS do
+		local straight = origin:Lerp(target, index / CHAIN_SEGMENTS)
+		local point = index < CHAIN_SEGMENTS and straight + Vector3.new(
+			(math.random() - 0.5) * CHAIN_JITTER,
+			(math.random() - 0.5) * CHAIN_JITTER,
+			(math.random() - 0.5) * CHAIN_JITTER
+		) or target
+
+		local glow = BuildArcSegment(view.heroesFolder, previous, point, CHAIN_THICKNESS * 2.1, CHAIN_GLOW_COLOR)
+		glow.Transparency = 0.55
+		local core = BuildArcSegment(view.heroesFolder, previous, point, CHAIN_THICKNESS, CHAIN_CORE_COLOR)
+
+		for _, part in ipairs({ glow, core }) do
+			TweenService:Create(part, TweenInfo.new(CHAIN_LIFE), { Transparency = 1 }):Play()
+			Debris:AddItem(part, CHAIN_LIFE + 0.05)
+		end
+
+		previous = point
+	end
+end
+
+function HeroView.PlayChainArcs(view, edges)
+	if not view then return end
+
+	for _, edge in ipairs(edges) do
+		local delay = edge.depth * CHAIN_STEP
+		if delay <= 0 then
+			PlayArc(view, edge.from, edge.to)
+		else
+			task.delay(delay, function()
+				if view.heroesFolder and view.heroesFolder.Parent then
+					PlayArc(view, edge.from, edge.to)
+				end
+			end)
+		end
+	end
 end
 
 function HeroView.PlayIceStorm(view, hexId)
@@ -1888,6 +2032,50 @@ function HeroView.Create(hero)
 end
 
 -- ===== ESTADO =====
+local PARALYSIS_SPARK = "ParalysisSpark"
+
+local function SetParalysisSpark(hero, on)
+	if not (hero.part and hero.part.Parent) then return end
+
+	local existing = hero.part:FindFirstChild(PARALYSIS_SPARK, true)
+
+	if not on then
+		if existing then
+			existing.Enabled = false
+			Debris:AddItem(existing, 0.6)
+		end
+		return
+	end
+
+	if existing then
+		existing.Enabled = true
+		return
+	end
+
+	local attachment = Instance.new("Attachment")
+	attachment.Name = PARALYSIS_SPARK .. "Anchor"
+	attachment.Position = Vector3.new(0, SPRITE_HEIGHT * 0.45, 0)
+	attachment.Parent = hero.part
+
+	local spark = Instance.new("ParticleEmitter")
+	spark.Name = PARALYSIS_SPARK
+	spark.Texture = FX_SPARK
+	spark.Color = ColorSequence.new(Color3.fromRGB(190, 235, 255))
+	spark.LightEmission = 0.9
+	spark.LightInfluence = 0
+	spark.Size = NumberSequence.new(0.9)
+	spark.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.2),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	spark.Lifetime = NumberRange.new(0.18, 0.34)
+	spark.Rate = 9
+	spark.Speed = NumberRange.new(1.5, 3.5)
+	spark.SpreadAngle = Vector2.new(180, 180)
+	spark.Rotation = NumberRange.new(0, 360)
+	spark.Parent = attachment
+end
+
 function HeroView.UpdateStats(hero)
 	if not hero.part or not hero.part.Parent then return end
 
@@ -1947,17 +2135,28 @@ function HeroView.UpdateStats(hero)
 	if statusSlot then
 		local icon = statusSlot:FindFirstChild("Icon")
 		local fallback = statusSlot:FindFirstChild("Fallback")
-		local poison = nil
+		local poison, charge, paralysis = nil, nil, nil
 		for _, effect in ipairs(hero.statusEffects) do
-			if effect.type == "poison" then poison = effect end
+			if effect.type == "poison" then poison = effect
+			elseif effect.type == "charge" then charge = effect
+			elseif effect.type == "paralysis" then paralysis = effect end
 		end
 
 		-- o selo inteiro some sem veneno: crachá vazio com moldura dourada
 		-- parecia um ícone que não carregou
-		status.Visible = poison ~= nil
+		status.Visible = poison ~= nil or charge ~= nil or paralysis ~= nil
+
+		SetParalysisSpark(hero, paralysis ~= nil)
 
 		local spriteId = HeroData.GetPoisonSpriteId()
-		if poison and spriteId then
+		if paralysis then
+			icon.Visible = false
+			fallback.Text = "⚡X"
+		elseif charge then
+			icon.Visible = false
+			fallback.Text = ("⚡%d"):format(charge.stacks or 1)
+		elseif poison and spriteId then
+
 			local stage = HeroData.GetPoisonStageIndex(poison.duration)
 			icon.Image = spriteId
 			icon.Position = UDim2.new(-stage, 0, 0, 0)

@@ -575,6 +575,7 @@ local function buildFinishNameplate(position, name, sideIndex)
 end
 
 local function playFinishCam(info)
+	local holdTime = info.final and GameConfig.FINISH_HOLD_FINAL or FINISH_HOLD
 	if not (activated and boardCenter and info and info.hex) then return end
 	if freeFlying then return end
 
@@ -625,11 +626,11 @@ local function playFinishCam(info)
 		end
 
 		elapsed = 0
-		while elapsed < FINISH_HOLD do
+		while elapsed < holdTime do
 			elapsed += RunService.RenderStepped:Wait()
 			if finishToken ~= token then dropName() return end
 
-			local a = math.min(elapsed / FINISH_HOLD, 1)
+			local a = math.min(elapsed / holdTime, 1)
 			camera.CFrame = orbitCFrame(focus, close - FINISH_DRIFT * a)
 		end
 

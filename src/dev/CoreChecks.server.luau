@@ -597,6 +597,240 @@ do
 	end
 end
 
+
+do
+	local VOLT_ID = 25
+	local chain = {}
+	local occupied = {}
+
+	local function Electrify(victim)
+		local existing = MatchQuery.FindStatusEffect(victim, "charge")
+		local stacks = (existing and existing.stacks or 0) + 1
+		for i = #victim.statusEffects, 1, -1 do
+			if victim.statusEffects[i].type == "charge" then table.remove(victim.statusEffects, i) end
+		end
+		if stacks >= GameConfig.VOLT_CHARGES_TO_PARALYZE then
+			table.insert(victim.statusEffects, { type = "paralysis", duration = GameConfig.PARALYSIS_DURATION })
+		else
+			table.insert(victim.statusEffects, { type = "charge", duration = GameConfig.VOLT_CHARGE_DURATION, stacks = stacks })
+		end
+	end
+
+	local function ChainFrom(origin, hexId)
+		local visited = { [hexId] = true }
+		local queue, hit = { hexId }, {}
+		while #queue > 0 do
+			local current = table.remove(queue, 1)
+			for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
+				local occupant = occupied[neighbor.id]
+				if occupant and not visited[neighbor.id] then
+					visited[neighbor.id] = true
+					table.insert(queue, neighbor.id)
+					if occupant.isAlive and occupant.ownerId ~= origin.ownerId then
+						table.insert(hit, occupant)
+					end
+				end
+			end
+		end
+		for _, victim in ipairs(hit) do
+			victim.currentHp -= GameConfig.VOLT_CHAIN_DAMAGE
+			Electrify(victim)
+			table.insert(chain, victim)
+		end
+		return #hit
+	end
+
+	local function api()
+		local a = FakeApi()
+		a.ChainFrom = ChainFrom
+		a.Say = function() end
+		a.Electrify = Electrify
+		a.RemoveStatusEffect = function(hero, t)
+			for i = #hero.statusEffects, 1, -1 do
+				if hero.statusEffects[i].type == t then table.remove(hero.statusEffects, i) end
+			end
+		end
+		return a
+	end
+
+	local volt = FakeHero(VOLT_ID, "A", lineA)
+	local a1 = FakeHero(1, "B", lineB)
+	occupied[lineB] = a1
+
+	chain = {}
+	Skills.voltChain.apply({ hero = volt, target = a1, api = api(), trigger = "onAttack" })
+	check("caso 1: alvo sozinho nao propaga", #chain == 0, #chain)
+	check("caso 1: alvo ganha carga",
+		MatchQuery.FindStatusEffect(a1, "charge") ~= nil)
+
+	local b1 = FakeHero(1, "B", lineC)
+	occupied[lineC] = b1
+	chain = {}
+	Skills.voltChain.apply({ hero = volt, target = a1, api = api(), trigger = "onAttack" })
+	check("caso 2: vizinho do alvo leva a corrente", #chain == 1, #chain)
+	check("caso 2: alvo direto nao leva a corrente de novo",
+		chain[1] ~= a1)
+	check("caso 2: condutor nao ganha carga",
+		MatchQuery.FindStatusEffect(b1, "charge") == nil)
+
+	local gap = HexGrid.GetLineBeyond(lineB, lineC, 1)
+	if gap and gap[1] then
+		local beyond = HexGrid.GetLineBeyond(lineC, gap[1], 1)
+		if beyond and beyond[1] then
+			local far = FakeHero(1, "B", beyond[1])
+			occupied[beyond[1]] = far
+			chain = {}
+			Skills.voltChain.apply({ hero = volt, target = a1, api = api(), trigger = "onAttack" })
+			check("caso 4: casa vazia corta a corrente", #chain == 1, #chain)
+
+			local barrel = { isBarrel = true, position = gap[1], ownerId = "N" }
+			occupied[gap[1]] = barrel
+			chain = {}
+			Skills.voltChain.apply({ hero = volt, target = a1, api = api(), trigger = "onAttack" })
+			check("caso 5: barril conduz a corrente", #chain == 2, #chain)
+			occupied[gap[1]] = nil
+			occupied[beyond[1]] = nil
+		end
+	end
+
+	local ally = FakeHero(1, "A", lineA)
+	occupied[lineA] = ally
+	chain = {}
+	Skills.voltChain.apply({ hero = volt, target = a1, api = api(), trigger = "onAttack" })
+	check("aliado conduz mas nao leva dano", #chain == 1, #chain)
+	occupied[lineA] = nil
+
+	local seen = {}
+	for _, victim in ipairs(chain) do
+		check("caso 7: ninguem leva a corrente duas vezes", seen[victim] == nil)
+		seen[victim] = true
+	end
+
+	local target = FakeHero(1, "B", lineB)
+	occupied[lineB] = target
+	local ctx = { hero = volt, target = target, api = api(), trigger = "onAttack" }
+	Skills.voltChain.apply(ctx)
+	Skills.voltChain.apply(ctx)
+	check("caso 8: duas cargas ainda nao paralisam",
+		MatchQuery.FindStatusEffect(target, "paralysis") == nil)
+	Skills.voltChain.apply(ctx)
+	check("caso 8: terceira carga paralisa",
+		MatchQuery.FindStatusEffect(target, "paralysis") ~= nil)
+	check("caso 8: a paralisia consome as cargas",
+		MatchQuery.FindStatusEffect(target, "charge") == nil)
+
+	check("carga dura 2 turnos", GameConfig.VOLT_CHARGE_DURATION == 2)
+
+	local c1 = FakeHero(1, "B", lineB)
+	local c2 = FakeHero(1, "B", lineC)
+	occupied = { [lineB] = c1, [lineC] = c2 }
+	chain = {}
+	Skills.voltChain.apply({ hero = volt, target = c1, api = api(), trigger = "onAttack" })
+	local charged = MatchQuery.FindStatusEffect(c2, "charge")
+	check("descarga tambem aplica carga", charged ~= nil and charged.stacks == 1,
+		charged and charged.stacks)
+	local direct = MatchQuery.FindStatusEffect(c1, "charge")
+	check("alvo direto nao recebe carga dupla", direct ~= nil and direct.stacks == 1,
+		direct and direct.stacks)
+
+	Skills.voltChain.apply({ hero = volt, target = c1, api = api(), trigger = "onAttack" })
+	Skills.voltChain.apply({ hero = volt, target = c1, api = api(), trigger = "onAttack" })
+	check("tres descargas paralisam o condutor",
+		MatchQuery.FindStatusEffect(c2, "paralysis") ~= nil)
+end
+
+do
+	local rush = FakeHero(24, "A", lineB)
+	local bully = FakeHero(1, "B", lineA)
+	local board = { occupied = { [lineB] = rush, [lineA] = bully }, heroes = {} }
+	board.heroes[rush.uid] = rush
+	board.heroes[bully.uid] = bully
+
+	check("caso 1: Rush normal tem rota de fuga",
+		MatchQuery.DodgeHexFor(board, rush, lineA) ~= nil)
+
+	table.insert(rush.statusEffects, { type = "paralysis", duration = 1 })
+	check("caso 2: paralisia nao remove a rota, quem barra e o PerformAttack",
+		MatchQuery.DodgeHexFor(board, rush, lineA) ~= nil)
+	check("caso 2: paralisado e reconhecido como incapacitado",
+		MatchQuery.FindStatusEffect(rush, "paralysis") ~= nil)
+end
+
+do
+	local function AllowsReaction(attacker)
+		for _, key in ipairs(attacker.abilities) do
+			local skill = Skills[key]
+			if skill and skill.suppressesReaction and skill.suppressesReaction(attacker) then
+				return false
+			end
+		end
+		return true
+	end
+
+	local nash = FakeHero(13, "B", lineA)
+	local plain = FakeHero(1, "B", lineA)
+
+	nash.stealth = false
+	check("caso A: Nash visivel permite reacao", AllowsReaction(nash) == true)
+
+	nash.stealth = true
+	check("caso B: ataque surpresa nao permite reacao", AllowsReaction(nash) == false)
+
+	check("caso C: heroi comum nao suprime reacao", AllowsReaction(plain) == true)
+
+	check("a regra vem da skill, nao do nome",
+		Skills.ambush.suppressesReaction ~= nil and Skills.dodge.suppressesReaction == nil)
+end
+
+do
+	local BLOCKERS = { "paralysis", "freeze" }
+
+	local function AllowsReaction(attacker)
+		for _, key in ipairs(attacker.abilities) do
+			local skill = Skills[key]
+			if skill and skill.suppressesReaction and skill.suppressesReaction(attacker) then
+				return false
+			end
+		end
+		return true
+	end
+
+	local function CanReact(hero, attacker)
+		if not (hero and hero.isAlive) then return false end
+		for _, effectType in ipairs(BLOCKERS) do
+			if MatchQuery.FindStatusEffect(hero, effectType) then return false end
+		end
+		return AllowsReaction(attacker)
+	end
+
+	local rush = FakeHero(24, "A", lineB)
+	local plain = FakeHero(1, "B", lineA)
+	local nash = FakeHero(13, "B", lineA)
+
+	check("Rush inteiro reage a golpe comum", CanReact(rush, plain) == true)
+
+	table.insert(rush.statusEffects, { type = "freeze", duration = 1 })
+	check("Rush congelado nao reage", CanReact(rush, plain) == false)
+	rush.statusEffects = {}
+
+	table.insert(rush.statusEffects, { type = "paralysis", duration = 1 })
+	check("Rush paralisado nao reage", CanReact(rush, plain) == false)
+	rush.statusEffects = {}
+
+	nash.stealth = true
+	check("Rush inteiro nao reage a ataque surpresa", CanReact(rush, nash) == false)
+
+	table.insert(rush.statusEffects, { type = "freeze", duration = 1 })
+	check("Rush congelado + surpresa nao reage", CanReact(rush, nash) == false)
+	rush.statusEffects = {}
+
+	rush.isAlive = false
+	check("Rush morto nao reage", CanReact(rush, plain) == false)
+	rush.isAlive = true
+
+	nash.stealth = false
+	check("Nash visivel devolve a reacao", CanReact(rush, nash) == true)
+end
 if #failures == 0 then
 	print(("CoreChecks: %d verificacoes, tudo certo."):format(passed))
 else

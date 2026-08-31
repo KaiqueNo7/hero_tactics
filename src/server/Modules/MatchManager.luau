@@ -419,6 +419,7 @@ function KillHero(match, hero, attacker)
 end
 
 local DAMAGE_SOURCES = {
+	voltChain = "corrente elétrica",
 	poison = "veneno",
 	flame = "fogo",
 	suddenDeath = "Morte Súbita",
@@ -554,8 +555,60 @@ local function IncreaseAttack(match, hero, amount)
 		or ("%s perdeu %d de ataque (agora %d)"):format(hero.name, -amount, hero.attack))
 end
 
+local CC_EFFECTS = { paralysis = true, freeze = true }
+
+local REJECTIONS = {
+	PARALYZED = true, NOT_YOUR_TURN = true, OUT_OF_RANGE = true,
+	OCCUPIED = true, INVALID_TARGET = true, INVALID_MOVE = true, TAUNTED = true,
+}
+
+local function AllowsReaction(attacker)
+	for _, key in ipairs(attacker.abilities) do
+		local skill = Skills[key]
+		if skill and skill.suppressesReaction and skill.suppressesReaction(attacker) then
+			return false
+		end
+	end
+	return true
+end
+
+local function IsDisabled(hero)
+	return hero ~= nil and FindStatusEffect(hero, "paralysis") ~= nil
+end
+
+local REACTION_BLOCKERS = { paralysis = true, freeze = true }
+
+local function CanReact(hero, attacker)
+	if not (hero and hero.isAlive) then return false end
+
+	for effectType in pairs(REACTION_BLOCKERS) do
+		if FindStatusEffect(hero, effectType) then return false end
+	end
+
+	return AllowsReaction(attacker)
+end
+
+local function Reject(player, reason)
+	if not (player and REJECTIONS[reason]) then return end
+	local remote = ReplicatedStorage.Remotes:FindFirstChild("GameAction")
+	if remote then remote:FireClient(player, "reject", reason) end
+end
+
+local function RootOf(hero)
+	local root = hero
+	while root.summoner do root = root.summoner end
+	return root
+end
+
+local function Tally(hero, key, amount)
+	if not (hero and hero.stats) then return end
+	local root = RootOf(hero)
+	root.stats.special[key] = (root.stats.special[key] or 0) + (amount or 1)
+end
+
 local EFFECT_NAMES = {
 	poison = "envenenado",
+	paralysis = "paralisado",
 	freeze = "congelado",
 	wound = "ferido",
 }
@@ -582,6 +635,10 @@ local function ApplyStatusEffect(match, hero, effect)
 
 	table.insert(hero.statusEffects, effect)
 	HeroView.UpdateStats(hero)
+
+	if CC_EFFECTS[effect.type] and effect.source and effect.source.stats then
+		RootOf(effect.source).stats.ccApplied += 1
+	end
 
 	local nome = EFFECT_NAMES[effect.type]
 	if nome then
@@ -751,6 +808,44 @@ end
 -- Uma API por partida: as closures já sabem em qual tabuleiro mexer, então a
 -- skill continua escrita como antes (ctx.api.ApplyDamage(...)) sem saber que
 -- existem outras partidas rodando.
+local function RemoveStatusEffect(match, hero, effectType)
+	for index = #hero.statusEffects, 1, -1 do
+		local effect = hero.statusEffects[index]
+		if effect.type == effectType then
+			table.remove(hero.statusEffects, index)
+			if effect.attackBonus then
+				IncreaseAttack(match, hero, -effect.attackBonus)
+			end
+		end
+	end
+	HeroView.UpdateStats(hero)
+end
+
+local function Electrify(match, victim, origin)
+	Tally(origin, "charges")
+	local existing = FindStatusEffect(victim, "charge")
+	local stacks = (existing and existing.stacks or 0) + 1
+
+	if stacks >= GameConfig.VOLT_CHARGES_TO_PARALYZE then
+		RemoveStatusEffect(match, victim, "charge")
+		ApplyStatusEffect(match, victim, {
+			type = "paralysis",
+			duration = GameConfig.PARALYSIS_DURATION,
+			appliedTurnToken = match.turnToken,
+		})
+		Tally(origin, "paralysis")
+		HeroView.Say(victim, "PARALISADO", "debuff")
+	else
+		ApplyStatusEffect(match, victim, {
+			type = "charge",
+			duration = GameConfig.VOLT_CHARGE_DURATION,
+			stacks = stacks,
+			appliedTurnToken = match.turnToken,
+		})
+		HeroView.Say(victim, ("%d/%d"):format(stacks, GameConfig.VOLT_CHARGES_TO_PARALYZE), "debuff")
+	end
+end
+
 local function BuildSkillApi(match)
 	return {
 		ApplyDamage = function(hero, amount, attacker, isCounterAttack, sourceKey)
@@ -773,6 +868,52 @@ local function BuildSkillApi(match)
 			effect.appliedTurnToken = match.turnToken
 			ApplyStatusEffect(match, hero, effect)
 		end,
+
+		Electrify = function(victim, origin) Electrify(match, victim, origin) end,
+		Say = function(hero, text, kind) HeroView.Say(hero, text, kind) end,
+
+		ChainFrom = function(origin, hexId)
+			local visited = { [hexId] = true }
+			local depth = { [hexId] = 0 }
+			local queue = { hexId }
+			local edges = { { from = origin.position, to = hexId, depth = 0 } }
+			local hit = {}
+
+			while #queue > 0 do
+				local current = table.remove(queue, 1)
+				for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
+					local occupant = match.occupied[neighbor.id]
+					if occupant and not visited[neighbor.id] then
+						visited[neighbor.id] = true
+						depth[neighbor.id] = depth[current] + 1
+						table.insert(queue, neighbor.id)
+						table.insert(edges, {
+							from = current,
+							to = neighbor.id,
+							depth = depth[neighbor.id],
+						})
+						if occupant.isAlive and occupant.ownerId ~= origin.ownerId then
+							table.insert(hit, occupant)
+						end
+					end
+				end
+			end
+
+			HeroView.PlayChainArcs(match.view, edges)
+
+			for _, victim in ipairs(hit) do
+				if victim.isAlive then
+					HeroView.PlaySkillEffect(victim, "voltChain")
+					Tally(origin, "chainHits")
+					Tally(origin, "chainDamage", math.min(GameConfig.VOLT_CHAIN_DAMAGE, math.max(victim.currentHp, 0)))
+					ApplyDamage(match, victim, GameConfig.VOLT_CHAIN_DAMAGE, origin, false, nil, "voltChain")
+				end
+				if victim.isAlive then Electrify(match, victim, origin) end
+			end
+
+			return #hit
+		end,
+
 
 		RemoveStatusEffect = function(hero, effectType)
 			for index = #hero.statusEffects, 1, -1 do
@@ -1130,6 +1271,7 @@ local function Snapshot(match, viewerId)
 			dataId = match.finisher.dataId,
 			name = match.finisher.name,
 			victim = match.finisher.victim,
+			final = match.finisher.final,
 			sideIndex = match.finisher.sideIndex,
 			hex = match.finisher.hex,
 			isMine = match.finisher.ownerId == viewerId,
@@ -1326,6 +1468,10 @@ function CreateHero(match, dataId, ownerId, hexId)
 			healed = 0,
 			kills = 0,
 			biggestHit = 0,
+			attacks = 0,
+			turnsAlive = 0,
+			ccApplied = 0,
+			special = {},
 		},
 
 		-- Golem: true só depois do Estilhaçar (Skills.shatter/SuppressGrave).
@@ -1481,6 +1627,10 @@ local function AttackBarrel(match, attacker, barrel)
 		BreakBarrel(match, barrel, attacker)
 	end
 
+	if HasSkill(attacker, "voltChain") then
+		match.skillApi.ChainFrom(attacker, barrel.position)
+	end
+
 	Broadcast(match)
 end
 
@@ -1578,6 +1728,14 @@ local function RecordHeroStats(match)
 
 	local entries = {}
 
+	local rootOf, familyAlive = {}, {}
+	for _, hero in pairs(match.heroes) do
+		local root = hero
+		while root.summoner do root = root.summoner end
+		rootOf[hero] = root
+		if hero.isAlive then familyAlive[root] = true end
+	end
+
 	for _, hero in pairs(match.heroes) do
 		local side = SideOf(match, hero.ownerId)
 		if side then
@@ -1590,35 +1748,56 @@ local function RecordHeroStats(match)
 				result = "losses"
 			end
 
-			-- Vários heróis com o MESMO dataId numa partida (os dois lados
-			-- levando Ceos, ou os pedaços do Golem) somam na mesma linha, que é
-			-- o que a telemetria por herói quer.
-			local row = entries[hero.dataId] or {
+			-- Dois lados levando Ceos somam na mesma linha, que é o que a
+			-- telemetria por herói quer. Invocação não abre linha própria: ela
+			-- soma no herói que a criou (rootOf), então mini-golem e caveira
+			-- viram Golem e Morn em vez de heróis fantasmas no relatório.
+			local root = rootOf[hero]
+			local row = entries[root.dataId] or {
 				matches = 0, wins = 0, losses = 0, draws = 0,
 				damageDealt = 0, damageTaken = 0, healed = 0,
 				kills = 0, deaths = 0, survived = 0,
+				attacks = 0, turnsAlive = 0, ccApplied = 0, special = {},
 				pvpMatches = 0, pvpWins = 0,
 			}
 
-			row.matches += 1
-			row[result] += 1
+			if hero == root then
+				row.matches += 1
+				row[result] += 1
 
-			if not match.vsBot then
-				row.pvpMatches += 1
-				if result == "wins" then row.pvpWins += 1 end
+				if not match.vsBot then
+					row.pvpMatches += 1
+					if result == "wins" then row.pvpWins += 1 end
+				end
+
+				if familyAlive[root] then row.survived += 1 else row.deaths += 1 end
 			end
 			row.damageDealt += hero.stats.dealt
 			row.damageTaken += hero.stats.taken
 			row.healed += hero.stats.healed
 			row.kills += hero.stats.kills
-			if hero.isAlive then row.survived += 1 else row.deaths += 1 end
+			row.attacks += hero.stats.attacks
+			row.turnsAlive += hero.stats.turnsAlive
+			row.ccApplied += hero.stats.ccApplied
+			for key, value in pairs(hero.stats.special) do
+				row.special[key] = (row.special[key] or 0) + value
+			end
 
-			entries[hero.dataId] = row
+			entries[root.dataId] = row
 		end
 	end
 
 	if match.simulated then
-		if match.onStats then match.onStats(entries) end
+		if match.onStats then
+			match.onStats(entries, {
+				turns = match.turn and match.turn.number or 0,
+				winner = match.winner,
+				sideOneId = match.sides[1].id,
+				sideTwoId = match.sides[2].id,
+				theme = match.theme and match.theme.id or "?",
+				timeout = match.winner == "draw",
+			})
+		end
 	else
 		HeroStatsService.AddMatch(entries)
 	end
@@ -1630,6 +1809,14 @@ function CheckGameOver(match)
 	local aliveTwo = #LivingHeroesOf(match, match.sides[2].id)
 
 	if aliveOne > 0 and aliveTwo > 0 then return false end
+
+	if match.finisher then
+		match.finisher.final = true
+		Broadcast(match)
+		match.busy = true
+		task.wait(GameConfig.FINAL_KILL_HOLD)
+		match.busy = false
+	end
 
 	match.phase = "finished"
 	if aliveOne == 0 and aliveTwo == 0 then
@@ -1681,7 +1868,7 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 		HeroView.ShowRangedAttack(attacker, target)
 	end
 
-	if HasSkill(target, "dodge") and target.isAlive then
+	if HasSkill(target, "dodge") and CanReact(target, attacker) then
 		local escape = MatchQuery.DodgeHexFor(match, target, attacker.position)
 		if escape then
 			local from = target.position
@@ -1716,6 +1903,7 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 		ApplyDamage(match, target, attacker.attack, attacker, isCounterAttack)
 	end
 
+	attacker.stats.attacks += 1
 	attacker.firstAttack = true
 	HeroView.UpdateStats(attacker)
 
@@ -1955,6 +2143,7 @@ function MatchManager.EndTurn(player, match)
 	for _, hero in pairs(match.heroes) do
 		if hero.isAlive then
 			local ownTurnEnding = hero.ownerId == endingOwner
+			if ownTurnEnding then hero.stats.turnsAlive += 1 end
 			ProcessStatusEffects(match, hero, ownTurnEnding)
 
 			-- releitura do isAlive: o efeito acima pode ter matado o herói
@@ -1989,9 +2178,16 @@ local function AuthorizeAction(match, player, hero)
 	-- atacar, o que for — até ser resolvida via MatchManager.Resurrect.
 	if match.pendingPromotion then return false end
 	if not hero or not hero.isAlive then return false end
+	if IsDisabled(hero) then
+		Reject(player, "PARALYZED")
+		return false
+	end
 	if hero.ownerId ~= match.turn.ownerId then return false end
 
-	if player and SideOf(match, match.turn.ownerId).player ~= player then return false end
+	if player and SideOf(match, match.turn.ownerId).player ~= player then
+		Reject(player, "NOT_YOUR_TURN")
+		return false
+	end
 	return true
 end
 
@@ -2015,13 +2211,22 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 
 	-- canMoveHero: não pode ter movido NEM atacado neste turno, salvo bônus
 	if not CanMove(match, hero) then return end
-	if type(hexId) ~= "string" or not HexGrid.Exists(hexId) then return end
-	if not IsFree(match, hexId) then return end
+	if type(hexId) ~= "string" or not HexGrid.Exists(hexId) then
+		Reject(player, "INVALID_MOVE")
+		return
+	end
+	if not IsFree(match, hexId) then
+		Reject(player, "OCCUPIED")
+		return
+	end
 
 	-- FindPath já garante alcance e caminho livre: substitui o ComputeReach
 	local path = HexGrid.FindPath(hero.position, hexId, MoveRangeOf(match, hero),
 		FreeChecker(match), FlameBias(match, hero))
-	if not path then return end
+	if not path then
+		Reject(player, "OUT_OF_RANGE")
+		return
+	end
 
 	local wasBonusMove = match.turn.bonusMove[heroUid] == true
 	match.turn.bonusMove[heroUid] = nil
@@ -2159,12 +2364,16 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	-- exceção de linha de visada pra ela, e o que ela produzia era alcance
 	-- imprevisível — inimigo a duas casas recusado e barril longe aceito.
 	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
-	if not reach[target.position] then return end
+	if not reach[target.position] then
+		Reject(player, "OUT_OF_RANGE")
+		return
+	end
 
 	-- Taunt: trava o ataque em outro alvo quando está colado no ATACANTE, ou
 	-- quando um tiro à distância teria que atravessar a casa dele (ver MatchQuery.TauntBlocks)
 	local tauntBlocker = MatchQuery.TauntBlocks(match, attacker, target)
 	if tauntBlocker then
+		Reject(player, "TAUNTED")
 		Broadcast(match, ("%s está bloqueado por Taunt de %s"):format(attacker.name, tauntBlocker.name))
 		return
 	end
@@ -2658,6 +2867,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 	-- confronto (o mesmo do quadrado do lobby), e não o boneco genérico
 	local theme = (options and options.theme) or Arenas.ForMatch(fight)
 	local boardFolder = BoardSpawner.SpawnBoard(slot, playerTwo == nil, fight and fight.hero, theme)
+	if boardFolder then boardFolder:SetAttribute("MatchId", matchId) end
 
 	local sides = {
 		{
@@ -2694,6 +2904,11 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 	-- heróis mesmo que o bot use os mesmos (Bot Elaria leva Ceos e Ralph, que
 	-- são dois dos três iniciais — reservar entregaria o jogador sem time).
 	sides[2].roster = fight and fight.team or nil
+
+	if options and options.rosters then
+		sides[1].roster = options.rosters[1]
+		sides[2].roster = options.rosters[2]
+	end
 
 	local sideIndexById = {}
 	for index, side in ipairs(sides) do

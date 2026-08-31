@@ -798,6 +798,7 @@ Skills.stealthHeal = {
 -- lendo a sombra pela fonte certa: a tela pelo estado atual, o golpe pelo
 -- carimbo de antes.
 Skills.ambush = {
+	suppressesReaction = function(hero) return hero.stealth == true end,
 	triggers = { "onAttack", "onCounterAttack" },
 	apply = function(ctx)
 		if not ctx.attackerWasStealthed then return end
@@ -946,6 +947,20 @@ Skills.estopim = {
 				})
 			end
 		end
+	end,
+}
+
+Skills.voltChain = {
+	triggers = { "onAttack", "onCounterAttack" },
+	apply = function(ctx)
+		local target = ctx.target
+		if not target then return end
+
+		if target.isAlive and target.ownerId ~= ctx.hero.ownerId then
+			ctx.api.Electrify(target, ctx.hero)
+		end
+
+		ctx.api.ChainFrom(ctx.hero, target.position)
 	end,
 }
 
