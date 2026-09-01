@@ -2205,9 +2205,20 @@ local function BotPickResurrection(match, botId, options)
 	return best
 end
 
+local function ResolveBotPromotion(match, botId)
+	if not (MatchIsLive(match) and match.pendingPromotion
+		and match.pendingPromotion.ownerId == botId) then return end
+
+	MatchManager.Resurrect(nil,
+		BotPickResurrection(match, botId, match.pendingPromotion.options), match)
+	task.wait(BOT_ACTION_DELAY)
+end
+
 function BotPlayTurn(match, botId)
 	task.spawn(function()
 		task.wait(BOT_ACTION_DELAY)
+
+		ResolveBotPromotion(match, botId)
 
 		-- A ÉGIDE É TENTADA A CADA AÇÃO, não só na largada. Com alcance 1, quem
 		-- pode receber muda a cada passo: no começo do turno a Kira pode estar
@@ -2284,12 +2295,7 @@ function BotPlayTurn(match, botId)
 				-- dentro de MoveHero) já deixou a escolha pendurada em
 				-- match.pendingPromotion. Sem resolver isto agora, AuthorizeAction
 				-- bloqueia TODO o resto do turno do bot — inclusive o EndTurn.
-				if MatchIsLive(match) and match.pendingPromotion
-					and match.pendingPromotion.ownerId == botId then
-					MatchManager.Resurrect(nil,
-						BotPickResurrection(match, botId, match.pendingPromotion.options), match)
-					task.wait(BOT_ACTION_DELAY)
-				end
+				ResolveBotPromotion(match, botId)
 			end
 
 			if not MatchIsLive(match) or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
@@ -2397,6 +2403,12 @@ function BeginTurn(match, ownerId, number)
 				MatchManager.EndTurn(nil, match)
 			end
 		end)
+	end
+
+	local promotionHex = side and GameConfig.PROMOTION_HEX_FOR_SLOT[side.index]
+	local standing = promotionHex and match.occupied[promotionHex]
+	if standing and standing.isAlive and standing.ownerId == ownerId then
+		TryTriggerPromotion(match, standing)
 	end
 
 	if SideOf(match, ownerId).isBot then

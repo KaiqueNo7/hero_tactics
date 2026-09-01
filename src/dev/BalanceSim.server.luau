@@ -10,7 +10,7 @@ local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 
-local BALANCE_SIM_MATCHES = 300
+local BALANCE_SIM_MATCHES = 4
 local BALANCE_SIM_SEED = nil
 -- Quantas partidas correm ao MESMO TEMPO. Cada uma ocupa um slot de arena, e o
 -- teto de slots (GameConfig.MAX_LIVE_MATCHES) é dimensionado pro
@@ -18,7 +18,7 @@ local BALANCE_SIM_SEED = nil
 -- largada e devolve no fim, do mesmo jeito que já faz com o BOT_PLACE_DELAY.
 -- Sem levantar, o que passa do teto só rodava no retry de 2 segundos e a
 -- concorrência real ficava presa no valor de produção.
-local CONCURRENT = 60
+local CONCURRENT = 1
 local PROGRESS_EVERY = 25
 local HEROES_PER_SIDE = 3
 
