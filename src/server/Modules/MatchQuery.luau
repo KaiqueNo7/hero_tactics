@@ -167,6 +167,24 @@ function MatchQuery.MoveRangeOf(match, hero)
 	return math.max(1, range)
 end
 
+-- REGRA ÚNICA de "este herói ainda anda neste turno". Mora aqui, e não como
+-- local do MatchManager, porque três lugares precisam da MESMA resposta: a
+-- validação de MoveHero, o `hasMoved` do snapshot (que pinta as casas no
+-- cliente) e o PlanFor do bot. Enquanto o bot tinha a própria cópia da conta,
+-- ele simplesmente não enxergava o passo pós-ataque da Agility.
+--
+-- Três estados distintos, e não um "já agiu" só:
+--   moved    = o passo normal do turno foi gasto
+--   attacked = o golpe do turno foi gasto (um por turno, sempre)
+--   bonusMove = há um passo AVULSO de pé (Agility depois do golpe, Instinto de
+--               Caça do Nash) — vale mesmo com moved e attacked marcados
+function MatchQuery.CanMove(match, hero)
+	if not match.turn then return false end
+	if match.turn.bonusMove[hero.uid] then return true end
+	if match.turn.moved[hero.uid] then return false end
+	return not match.turn.attacked[hero.uid]
+end
+
 function MatchQuery.DodgeHexFor(match, hero, attackerPos)
 	local best, bestAway, bestExposure = nil, -1, math.huge
 
@@ -192,7 +210,18 @@ function MatchQuery.DodgeHexFor(match, hero, attackerPos)
 end
 
 function MatchQuery.TauntBlocks(match, attacker, target, fromPos)
+	-- QUALQUER Taunt é sempre alvo legítimo — esta linha é a regra inteira dos
+	-- múltiplos provocadores, e por isso vem antes de tudo. O Taunt diz "não
+	-- passe por cima de mim", não "ataque exatamente a mim": com dois ou mais em
+	-- condição, o atacante escolhe entre eles, e só o inimigo SEM Taunt fica de
+	-- fora.
+	--
+	-- Já esteve depois da varredura de vizinhos, e era o bug dos dois Taunts que
+	-- se travavam: com Bramm e Ceos colados, a varredura devolvia o primeiro que
+	-- achasse e recusava o golpe no outro — inclusive um Taunt tentando bater no
+	-- Taunt ao lado, que ficava sem jogada nenhuma.
 	if target.ability == GameConfig.ABILITIES.TAUNT then return nil end
+
 	fromPos = fromPos or attacker.position
 
 	local function isGuard(hero)
@@ -201,13 +230,18 @@ function MatchQuery.TauntBlocks(match, attacker, target, fromPos)
 			and hero.ability == GameConfig.ABILITIES.TAUNT
 	end
 
-	if not GameConfig.IsRangedAttack(attacker.attackRange) then
-		for _, neighbor in ipairs(HexGrid.GetNeighbors(fromPos)) do
-			local occupant = MatchQuery.GetHeroAt(match, neighbor.id)
-			if isGuard(occupant) then return occupant end
-		end
-		return nil
+	-- Daqui pra baixo o alvo é comprovadamente SEM Taunt, então basta achar um
+	-- provocador em condição pra recusar o golpe — qual deles é indiferente, a
+	-- mensagem só precisa nomear alguém.
+	--
+	-- Taunt colado prende QUALQUER atacante, não só o corpo a corpo: com um
+	-- guarda a 1 casa, o Ranged também não escolhe alvo comum mais longe.
+	for _, neighbor in ipairs(HexGrid.GetNeighbors(fromPos)) do
+		local occupant = MatchQuery.GetHeroAt(match, neighbor.id)
+		if isGuard(occupant) then return occupant end
 	end
+
+	if not GameConfig.IsRangedAttack(attacker.attackRange) then return nil end
 
 	local span = HexGrid.Distance(fromPos, target.position)
 	for _, other in pairs(match.heroes) do

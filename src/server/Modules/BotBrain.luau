@@ -548,6 +548,61 @@ local function ScorePosition(match, hero, fromPos, ctx)
 		score += #AlliesAdjacentTo(match, hero, fromPos) * 10
 	end
 
+	-- ===== AS DUAS FASES DO SPYKE =====
+	-- `turn.attacked` é o divisor: antes do golpe ele ainda precisa chegar em
+	-- alguém (e o resto do ScorePosition já puxa por isso); depois do golpe o
+	-- passo que sobrou não serve mais pra atacar, e a única coisa que ele ainda
+	-- rende é encostar em quem vai bater no próximo turno. É por isso que a
+	-- aura vale MAIS na segunda fase — na primeira ela compete com aproximar-se
+	-- do alvo, na segunda ela é o objetivo inteiro.
+	if HasSkill(hero, "rallyAura") then
+		local repositioning = match.turn.attacked[hero.uid] == true
+		local adjacent = AlliesAdjacentTo(match, hero, fromPos)
+
+		-- por CABEÇA, e não "tem alguém do lado?": duas casas empatadas em tudo
+		-- o mais são desempatadas pela que buffa dois aliados em vez de um
+		for _, ally in ipairs(adjacent) do
+			if ally.rallyAuraFrom == nil or ally.rallyAuraFrom == hero.uid then
+				score += (repositioning and 20 or 12)
+					+ (match.turn.attacked[ally.uid] and 0 or 6)
+			end
+		end
+
+		-- SUPORTE VIVO VALE MAIS QUE SUPORTE BEM POSICIONADO. Ele tem 1 de
+		-- ataque: trocar a vida dele por um +1 emprestado é sempre péssimo
+		-- negócio, e sem esta parcela o bot enfiava o Spyke no meio da linha
+		-- inimiga atrás da casa que buffava mais gente. A conta é de DANO que
+		-- chega, não de inimigos perto — e pesa o triplo quando esse dano
+		-- somado já é a vida dele.
+		local exposure = 0
+		for _, enemy in ipairs(enemies) do
+			if HexGrid.Distance(fromPos, enemy.position)
+				<= MoveRangeOf(match, enemy) + enemy.attackRange then
+				exposure += enemy.attack
+			end
+		end
+		score -= exposure * (hero.currentHp <= exposure and 14 or 6)
+
+		-- Sangue Fervendo aberto: cada vizinho ameaçado é ataque que ele PODE
+		-- ganhar — não custa vida nenhuma, então colar em quem está na mira é o
+		-- jogo certo, não um risco. A parcela de exposição acima continua sendo
+		-- o freio: vale ficar ao lado de quem vai apanhar, não no lugar dele.
+		--
+		-- Vale menos que a aura de propósito. A aura é certa (o +1 sai no ato),
+		-- esta depende de o inimigo escolher aquele alvo — é aposta, e aposta
+		-- não desempata contra ganho garantido.
+		if FindStatusEffect(hero, "vengeance") then
+			for _, ally in ipairs(adjacent) do
+				for _, enemy in ipairs(enemies) do
+					if Threatens(match, enemy, ally) then
+						score += 7
+						break
+					end
+				end
+			end
+		end
+	end
+
 	if HasSkill(hero, "tailwind") then
 		for _, ally in ipairs(AlliesAdjacentTo(match, hero, fromPos)) do
 			if not match.turn.moved[ally.uid] then score += 12 end
@@ -742,7 +797,10 @@ end
 -- Melhor jogada de um herói: para onde ir e quem bater
 local function PlanFor(match, hero, ctx)
 	if FindStatusEffect(hero, "paralysis") then return nil end
-	local canMove = not match.turn.moved[hero.uid] and not match.turn.attacked[hero.uid]
+	-- MESMA função que o MoveHero usa pra aceitar ou recusar o passo, e que o
+	-- snapshot usa pra pintar as casas. Com a conta duplicada aqui, o bot não
+	-- enxergava o passo pós-ataque da Agility e encerrava o Spyke cedo demais.
+	local canMove = MatchQuery.CanMove(match, hero)
 	local canAttack = not match.turn.attacked[hero.uid]
 	if not canMove and not canAttack then return nil end
 
@@ -794,6 +852,49 @@ local function PlanFor(match, hero, ctx)
 	return best
 end
 
+
+-- Quem o bot blinda com a Égide da Kira. A pergunta não é "quem é o melhor
+-- herói?", é "quem morre se este turno correr mal?" — por isso o peso maior é a
+-- ameaça que JÁ alcança o aliado, e não a ficha dele.
+--
+-- As opções chegam prontas do servidor (ShieldOptionsFor), então quem já tem
+-- escudo nem aparece aqui: o "nunca escolher quem já está protegido" é do filtro,
+-- não desta conta.
+function BotBrain.PickShieldTarget(match, ownerId, options)
+	local enemies = LivingHeroesOf(match, MatchQuery.OpponentSide(match, ownerId).id)
+
+	local best, bestScore = options[1], -math.huge
+	for _, uid in ipairs(options) do
+		local hero = match.heroes[uid]
+		if hero and hero.isAlive then
+			-- QUANTO DANO ESTÁ MIRANDO NELE. Um escudo é um golpe anulado, então
+			-- ele vale o tamanho do golpe que vem — e vale muito mais em quem não
+			-- sobrevive a ele, que é o caso em que o escudo compra um herói
+			-- inteiro em vez de alguns pontos de vida.
+			local incoming, reach = 0, 0
+			for _, enemy in ipairs(enemies) do
+				if Threatens(match, enemy, hero) then
+					reach += 1
+					incoming = math.max(incoming, enemy.attack)
+				end
+			end
+
+			local score = incoming * 10 + reach * 6
+
+			if incoming >= hero.currentHp then score += 60 end
+			score += math.max(0, 20 - hero.currentHp) * 2
+			score += CarryValue(hero)
+			if hero.ability == TAUNT then score += 8 end
+			if hero.summoner then score -= 40 end
+
+			if score > bestScore then
+				best, bestScore = uid, score
+			end
+		end
+	end
+
+	return best
+end
 
 -- ===================== API =====================
 -- Só o que o MatchManager chama. Todo o resto — as camadas de pontuação, as

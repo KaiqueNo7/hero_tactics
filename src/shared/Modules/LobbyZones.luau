@@ -237,17 +237,22 @@ end
 -- Onde os quadrados de confronto daquela zona ficam, em fila virada pra ponte
 -- de entrada. Uma função e não uma lista escrita à mão: mudar um herói de grupo
 -- em Campaign.FIGHTS reorganiza a fila sozinho, sem ninguém editar coordenada.
-function LobbyZones.PadSlots(zone, count)
+-- `origin` (Vector3, opcional) manda na fileira quando ela existe: é a ilha
+-- MEDIDA no place, não a da planta. Serve pros grupos cuja ilha foi montada à
+-- mão e nunca entrou em ZONES — a planta não tem coordenada pra eles, e o
+-- Explorer tem. Leva o Y junto porque uma ilha montada à mão não é obrigada a
+-- estar no GROUND_Y do plano.
+function LobbyZones.PadSlots(zone, count, origin)
 	local slots = {}
 	local spread = 24
 
+	local x = origin and origin.X or zone.center.X
+	local y = origin and origin.Y or (LobbyZones.GROUND_Y + 0.5) -- meia espessura do pad: ele ASSENTA no chão
+	local z = origin and origin.Z or zone.center.Y
+
 	for index = 1, count do
 		local offset = (index - (count + 1) / 2) * spread
-		table.insert(slots, Vector3.new(
-			zone.center.X + offset,
-			LobbyZones.GROUND_Y + 0.5, -- meia espessura do pad: ele ASSENTA no chão
-			zone.center.Y + 10
-		))
+		table.insert(slots, Vector3.new(x + offset, y, z + 10))
 	end
 	return slots
 end

@@ -540,14 +540,20 @@ end
 local currentZoneId = nil
 local arenaId = nil
 
-local function ShowPadLabels(zoneId)
+-- Quem esconde a plaquinha longe é o MaxDistance dela, não a zona da trilha.
+--
+-- Antes o acender dependia de LobbyZones.ForGroup(fight.group): grupo sem zona
+-- na planta — a Boske, montada à mão — devolvia nil e a condição NUNCA era
+-- verdadeira, então os quadrados dos heróis novos ficavam para sempre sem nome
+-- nem retrato. Era o único jeito de acender, e não existia pra eles.
+--
+-- Distância resolve o mesmo problema (não empilhar plaquinha do lobby inteiro na
+-- tela) sem precisar que a ilha exista na planta, e vale igual pra ilha montada
+-- no Explorer e pra que veio do plano.
+local function ShowPadLabels()
 	for _, pad in ipairs(CollectionService:GetTagged(Campaign.PAD_TAG)) do
 		local label = pad:FindFirstChild("FightLabel")
-		if label then
-			local fight = Campaign.GetFight(pad:GetAttribute("FightHero"))
-			local zone = fight and LobbyZones.ForGroup(fight.group)
-			label.Enabled = zoneId ~= nil and zone ~= nil and zone.id == zoneId
-		end
+		if label then label.Enabled = true end
 	end
 end
 
@@ -574,7 +580,7 @@ task.spawn(function()
 				applyPalette(zone and zone.ambience or lobbyPalette)
 			end
 
-			ShowPadLabels(id)
+			ShowPadLabels()
 		end
 	end
 end)

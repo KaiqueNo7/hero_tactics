@@ -98,7 +98,12 @@ Skills.firstPunch = {
 		if not ctx.hero.firstAttack then
 			ctx.api.ApplyDamage(ctx.target, ctx.hero.attack, ctx.hero, ctx.isCounterAttack)
 			ctx.damageApplied = true
-			ctx.api.IncreaseAttack(ctx.hero, -2)
+			-- descarrega só o que foi carregado: quem volta pela Casa de Promoção
+			-- e ataca antes do primeiro onTurnStart nunca recebeu o +2, e devolvê-lo
+			-- deixava o Ralph com 1 de ataque pelo resto da partida
+			if ctx.hero.firstPunchApplied then
+				ctx.api.IncreaseAttack(ctx.hero, -2)
+			end
 		end
 	end,
 }
@@ -115,13 +120,14 @@ Skills.autoDefense = {
 	end,
 }
 
--- Mineiro — no fim do turno, chance de ganhar +1 de ataque (acumula)
+-- Mineiro — no fim do turno, chance de ganhar +1 de ataque (acumula) e se curar
 Skills.goodLuck = {
 	triggers = { "onTurnEnd" },
 	apply = function(ctx)
 		if math.random() < GameConfig.GOOD_LUCK_CHANCE then
 			ctx.api.PlaySkillSound("goodLuck")
 			ctx.api.IncreaseAttack(ctx.hero, 1)
+			ctx.api.Heal(ctx.hero, GameConfig.GOOD_LUCK_HEAL)
 			ctx.api.Effect(ctx.hero)
 		else
 			-- fumacinha cinza: a habilidade rodou e não deu em nada
@@ -236,9 +242,19 @@ Skills.clean = {
 	apply = function(ctx)
 		local limpou = false
 
+		-- ClearNegativeEffects, e não ClearStatusEffects: o texto da skill sempre
+		-- disse "remove os efeitos NEGATIVOS", mas o código varria a lista
+		-- inteira — a Elaria apagava o empréstimo de ataque do barril, o Embalo
+		-- do Rush e o Sangue Fervendo do Spyke junto com o veneno, e passou a
+		-- apagar também o escudo da Kira no próprio aliado que ela ia proteger.
 		for _, ally in ipairs(ctx.api.GetAlliesInRange(ctx.hero, 1)) do
-			if #ally.statusEffects > 0 then
-				ctx.api.ClearStatusEffects(ally)
+			local sujo = false
+			for _, effect in ipairs(ally.statusEffects) do
+				if GameConfig.IsNegativeEffect(effect.type) then sujo = true break end
+			end
+
+			if sujo then
+				ctx.api.ClearNegativeEffects(ally)
 				ctx.api.Effect(ally)
 				limpou = true
 			end
@@ -993,6 +1009,115 @@ Skills.momentum = {
 Skills.dodge = {
 	passive = true,
 	triggers = {},
+}
+
+-- ===== SPYKE: O SUPORTE QUE NÃO PARA =====
+-- Ponto de Apoio — aura de +1 de ataque em quem estiver colado nele. É o mesmo
+-- mecanismo do trustInTeam do Dante (IncreaseAttack + uma marca própria), com
+-- uma diferença que muda tudo: o bônus mora em OUTRO herói, então quem recebeu
+-- precisa saber DE QUEM recebeu pra ninguém devolver ponto alheio. Daí
+-- `rallyAuraFrom` guardar o uid da fonte em vez de um booleano.
+--
+-- Varre TODOS os aliados vivos, não só os vizinhos: a lista de quem está perto
+-- responde a quem GANHA, e a devolução precisa achar quem ficou pra trás — que,
+-- por definição, não está mais na lista de perto.
+--
+-- Uma passagem só resolve tudo (aplicar, devolver, ou não mexer), então
+-- recalcular duas vezes seguidas não empilha nada. É o que deixa a coisa
+-- pendurada em vários gatilhos sem medo.
+local function SyncRallyAura(ctx)
+	local giving = ctx.hero.isAlive and ctx.trigger ~= "onDie"
+
+	for _, ally in ipairs(ctx.api.GetAlliesInRange(ctx.hero, math.huge)) do
+		local near = giving and ctx.api.Distance(ctx.hero.position, ally.position) <= 1
+
+		if near and ally.rallyAuraFrom == nil then
+			ctx.api.IncreaseAttack(ally, GameConfig.SPYKE_AURA_ATTACK)
+			ally.rallyAuraFrom = ctx.hero.uid
+		elseif not near and ally.rallyAuraFrom == ctx.hero.uid then
+			ctx.api.IncreaseAttack(ally, -GameConfig.SPYKE_AURA_ATTACK)
+			ally.rallyAuraFrom = nil
+		end
+	end
+end
+
+Skills.rallyAura = {
+	-- onMove dispara em TODO herói a cada passo de qualquer um (ver
+	-- MatchManager.MoveHero), então a aura se corrige tanto quando o Spyke anda
+	-- quanto quando o aliado é que se aproxima ou se afasta. Os dois passos da
+	-- Agility entram por aqui igual, sem tratamento especial: cada um é um
+	-- onMove, e cada onMove é um recálculo.
+	triggers = { "onTurnStart", "onTurnEnd", "onMove", "onDie" },
+	apply = SyncRallyAura,
+}
+
+-- Sangue Fervendo — 1 turno em que cada aliado COLADO que sofrer dano rende +1 de
+-- ataque ao Spyke. Ele NÃO perde vida com isso, e o aliado leva o golpe inteiro:
+-- não é absorção, transferência nem interceptação — é o Spyke se acendendo com o
+-- que fizeram com quem ele estava protegendo.
+--
+-- Conta CABEÇA atingida, não pontos de dano: 2 vizinhos pegos por um golpe em
+-- área rendem +2, um vizinho que levou 10 rende +1.
+--
+-- Quem soma é o ApplyDamage, pelo campo attackFromNearbyHit — mesmo arranjo do
+-- modifyIncomingDamageNearby da Lucy, só que este não devolve dano modificado,
+-- devolve o ataque que o vizinho ganha. O bônus é guardado NESTE efeito
+-- (`attackBonus`), que é o que faz o ProcessStatusEffects devolvê-lo sozinho
+-- quando o prazo vence.
+--
+-- ACUMULA ENQUANTO A CORRENTE NÃO QUEBRA. Atacar RENOVA o prazo do efeito que já
+-- está aberto, e é a mesma tabela que volta pra lista — o que ele juntou
+-- continua lá. Deixar de atacar um turno é o que corta: aí o prazo vence, o
+-- ProcessStatusEffects devolve tudo de uma vez e ele recomeça do ataque de ficha.
+Skills.vengeance = {
+	triggers = { "onAttack" },
+	apply = function(ctx)
+		-- RENOVAR, não reabrir. Remover e aplicar de novo devolvia o acumulado
+		-- (o RemoveStatusEffect estorna o attackBonus) — e devolvia bem na hora
+		-- errada: o onAttack roda ANTES do dano, então o Spyke perdia os pontos
+		-- no instante em que ia usá-los e batia com o ataque de ficha.
+		--
+		-- Passar a MESMA tabela pro ApplyStatusEffect é o que renova sem estornar:
+		-- lá dentro ela sai da lista e volta pra ela, com o carimbo de turno novo
+		-- (é o carimbo que decide quando o prazo começa a correr) e o attackBonus
+		-- intacto.
+		local open = ctx.api.FindStatusEffect(ctx.hero, "vengeance")
+		if open then
+			open.duration = GameConfig.SPYKE_VENGEANCE_DURATION
+			ctx.api.ApplyStatusEffect(ctx.hero, open)
+		else
+			ctx.api.ApplyStatusEffect(ctx.hero, {
+				type = "vengeance",
+				duration = GameConfig.SPYKE_VENGEANCE_DURATION,
+			})
+		end
+
+		ctx.api.Effect(ctx.hero)
+	end,
+
+	attackFromNearbyHit = function(info)
+		if not info.ally.isAlive then return 0 end
+		return GameConfig.SPYKE_VENGEANCE_ATTACK
+	end,
+}
+
+-- ===== KIRA: O ESCUDO =====
+-- Égide — no início do turno dela, o jogador escolhe um aliado sem escudo e ele
+-- fica protegido do próximo golpe.
+--
+-- A skill faz UMA coisa: abre a oferta. Ela não aplica o escudo, não sabe
+-- bloquear dano e não conhece a tabela de efeitos — quem escolhe é o jogador
+-- (MatchManager.GrantShield) e quem gasta é o cano de dano (ConsumeShield). Essa
+-- divisão é o que deixa o escudo ser um estado do JOGO e não uma regra da Kira:
+-- outra fonte que aplique um efeito `shield` ganha o bloqueio inteiro de graça.
+--
+-- Sem gasto de ação de propósito: a oferta corre junto com o turno, e ignorá-la
+-- não custa nada além do escudo daquele turno.
+Skills.aegis = {
+	triggers = { "onTurnStart" },
+	apply = function(ctx)
+		ctx.api.OfferShield(ctx.hero)
+	end,
 }
 
 return Skills

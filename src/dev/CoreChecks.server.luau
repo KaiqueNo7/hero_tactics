@@ -119,7 +119,17 @@ local function FakeApi()
 				end
 			end
 		end,
+		-- SUBSTITUI o efeito do mesmo tipo, como o de verdade (ver
+		-- MatchManager.ApplyStatusEffect). Enquanto so empilhava, a fake dizia
+		-- que renovar um efeito criava um segundo — e a renovacao acumulativa do
+		-- Sangue Fervendo, que passa a MESMA tabela de volta, ficava impossivel
+		-- de testar aqui.
 		ApplyStatusEffect = function(hero, effect)
+			for index = #hero.statusEffects, 1, -1 do
+				if hero.statusEffects[index].type == effect.type then
+					table.remove(hero.statusEffects, index)
+				end
+			end
 			table.insert(hero.statusEffects, effect)
 			table.insert(log.status, effect)
 		end,
@@ -475,6 +485,389 @@ do
 		Skills.dodge.passive == true and #Skills.dodge.triggers == 0)
 end
 
+-- ===== KIRA / ESCUDO =====
+do
+	local KIRA_ID = 27
+	local kiraData = HeroData.GetById(KIRA_ID)
+
+	check("Kira esta no catalogo", kiraData ~= nil)
+
+	if kiraData then
+		check("Kira tem a ficha combinada",
+			kiraData.attack == 1 and kiraData.hp == 33
+				and kiraData.ability == GameConfig.ABILITIES.TAUNT,
+			("%d/%d/%s"):format(kiraData.attack, kiraData.hp, tostring(kiraData.ability)))
+
+		-- Taunt de ficha e so isso: nenhuma regra de Taunt exclusiva dela
+		check("Kira usa o Taunt comum, sem passiva propria",
+			HeroData.ABILITY_INFO[kiraData.ability] ~= nil)
+	end
+
+	check("a Egide dispara no inicio do turno",
+		Skills.aegis ~= nil and table.find(Skills.aegis.triggers, "onTurnStart") ~= nil)
+
+	-- A skill so ABRE a oferta: nao aplica escudo, nao bloqueia dano, nao conhece
+	-- a tabela de efeitos. Se um dia ela passar a fazer mais que isto, este check
+	-- cai junto.
+	local offered = nil
+	local api = FakeApi()
+	api.OfferShield = function(hero) offered = hero end
+	local kira = FakeHero(KIRA_ID, "A", lineA)
+	Skills.aegis.apply({ hero = kira, api = api, trigger = "onTurnStart" })
+	check("a Egide so abre a oferta, quem aplica e o servidor", offered == kira)
+
+	-- ===== QUEM PODE RECEBER =====
+	-- Espelha o ShieldOptionsFor do MatchManager: aliado VIVO, A UMA CASA dela e
+	-- ainda sem escudo. Os tres filtros moram no mesmo lugar — e é o mesmo que
+	-- vira o destaque azul no cliente e a validação do servidor.
+	--
+	-- Uma segunda casa vizinha da Kira, pra testar aliado que se APROXIMA: lineB
+	-- ja esta ocupado pelo Ralph.
+	local outroVizinho
+	for _, neighbor in ipairs(HexGrid.GetNeighbors(lineA)) do
+		if neighbor.id ~= lineB then outroVizinho = neighbor.id break end
+	end
+
+	local ralph = FakeHero(1, "A", lineB)   -- colado na Kira
+	local ceos = FakeHero(6, "A", lineC)    -- a duas casas
+	local morto = FakeHero(4, "A", lineA)
+	local inimigo = FakeHero(2, "B", lineB)
+	morto.isAlive = false
+
+	local roster = { ralph, ceos, morto, inimigo }
+
+	local function Eligible()
+		local options = {}
+		for _, other in ipairs(roster) do
+			if other ~= kira and other.isAlive and other.ownerId == kira.ownerId
+				and HexGrid.Distance(kira.position, other.position) <= 1
+				and not MatchQuery.FindStatusEffect(other, "shield") then
+				table.insert(options, other)
+			end
+		end
+		return options
+	end
+
+	local function GiveShield(hero)
+		if MatchQuery.FindStatusEffect(hero, "shield") then return false end
+		table.insert(hero.statusEffects, { type = "shield", permanent = true, duration = 0 })
+		return true
+	end
+
+	local eligible = Eligible()
+	check("so o aliado COLADO na Kira entra na lista",
+		#eligible == 1 and eligible[1] == ralph, #eligible)
+	check("aliado a duas casas fica de fora",
+		HexGrid.Distance(kira.position, ceos.position) == 2)
+	check("morto e inimigo ficam de fora", eligible[1] ~= morto and eligible[1] ~= inimigo)
+	check("a propria Kira nao entra na lista", eligible[1] ~= kira)
+
+	-- o aliado se aproxima: a lista tem que responder AO PASSO, e é por isso que
+	-- ela é recalculada a cada leitura em vez de congelada no inicio do turno
+	if outroVizinho then
+		ceos.position = outroVizinho
+		eligible = Eligible()
+		check("aliado que chega perto passa a poder receber", #eligible == 2, #eligible)
+		ceos.position = lineC
+	end
+
+	-- e a Kira andando ate ele tem o mesmo efeito
+	kira.position = lineB
+	eligible = Eligible()
+	check("a Kira andando ate o aliado tambem habilita",
+		#eligible == 1 and eligible[1] == ceos, #eligible)
+	kira.position = lineA
+
+	GiveShield(ralph)
+	eligible = Eligible()
+	check("quem ja tem escudo sai da lista", #eligible == 0, #eligible)
+
+	check("nunca dois escudos no mesmo heroi", GiveShield(ralph) == false)
+
+	-- varios aliados protegidos AO MESMO TEMPO e valido: o maximo e por heroi
+	GiveShield(ceos)
+	check("o teto e por heroi, nao por time",
+		MatchQuery.FindStatusEffect(ralph, "shield") ~= nil
+			and MatchQuery.FindStatusEffect(ceos, "shield") ~= nil)
+	check("sem ninguem elegivel a oferta nem abre", #Eligible() == 0)
+
+	-- ===== O BLOQUEIO =====
+	-- Espelha o ConsumeShield do MatchManager: exige AUTOR (golpe, nao veneno),
+	-- anula o dano inteiro seja ele qual for, e sai no primeiro que chegar.
+	local function Hit(hero, amount, attacker)
+		if attacker and MatchQuery.FindStatusEffect(hero, "shield") then
+			for index = #hero.statusEffects, 1, -1 do
+				if hero.statusEffects[index].type == "shield" then
+					table.remove(hero.statusEffects, index)
+				end
+			end
+			return 0
+		end
+		hero.currentHp -= amount
+		return amount
+	end
+
+	local ralphHp = ralph.currentHp
+	check("golpe de 8 num heroi com escudo causa 0", Hit(ralph, 8, kira) == 0)
+	check("e a vida dele nao muda", ralph.currentHp == ralphHp, ralph.currentHp)
+	check("o escudo foi consumido", MatchQuery.FindStatusEffect(ralph, "shield") == nil)
+	check("o golpe seguinte passa normal", Hit(ralph, 8, kira) == 8)
+	check("e agora a vida cai", ralph.currentHp == ralphHp - 8, ralph.currentHp)
+
+	-- MULTI-HIT: um escudo nao segura a sequencia inteira
+	GiveShield(ralph)
+	check("multi-hit) hit 1 bloqueado", Hit(ralph, 3, kira) == 0)
+	check("multi-hit) hit 2 normal", Hit(ralph, 3, kira) == 3)
+	check("multi-hit) hit 3 normal", Hit(ralph, 3, kira) == 3)
+
+	-- AREA: cada escudo por conta propria
+	local aoeA, aoeB, aoeC = FakeHero(1, "A", lineA), FakeHero(6, "A", lineB), FakeHero(4, "A", lineC)
+	GiveShield(aoeA)
+	GiveShield(aoeB)
+	check("area) protegido bloqueia", Hit(aoeA, 5, kira) == 0)
+	check("area) o outro protegido tambem", Hit(aoeB, 5, kira) == 0)
+	check("area) quem nao tinha escudo leva o golpe inteiro", Hit(aoeC, 5, kira) == 5)
+	check("area) os dois escudos sairam",
+		MatchQuery.FindStatusEffect(aoeA, "shield") == nil
+			and MatchQuery.FindStatusEffect(aoeB, "shield") == nil)
+
+	-- AMBIENTE nao gasta escudo: veneno e Morte Subita chegam sem autor
+	GiveShield(aoeC)
+	check("dano sem autor atravessa o escudo", Hit(aoeC, 1, nil) == 1)
+	check("e o escudo continua de pe pro proximo golpe",
+		MatchQuery.FindStatusEffect(aoeC, "shield") ~= nil)
+end
+
+-- ===== SPYKE / AGILITY =====
+do
+	local SPYKE_ID = 26
+	local spykeData = HeroData.GetById(SPYKE_ID)
+
+	check("Spyke esta no catalogo", spykeData ~= nil)
+
+	if spykeData then
+		check("Spyke tem a ficha combinada",
+			spykeData.attack == 1 and spykeData.hp == 22
+				and spykeData.ability == GameConfig.ABILITIES.AGILITY,
+			("%d/%d/%s"):format(spykeData.attack, spykeData.hp, tostring(spykeData.ability)))
+
+		-- Agility nao mexe em alcance: o que ele ganha e um SEGUNDO passo, nao
+		-- um passo maior nem um alcance maior
+		check("Agility nao altera alcance nem passo",
+			HeroData.GetMoveRange(spykeData) == GameConfig.BASE_MOVE_RANGE
+				and HeroData.GetAttackRange(spykeData) == GameConfig.BASE_ATTACK_RANGE)
+
+		check("Agility e reconhecida pela ability, nao pelo nome",
+			GameConfig.HasAgility({ ability = GameConfig.ABILITIES.AGILITY })
+				and not GameConfig.HasAgility({ name = "Spyke", ability = nil }))
+	end
+
+	-- ===== AS TRES FASES DO TURNO =====
+	-- MatchQuery.CanMove e a MESMA funcao que o MoveHero, o snapshot e o bot
+	-- consultam. `bonusMove` e o passo avulso que o MarkAttacked acende pra quem
+	-- tem Agility; aqui ele e ligado na mao pra testar a regra sem partida.
+	local spyke = FakeHero(SPYKE_ID, "A", lineA)
+	local ralph = FakeHero(1, "A", lineB)
+	local board = { turn = { moved = {}, attacked = {}, bonusMove = {} } }
+
+	check("A) comeco do turno: anda", MatchQuery.CanMove(board, spyke))
+
+	board.turn.moved[spyke.uid] = true
+	check("A) depois de andar: nao anda de novo sozinho", not MatchQuery.CanMove(board, spyke))
+
+	board.turn.attacked[spyke.uid] = true
+	board.turn.bonusMove[spyke.uid] = true
+	check("A) Mover -> Atacar -> Mover: o golpe libera o segundo passo",
+		MatchQuery.CanMove(board, spyke))
+
+	board.turn.moved[spyke.uid] = true
+	board.turn.bonusMove[spyke.uid] = nil
+	check("A) o segundo passo acaba o turno dele", not MatchQuery.CanMove(board, spyke))
+	check("C) o ataque continua sendo um so", board.turn.attacked[spyke.uid] == true)
+
+	-- B) Atacar -> Mover, sem ter andado antes
+	local fresh = { turn = { moved = {}, attacked = {}, bonusMove = {} } }
+	fresh.turn.attacked[spyke.uid] = true
+	fresh.turn.bonusMove[spyke.uid] = true
+	check("B) Atacar -> Mover funciona sem o passo de ida",
+		MatchQuery.CanMove(fresh, spyke))
+
+	-- sem Agility, o golpe encerra o passo: e o contraste que prova que a regra
+	-- veio da ability e nao de um "todo mundo anda depois de bater"
+	local plain = { turn = { moved = {}, attacked = {}, bonusMove = {} } }
+	plain.turn.attacked[ralph.uid] = true
+	check("sem Agility o golpe encerra o movimento", not MatchQuery.CanMove(plain, ralph))
+
+	-- ===== PASSIVA: PONTO DE APOIO =====
+	local ceos = FakeHero(6, "A", lineC)
+	local near = { [ralph.uid] = ralph }
+	local api = FakeApi()
+	local base1, base2 = ralph.attack, ceos.attack
+
+	api.GetAlliesInRange = function() return { ralph, ceos } end
+	api.Distance = function(_, position)
+		return (position == ralph.position and near[ralph.uid]) and 1
+			or (position == ceos.position and near[ceos.uid]) and 1
+			or 3
+	end
+
+	local function Sync(trigger)
+		Skills.rallyAura.apply({ hero = spyke, api = api, trigger = trigger or "onMove" })
+	end
+
+	Sync()
+	check("passiva A) 1 aliado colado ganha +1", ralph.attack == base1 + 1, ralph.attack)
+	check("passiva A) quem esta longe nao ganha nada", ceos.attack == base2, ceos.attack)
+
+	Sync()
+	Sync()
+	check("passiva) recalcular nao empilha o bonus", ralph.attack == base1 + 1, ralph.attack)
+
+	near[ceos.uid] = ceos
+	Sync()
+	check("passiva B) 2 aliados colados ganham +1 cada",
+		ralph.attack == base1 + 1 and ceos.attack == base2 + 1)
+
+	near[ralph.uid] = nil
+	Sync()
+	check("passiva C) sai da adjacencia e perde na hora", ralph.attack == base1, ralph.attack)
+	check("passiva C) quem continuou colado mantem", ceos.attack == base2 + 1, ceos.attack)
+
+	-- E) o segundo passo da Agility e so mais um onMove: troca de protegido
+	near[ralph.uid] = ralph
+	near[ceos.uid] = nil
+	Sync()
+	check("passiva E) reposicionar troca quem recebe a aura",
+		ralph.attack == base1 + 1 and ceos.attack == base2)
+
+	-- D) morte do Spyke devolve tudo, mesmo de quem ainda esta colado nele
+	spyke.isAlive = false
+	Sync("onDie")
+	check("passiva D) Spyke morre e a aura inteira e devolvida",
+		ralph.attack == base1 and ceos.attack == base2)
+	check("passiva D) nao sobra marca de origem em ninguem",
+		ralph.rallyAuraFrom == nil and ceos.rallyAuraFrom == nil)
+
+	-- ===== SKILL: SANGUE FERVENDO =====
+	local guard = FakeHero(SPYKE_ID, "A", lineA)
+	local victim = FakeHero(1, "A", lineB)
+	local guardHp = guard.currentHp
+	local guardAtk = guard.attack
+
+	-- Refaz o que o ApplyDamage faz por evento de dano: se o vizinho tem o
+	-- efeito aberto, o bonus e somado DENTRO dele (`attackBonus`) e no ataque.
+	-- Cada aliado atingido e uma passagem — e um golpe em area vira N passagens,
+	-- que e exatamente como os +2/+3 nascem.
+	local function AllyWasHit(spyke)
+		local effect = MatchQuery.FindStatusEffect(spyke, "vengeance")
+		local bonus = effect and Skills.vengeance.attackFromNearbyHit({
+			hero = victim, ally = spyke,
+		}) or 0
+
+		if bonus > 0 then
+			effect.attackBonus = (effect.attackBonus or 0) + bonus
+			spyke.attack += bonus
+		end
+	end
+
+	AllyWasHit(guard)
+	check("skill) sem o efeito aberto, dano em aliado nao rende nada",
+		guard.attack == guardAtk, guard.attack)
+
+	Skills.vengeance.apply({ hero = guard, api = FakeApi(), trigger = "onAttack" })
+	check("skill) atacar abre o efeito por 1 turno",
+		MatchQuery.FindStatusEffect(guard, "vengeance") ~= nil
+			and MatchQuery.FindStatusEffect(guard, "vengeance").duration
+				== GameConfig.SPYKE_VENGEANCE_DURATION)
+
+	-- 1 aliado atingido: +1 de ATAQUE, e ZERO de vida perdida — o ponto inteiro
+	-- da correcao. O tamanho do golpe que o aliado levou nao entra na conta, e
+	-- por isso a funcao da skill nem recebe o dano.
+	AllyWasHit(guard)
+	check("skill) 1 aliado atingido rende +1 ATK",
+		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK, guard.attack)
+	check("skill) o Spyke nao perde vida nenhuma", guard.currentHp == guardHp, guard.currentHp)
+
+	AllyWasHit(guard)
+	check("skill) 2 aliados atingidos rendem +2 ATK",
+		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK * 2, guard.attack)
+
+	AllyWasHit(guard)
+	check("skill) 3 aliados numa area rendem +3 ATK",
+		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK * 3, guard.attack)
+	check("skill) HP intacto depois dos tres", guard.currentHp == guardHp, guard.currentHp)
+
+	-- o bonus acumulado mora NO EFEITO, que e o que faz o ProcessStatusEffects
+	-- devolver tudo quando o prazo vence — sem residuo no ataque
+	local effect = MatchQuery.FindStatusEffect(guard, "vengeance")
+	check("skill) o bonus fica guardado no efeito, nao solto no ataque",
+		effect.attackBonus == GameConfig.SPYKE_VENGEANCE_ATTACK * 3, effect.attackBonus)
+
+	-- ATACAR DE NOVO RENOVA, NAO ZERA. Era o bug: o apply removia o efeito antes
+	-- de reaplicar, o estorno saia no onAttack (que roda ANTES do dano) e o Spyke
+	-- batia com o ataque de ficha justamente no turno em que tinha juntado mais.
+	local api = FakeApi()
+	Skills.vengeance.apply({ hero = guard, api = api, trigger = "onAttack" })
+	check("skill) atacar de novo nao perde o que ja tinha juntado",
+		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK * 3, guard.attack)
+	check("skill) e continua com um efeito so aberto",
+		#guard.statusEffects == 1, #guard.statusEffects)
+
+	AllyWasHit(guard)
+	check("skill) e segue acumulando por cima do renovado",
+		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK * 4, guard.attack)
+
+	-- so o prazo vencendo (um turno sem atacar) e que devolve — e devolve TUDO
+	api.RemoveStatusEffect(guard, "vengeance")
+	check("skill) ao vencer o prazo o ataque volta ao que era",
+		guard.attack == guardAtk, guard.attack)
+	check("skill) sem residuo de efeito depois do estorno",
+		#guard.statusEffects == 0, #guard.statusEffects)
+
+	guard.isAlive = false
+	check("skill) Spyke morto nao acumula mais nada",
+		Skills.vengeance.attackFromNearbyHit({ hero = victim, ally = guard }) == 0)
+end
+
+do
+	check("Wren atira 4 casas", HeroData.GetAttackRange(HeroData.GetById(19)) == 4)
+
+	local miner = FakeHero(3, "A", lineA)
+	local base = miner.attack
+	local api, log = FakeApi()
+	for _ = 1, 60 do
+		Skills.goodLuck.apply({ hero = miner, api = api, trigger = "onTurnEnd" })
+	end
+	check("Good Luck cura junto com o ataque que ganhou",
+		#log.heals == miner.attack - base, ("%d curas / %d ataque"):format(#log.heals, miner.attack - base))
+	check("Good Luck cura o proprio Mineiro pelo valor de config",
+		log.heals[1] == nil or (log.heals[1].hero == miner
+			and log.heals[1].amount == GameConfig.GOOD_LUCK_HEAL))
+
+	local ralph = FakeHero(1, "A", lineA)
+	local sack = FakeHero(6, "B", lineB)
+	ralph.firstAttack = false
+	ralph.firstPunchApplied = false
+	api = FakeApi()
+	local card = ralph.attack
+
+	Skills.firstPunch.apply({ hero = ralph, target = nil, api = api })
+	check("First Punch carrega +2 no comeco do turno", ralph.attack == card + 2, ralph.attack)
+	Skills.firstPunch.apply({ hero = ralph, target = nil, api = api })
+	check("First Punch nao carrega duas vezes", ralph.attack == card + 2, ralph.attack)
+
+	Skills.firstPunch.apply({ hero = ralph, target = sack, api = api, damageApplied = false })
+	check("First Punch devolve o que carregou", ralph.attack == card, ralph.attack)
+
+	local revived = FakeHero(1, "A", lineA)
+	revived.firstAttack = false
+	revived.firstPunchApplied = false
+	api = FakeApi()
+	Skills.firstPunch.apply({ hero = revived, target = sack, api = api, damageApplied = false })
+	check("First Punch nao desconta carga que nunca existiu",
+		revived.attack == card, revived.attack)
+end
+
 
 do
 	local ahead = lineB and lineC and HexGrid.GetLineBeyond(lineB, lineC, 1)
@@ -483,12 +876,15 @@ do
 	local behindShooter = lineA and lineB and HexGrid.GetLineBeyond(lineB, lineA, 1)
 
 	if lineD then
-		local lateral
+		local lateral, sideStep
 		for _, neighbor in ipairs(HexGrid.GetNeighbors(lineB)) do
 			local span = HexGrid.Distance(lineA, neighbor.id) + HexGrid.Distance(neighbor.id, lineD)
 			if span > HexGrid.Distance(lineA, lineD) then
-				lateral = neighbor.id
-				break
+				if HexGrid.Distance(lineA, neighbor.id) == 1 then
+					sideStep = sideStep or neighbor.id
+				elseif not lateral then
+					lateral = neighbor.id
+				end
 			end
 		end
 
@@ -527,14 +923,36 @@ do
 
 		if behindShooter and behindShooter[1] then
 			put(wall, behindShooter[1])
-			check("Taunt atras do atirador nao bloqueia",
-				MatchQuery.TauntBlocks(board, shooter, victim) == nil, behindShooter[1])
+			check("Taunt colado atras do atirador tambem prende",
+				MatchQuery.TauntBlocks(board, shooter, victim) == wall, behindShooter[1])
 		end
 
 		if lateral then
 			put(wall, lateral)
 			check("Taunt fora do corredor nao bloqueia",
 				MatchQuery.TauntBlocks(board, shooter, victim) == nil, lateral)
+		end
+
+		if sideStep then
+			put(wall, sideStep)
+			check("Taunt colado prende o Ranged fora do corredor",
+				MatchQuery.TauntBlocks(board, shooter, victim) == wall, sideStep)
+			check("o Taunt colado continua atacavel pelo Ranged",
+				MatchQuery.TauntBlocks(board, shooter, wall) == nil, sideStep)
+
+			-- Taunt LONGE tambem e alvo legitimo. O provocador colado barra o
+			-- inimigo SEM Taunt, nao os outros provocadores: "nao passe por cima
+			-- de mim" nao e "ataque exatamente a mim".
+			local farTaunt = FakeHero(9, "B", lineD)
+			put(victim, lineC)
+			put(farTaunt, lineD)
+			check("com um Taunt colado, outro Taunt longe continua atacavel",
+				MatchQuery.TauntBlocks(board, shooter, farTaunt) == nil, sideStep)
+			check("mas o inimigo sem Taunt continua barrado",
+				MatchQuery.TauntBlocks(board, shooter, victim) == wall, sideStep)
+			board.heroes[farTaunt.uid] = nil
+			board.occupied[farTaunt.position] = nil
+			put(victim, lineD)
 		end
 
 		put(wall, lineB)
@@ -548,6 +966,73 @@ do
 		put(wall, lineB)
 		check("melee trava com Taunt colado",
 			MatchQuery.TauntBlocks(board, melee, victim) == wall)
+	end
+end
+
+-- ===== MULTIPLOS TAUNTS NAO SE TRAVAM =====
+-- Tabuleiro proprio: estes casos precisam de dois provocadores ao mesmo tempo, e
+-- misturar com o tabuleiro do corredor acima so confundiria quem for ler.
+if lineA and lineB and lineC then
+	local board = { occupied = {}, heroes = {} }
+	local function put(hero, hexId)
+		if hero.position then board.occupied[hero.position] = nil end
+		hero.position = hexId
+		board.occupied[hexId] = hero
+		board.heroes[hero.uid] = hero
+	end
+
+	-- Dois provocadores colados, um de cada lado. Era o caso que travava: a
+	-- varredura de vizinhos devolvia um bloqueador ANTES de olhar se o proprio
+	-- alvo era Taunt, e nenhum dos dois conseguia bater no outro.
+	local tauntA = FakeHero(6, "A", lineA)
+	local tauntB = FakeHero(9, "B", lineB)
+	put(tauntA, lineA)
+	put(tauntB, lineB)
+
+	check("Taunt bate no Taunt inimigo colado",
+		MatchQuery.TauntBlocks(board, tauntA, tauntB) == nil)
+	check("e o de volta tambem",
+		MatchQuery.TauntBlocks(board, tauntB, tauntA) == nil)
+
+	-- Agora um atacante comum cercado por DOIS provocadores inimigos: os dois
+	-- valem, e o terceiro inimigo nao.
+	local hitter = FakeHero(1, "A", lineA)
+	local guardOne = FakeHero(6, "B", lineB)
+	local guardTwo = nil
+	for _, neighbor in ipairs(HexGrid.GetNeighbors(lineA)) do
+		if neighbor.id ~= lineB then
+			guardTwo = FakeHero(9, "B", neighbor.id)
+			break
+		end
+	end
+
+	local outsider = FakeHero(2, "B", lineC)
+	put(hitter, lineA)
+	put(guardOne, lineB)
+	put(outsider, lineC)
+
+	check("1 Taunt valido: so ele pode ser atacado",
+		MatchQuery.TauntBlocks(board, hitter, guardOne) == nil
+			and MatchQuery.TauntBlocks(board, hitter, outsider) == guardOne)
+
+	if guardTwo then
+		put(guardTwo, guardTwo.position)
+
+		check("2 Taunts validos: o primeiro e alvo",
+			MatchQuery.TauntBlocks(board, hitter, guardOne) == nil, guardOne.position)
+		check("2 Taunts validos: o segundo tambem e alvo",
+			MatchQuery.TauntBlocks(board, hitter, guardTwo) == nil, guardTwo.position)
+		check("2 Taunts validos: o inimigo sem Taunt segue barrado",
+			MatchQuery.TauntBlocks(board, hitter, outsider) ~= nil)
+
+		-- e um Ranged no mesmo aperto le a MESMA regra, sem excecao propria
+		local sniper = FakeHero(19, "A", lineA)
+		put(sniper, lineA)
+		check("Ranged com 2 Taunts colados escolhe qualquer um dos dois",
+			MatchQuery.TauntBlocks(board, sniper, guardOne) == nil
+				and MatchQuery.TauntBlocks(board, sniper, guardTwo) == nil)
+		check("Ranged com 2 Taunts colados nao alcanca o terceiro",
+			MatchQuery.TauntBlocks(board, sniper, outsider) ~= nil)
 	end
 end
 
@@ -623,12 +1108,16 @@ do
 			local current = table.remove(queue, 1)
 			for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
 				local occupant = occupied[neighbor.id]
-				if occupant and occupant ~= origin and not visited[neighbor.id] then
+				-- espelha o IsChainTarget do MatchManager: so inimigo VIVO com
+				-- dono conduz, e o que conduz e o que apanha
+				if not visited[neighbor.id] and occupant ~= nil
+					and occupant ~= origin
+					and occupant.isAlive == true
+					and occupant.ownerId ~= nil
+					and occupant.ownerId ~= origin.ownerId then
 					visited[neighbor.id] = true
 					table.insert(queue, neighbor.id)
-					if occupant.isAlive and occupant.ownerId ~= origin.ownerId then
-						table.insert(hit, occupant)
-					end
+					table.insert(hit, occupant)
 				end
 			end
 		end
@@ -840,12 +1329,16 @@ do
 			local current = table.remove(queue, 1)
 			for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
 				local occupant = occupied[neighbor.id]
-				if occupant and occupant ~= origin and not visited[neighbor.id] then
+				-- espelha o IsChainTarget do MatchManager: so inimigo VIVO com
+				-- dono conduz, e o que conduz e o que apanha
+				if not visited[neighbor.id] and occupant ~= nil
+					and occupant ~= origin
+					and occupant.isAlive == true
+					and occupant.ownerId ~= nil
+					and occupant.ownerId ~= origin.ownerId then
 					visited[neighbor.id] = true
 					table.insert(queue, neighbor.id)
-					if occupant.isAlive and occupant.ownerId ~= origin.ownerId then
-						table.insert(hit, occupant)
-					end
+					table.insert(hit, occupant)
 				end
 			end
 		end
@@ -887,6 +1380,84 @@ do
 			check("o isolado nao encosta no alvo",
 				HexGrid.Distance(isolated.position, target.position) > 1)
 		end
+	end
+end
+
+-- ===== A CORRENTE DO VOLT SO ANDA NA REDE INIMIGA =====
+-- Linha reta A-B-C: o alvo em A, o meio em B, e um inimigo em C que SO se
+-- alcanca passando por B. Trocando quem esta em B, cada caso responde uma
+-- pergunta: aliado conduz? lapide conduz? barril conduz? inimigo conduz?
+if lineA and lineB and lineC then
+	local occupied = {}
+
+	local function ChainFrom(origin, hexId)
+		local visited = { [hexId] = true }
+		local queue, hit = { hexId }, {}
+		while #queue > 0 do
+			local current = table.remove(queue, 1)
+			for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
+				local occupant = occupied[neighbor.id]
+				if not visited[neighbor.id] and occupant ~= nil
+					and occupant ~= origin
+					and occupant.isAlive == true
+					and occupant.ownerId ~= nil
+					and occupant.ownerId ~= origin.ownerId then
+					visited[neighbor.id] = true
+					table.insert(queue, neighbor.id)
+					table.insert(hit, occupant)
+				end
+			end
+		end
+		return hit
+	end
+
+	local voltHex
+	for _, n in ipairs(HexGrid.GetNeighbors(lineA)) do
+		if n.id ~= lineB then voltHex = n.id break end
+	end
+
+	if voltHex then
+		local volt = FakeHero(25, "A", voltHex)
+		local alvo = FakeHero(1, "B", lineA)   -- o inimigo que o Volt atacou
+		local atras = FakeHero(2, "B", lineC)  -- so alcancavel atraves de B
+		occupied[voltHex] = volt
+		occupied[lineA] = alvo
+		occupied[lineC] = atras
+
+		check("o inimigo de tras nao encosta no alvo",
+			HexGrid.Distance(lineA, lineC) == 2)
+
+		local function AtingidosComMeio(meio)
+			occupied[lineB] = meio
+			local pegou = {}
+			for _, v in ipairs(ChainFrom(volt, alvo.position)) do pegou[v] = true end
+			return pegou
+		end
+
+		-- ALIADO no meio
+		local aliado = FakeHero(6, "A", lineB)
+		local pegou = AtingidosComMeio(aliado)
+		check("corrente) aliado nao recebe dano", pegou[aliado] ~= true)
+		check("corrente) aliado nao e ponte", pegou[atras] ~= true)
+		check("corrente) o proprio Volt nunca entra", pegou[volt] ~= true)
+
+		-- LAPIDE no meio (inimigo morto: ocupa a casa, mas nao e combatente)
+		local lapide = FakeHero(4, "B", lineB)
+		lapide.isAlive = false
+		pegou = AtingidosComMeio(lapide)
+		check("corrente) lapide nao recebe nem conduz",
+			pegou[lapide] ~= true and pegou[atras] ~= true)
+
+		-- BARRIL no meio (neutro: sem dono)
+		local barril = { position = lineB, isBarrel = true, hitsLeft = 3 }
+		pegou = AtingidosComMeio(barril)
+		check("corrente) barril neutro nao conduz", pegou[atras] ~= true)
+
+		-- INIMIGO no meio: agora sim a corrente atravessa
+		local vizinho = FakeHero(9, "B", lineB)
+		pegou = AtingidosComMeio(vizinho)
+		check("corrente) inimigo colado no alvo recebe", pegou[vizinho] == true)
+		check("corrente) e a corrente segue pro inimigo seguinte", pegou[atras] == true)
 	end
 end
 

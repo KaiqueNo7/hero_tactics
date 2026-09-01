@@ -31,6 +31,7 @@ GameConfig.SUDDEN_DEATH_START_TURN = 20
 GameConfig.SUDDEN_DEATH_DAMAGE = 1
 
 GameConfig.GOOD_LUCK_CHANCE = 0.5 -- chance do goodLuck do Mineiro dar +1 de ataque
+GameConfig.GOOD_LUCK_HEAL = 2
 GameConfig.POISON_DURATION = 3
 
 -- ===== GELO (Kor) =====
@@ -103,7 +104,7 @@ GameConfig.ZEFF_PUSH_BLOCKED_BONUS = 1
 GameConfig.WIND_BOOST_MOVE_BONUS = 1
 
 -- ===== WREN (nome de trabalho — a atiradora, ver docs/HeroisFuturos.md) =====
-GameConfig.WREN_RANGE = 5
+GameConfig.WREN_RANGE = 4
 
 GameConfig.ESTOPIM_DAMAGE = 10
 GameConfig.ESTOPIM_DEATH_HOLD = 1.25
@@ -118,6 +119,26 @@ GameConfig.PARALYSIS_DURATION = 1
 
 GameConfig.MORN_SUMMON_IDS = { 21, 22 }
 GameConfig.MORN_SUMMON_COOLDOWN = 0
+
+-- ===== SPYKE (suporte móvel) =====
+-- A aura é somada e devolvida pelo IncreaseAttack, como o trustInTeam do Dante,
+-- e não por efeito de duração: ela existe ENQUANTO a adjacência existir.
+GameConfig.SPYKE_AURA_ATTACK = 1
+
+-- O Sangue Fervendo rende POR ALIADO ATINGIDO, não por ponto de dano: dois vizinhos
+-- feridos no mesmo golpe em área valem +2, um vizinho que levou 10 vale +1. O
+-- Spyke não perde vida nenhuma nisso — é bônus ofensivo, não troco.
+GameConfig.SPYKE_VENGEANCE_ATTACK = 1
+
+-- Turnos que o efeito dura DEPOIS do último ataque dele. O bônus acumula
+-- enquanto ele renovar (ver Skills.vengeance), então este número não é o teto do
+-- ganho: é o prazo pra manter a corrente viva. Um turno sem atacar devolve tudo.
+--
+-- NÃO existe teto de acumulação hoje, de propósito — o preço já é o Spyke
+-- precisar atacar todo turno E ter aliado apanhando do lado dele. Se em teste
+-- ele passar dos ~6 de ataque com frequência (a faixa em que o Merlin e o
+-- Mineiro fecham a partida), é aqui que entra um SPYKE_VENGEANCE_MAX.
+GameConfig.SPYKE_VENGEANCE_DURATION = 1
 
 GameConfig.RUSH_MOVE_RANGE = 4
 GameConfig.MOMENTUM_PER_HEX = 1
@@ -217,7 +238,19 @@ GameConfig.ABILITIES = {
 	SPRINT = "Sprint",
 	TAUNT = "Taunt",
 	RANGED = "Ranged",
+	AGILITY = "Agility",
 }
+
+-- Agility: o ataque NÃO encerra a movimentação. Não é "anda e bate no mesmo
+-- turno" (todo mundo faz isso) — é um segundo passo, liberado depois do golpe,
+-- que permite Mover → Atacar → Mover. O ataque continua sendo um só por turno.
+--
+-- Pergunta feita pela ABILITY e nunca pelo nome do herói: quem receber
+-- `ability = "Agility"` na ficha ganha o comportamento inteiro sem tocar em
+-- código, do mesmo jeito que Sprint e Ranged funcionam.
+function GameConfig.HasAgility(hero)
+	return hero ~= nil and hero.ability == GameConfig.ABILITIES.AGILITY
+end
 
 GameConfig.TURN_TIME_LIMIT = 60 -- segundos por turno; 0 desliga o cronômetro
 
@@ -326,17 +359,32 @@ GameConfig.HEX_COLOR_B = Color3.fromRGB(74, 61, 50)
 GameConfig.ARENA_ORIGIN = Vector3.new(-233.7, 500, -1400)
 GameConfig.ARENA_SPACING = 200
 
--- Cada arena comporta 2 jogadores, então este número TEM que acompanhar o
--- tamanho do servidor: com 8 arenas cabem 16 em partida. Se o servidor for
--- maior que o dobro disto, a diferença é gente parada no lobby recebendo
--- "Todas as arenas estão ocupadas" — a pior primeira impressão possível.
+-- ===== CAPACIDADE DE PARTIDAS SIMULTÂNEAS =====
+-- Este número é TETO OPERACIONAL, não limite de arquitetura. Nada no
+-- MatchManager é dimensionado por ele: as partidas moram em `matches[matchId]`,
+-- uma tabela comum, e cada uma carrega o próprio estado. Subir este valor não
+-- pede reescrita nenhuma — é literalmente o `for` do AllocateSlot indo mais
+-- longe e o ArenaOrigin devolvendo mais uma coordenada.
 --
--- O tamanho do servidor não se configura por script: é Game Settings > Players
--- > Max Players. Mantenha os dois em par (16 jogadores / 8 arenas).
+-- O TETO REAL DE UM SERVIDOR PVP NÃO É ESTE NÚMERO, É A LOTAÇÃO. Uma partida
+-- PvP consome DOIS jogadores, e Roblox não deixa entrar mais gente que o Max
+-- Players do Game Settings. Num servidor de 30 jogadores não existem 20 partidas
+-- PvP possíveis — existem 15, e só se todo mundo estiver jogando ao mesmo tempo.
+-- Por isso MatchCapacity() corta pelo que cabe de gente: prometer mais arena que
+-- assento não cria partida, só cria arena vazia ocupando memória.
 --
--- Arena parada custa pouco (é cenário clonado, sem script), então o teto real
--- é memória e replicação, não CPU.
-GameConfig.MAX_SIMULTANEOUS_MATCHES = 8
+-- Crescer daqui é medir e subir o número, uma linha. O que NÃO cabe num servidor
+-- só resolve com mais servidores (ver docs/Escala.md).
+GameConfig.MAX_LIVE_MATCHES = 24
+
+function GameConfig.MatchCapacity()
+	-- Partida contra bot gasta 1 assento, PvP gasta 2 — o pior caso (todo mundo
+	-- treinando contra bot) é uma partida por jogador, e é esse que serve de teto
+	-- físico. MaxPlayers é 0 em alguns contextos de Studio; aí vale o operacional.
+	local seats = game:GetService("Players").MaxPlayers
+	if seats <= 0 then return GameConfig.MAX_LIVE_MATCHES end
+	return math.max(1, math.min(GameConfig.MAX_LIVE_MATCHES, seats))
+end
 
 -- ===== CÂMERA DA PARTIDA =====
 -- Moram aqui, e não no CameraController, porque duas coisas precisam do MESMO
@@ -361,8 +409,32 @@ function GameConfig.MatchCameraCFrame(center, distance)
 	), center)
 end
 
+-- GRADE, não fileira. Enfileirar arenas só no X funcionava com 8 e virava um
+-- muro com 80: a 200 studs cada, a fileira passa de 16.000 studs por volta do
+-- slot 82, e é ali que a precisão de float do Roblox começa a tremer geometria e
+-- física. A grade troca esse crescimento linear por raiz quadrada — 100 arenas
+-- ocupam 13 colunas por 13 fileiras, uns 2.600 studs de lado, bem dentro da
+-- região saudável.
+--
+-- Os 8 primeiros slots caem EXATAMENTE onde caíam antes (fileira 0 = a linha
+-- original), então nada que já esteja montado à mão no place se move.
+--
+-- Fileira cresce pro Z NEGATIVO, afastando do lobby. Pro positivo, a nona arena
+-- começaria a caminhar de volta pra debaixo das ilhas — que é justamente o que a
+-- escolha do ARENA_ORIGIN evita (ver o comentário dele: sombra de ilha atravessada
+-- no meio do tabuleiro).
+GameConfig.ARENA_GRID_COLUMNS = 8
+
 function GameConfig.ArenaOrigin(slot)
-	return GameConfig.ARENA_ORIGIN + Vector3.new((slot - 1) * GameConfig.ARENA_SPACING, 0, 0)
+	local index = math.max(0, slot - 1)
+	local column = index % GameConfig.ARENA_GRID_COLUMNS
+	local row = math.floor(index / GameConfig.ARENA_GRID_COLUMNS)
+
+	return GameConfig.ARENA_ORIGIN + Vector3.new(
+		column * GameConfig.ARENA_SPACING,
+		0,
+		-row * GameConfig.ARENA_SPACING
+	)
 end
 
 -- ===== RAIO DE SPAWN DO LOBBY =====

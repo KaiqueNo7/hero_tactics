@@ -50,10 +50,17 @@ Campaign.FIGHTS = {
 	{ hero = 13, group = 5, team = { 10, 7, 13 } },  -- Nash:    Kor, Noctin, Nash
 	{ hero = 19, group = 5, team = { 19, 6, 9 } },   -- Wren: Wren, Ceos, Bramm — dois Taunt na frente, ela atirando de trás; os três confrontos do grupo 5 só abrem com o grupo 4 inteiro na mão
 
-	{ hero = 23, group = 6, team = { 23, 20, 2 } },
-	{ hero = 20, group = 6, team = { 23, 20, 2 } },
-	{ hero = 24, group = 6, team = { 24, 23, 13 } },
-	{ hero = 25, group = 6, team = { 25, 24, 6 } },
+	-- `island` é o nome da Part/Model DENTRO de Workspace.LobbyTrail onde o
+	-- quadrado assenta. Serve pra ilha montada à mão que nunca entrou em
+	-- LobbyZones: sem zona na planta não há coordenada, e a do Explorer é a que
+	-- vale (ver LobbyZoneBuilder.PlacePads). Quem não tem o campo continua sendo
+	-- posicionado pela zona do grupo, como sempre.
+	{ hero = 23, group = 6, team = { 23, 20, 2 }, island = "Boske" },
+	{ hero = 20, group = 6, team = { 23, 20, 2 }, island = "Boske" },
+	{ hero = 24, group = 6, team = { 24, 23, 13 }, island = "Boske" },
+	{ hero = 25, group = 6, team = { 25, 24, 6 }, island = "Boske" },
+	{ hero = 26, group = 6, team = { 26, 1, 9 }, island = "Boske" },   -- Spyke: Spyke, Ralph, Bramm — dois vizinhos que aproveitam o +1 dele, e é o time que ensina a aura
+	{ hero = 27, group = 6, team = { 27, 4, 8 }, island = "Boske" }, -- Kira: Kira, Blade, Elaria — ela puxa o foco e blinda o Blade, que é quem realmente machuca
 }
 
 -- Quantos heróis abrem o PvP. A condição é a CONTAGEM, não a lista: seis
@@ -89,6 +96,28 @@ function Campaign.StateOf(owned, fight)
 	if owned[fight.hero] then return "done" end
 	if fight.group == 1 or GroupDone(owned, fight.group - 1) then return "open" end
 	return "locked"
+end
+
+-- FONTE ÚNICA da sequência da campanha: o próximo confronto que este jogador
+-- pode enfrentar, ou nil se não sobrou nenhum. A ORDEM é a de Campaign.FIGHTS —
+-- a lista é a sequência, e é por isso que ela não se repete em lugar nenhum
+-- (nem na UI, nem no botão de fim de partida, nem no MatchManager).
+--
+-- Atravessa a virada de grupo sozinha: o último do grupo 5 vira "done", o
+-- GroupDone do StateOf passa a valer e o primeiro do grupo 6 é o próximo aberto
+-- da lista. Não existe caso especial de "fim de ilha".
+--
+-- `skip` (opcional) é o confronto que NÃO pode voltar: serve pro instante em que
+-- a vitória acabou de acontecer e o desbloqueio ainda pode não ter chegado ao
+-- disco. Sem ele, o botão "Próximo herói" oferecia de volta o herói recém-batido.
+function Campaign.NextOpen(owned, skip)
+	for _, fight in ipairs(Campaign.FIGHTS) do
+		if fight ~= skip and fight.hero ~= (skip and skip.hero)
+			and Campaign.StateOf(owned, fight) == "open" then
+			return fight
+		end
+	end
+	return nil
 end
 
 function Campaign.CountOwned(owned)

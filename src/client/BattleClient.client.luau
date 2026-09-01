@@ -693,7 +693,13 @@ showHeroDetail = function(hero)
 	if not alive then table.insert(statusBits, "Abatido") end
 	if hero.hidden then table.insert(statusBits, "Na sombra") end
 	if hero.attack > (hero.baseAttack or hero.attack) then table.insert(statusBits, "ATK buffado") end
+	if hero.shielded then table.insert(statusBits, "Escudo (bloqueia o próximo golpe)") end
 	if hero.frozen then table.insert(statusBits, "Congelado") end
+	-- Agility: o golpe saiu e o passo continua de pé. Sem isto o jogador via as
+	-- casas azuis reaparecerem depois do ataque e achava que era bug.
+	if hero.hasAttacked and not hero.hasMoved then
+		table.insert(statusBits, "Movimento pós-ataque disponível")
+	end
 	if (hero.poisonTurns or 0) > 0 then
 		table.insert(statusBits, ("Envenenado (%d)"):format(hero.poisonTurns))
 	end
@@ -796,6 +802,7 @@ local function renderPromotionResurrect(state)
 		end
 	end
 end
+
 
 -- ===== CASAS DE PROMOÇÃO (pintura do tabuleiro) =====
 -- Inativa/Usada são cores fixas, aplicadas direto no BaseColor da casa — é o
@@ -1115,14 +1122,20 @@ local function warnNotYourTurn()
 	PlayUiSound("ActionBlocked")
 end
 
+-- AÇÃO BARRADA SE EXPLICA EM CIMA DO HERÓI, não num banner no topo da tela: o
+-- jogador está olhando pro tabuleiro, e o aviso longe do lugar em que a coisa
+-- aconteceu obriga a procurar quem barrou. Taunt e paralisia saem pelo balão
+-- amarelo do HeroView (ver TEXT_STYLES.taunt) e por isso não têm linha aqui.
+--
+-- Os que sobraram são os que NÃO têm um herói pra apontar, ou que o destaque do
+-- cliente já deveria ter impedido — quando um deles aparece, é sinal de que a
+-- pintura das casas e a regra do servidor discordaram.
 local REJECTION_TEXT = {
-	PARALYZED = "Este herói está paralisado.",
 	NOT_YOUR_TURN = "Não é o turno deste herói.",
 	OUT_OF_RANGE = "Alvo fora do alcance.",
 	OCCUPIED = "Esta casa está ocupada.",
 	INVALID_TARGET = "Alvo inválido.",
 	INVALID_MOVE = "Movimento inválido.",
-	TAUNTED = "Bloqueado por Taunt.",
 }
 
 GameAction.OnClientEvent:Connect(function(action, payload)
@@ -1810,8 +1823,11 @@ local AIM_END_PAD = 3.4 -- onde os traços param pra não invadir a ponta
 local AIM_MAX_DASHES = 48
 local AIM_FLOW_SPEED = 2.4 -- studs por segundo que os traços "andam" pro alvo
 local AIM_NEUTRAL_COLOR = Color3.fromRGB(150, 165, 190)
--- Vermelho mais aceso que o ATTACK_COLOR das casas: a linha é fina e fica sobre
--- um tabuleiro claro, então precisa de mais brilho que uma casa inteira pintada.
+-- Vermelho mais saturado que o ATTACK_COLOR das casas: a linha é fina e fica
+-- sobre um tabuleiro claro, então precisa destacar mais que uma casa inteira
+-- pintada. Agora que a seta é fosca (ver newAimPart) ela é sombreada pela arena,
+-- então é AQUI que se compensa se ela ficar apagada demais numa arena escura —
+-- subindo a cor, não devolvendo o Neon.
 local AIM_ATTACK_COLOR = Color3.fromRGB(255, 62, 52)
 
 -- ===== CURVATURA =====
@@ -1860,7 +1876,12 @@ local function newAimPart(name)
 	part.CanQuery = false
 	part.CanTouch = false
 	part.CastShadow = false
-	part.Material = Enum.Material.Neon
+	-- FOSCA, sem brilho próprio. Era Neon, que ignora a iluminação e sai sempre
+	-- na cor cheia — a seta acendia por cima do tabuleiro como se fosse fonte de
+	-- luz. SmoothPlastic com reflexo zero é a superfície mais chapada que uma
+	-- Part tem: ela passa a ser sombreada pela arena como o resto do cenário.
+	part.Material = Enum.Material.SmoothPlastic
+	part.Reflectance = 0
 	part.Transparency = 1
 	part.Parent = aimFolder
 	return part
@@ -2110,6 +2131,11 @@ end
 RunService.RenderStepped:Connect(updateAim)
 
 -- ===== DESTAQUES =====
+-- Declarado aqui, e não junto do renderShieldChoice lá embaixo, porque o
+-- clearHighlights logo abaixo já precisa dele: em Lua uma função só enxerga
+-- local declarado ANTES dela, e mais tarde viraria uma global silenciosa.
+local shieldOptionUids = {} -- [uid] = true, lido pelo clique
+
 local function clearHighlights()
 	for part in pairs(savedColors) do
 		if part.Parent then
@@ -2117,6 +2143,11 @@ local function clearHighlights()
 		end
 	end
 	savedColors, moveTargets, attackTargets = {}, {}, {}
+
+	-- A casa azul da Égide é pintada pelo mesmo `paint`, então ela já saiu no
+	-- laço acima junto com passo e ataque — aqui só cai a lista de quem o clique
+	-- aceita. Quem reacende é o fim do selectHero.
+	shieldOptionUids = {}
 end
 
 -- O tabuleiro vem no snapshot: com várias partidas rodando, procurar "Board"
@@ -2144,6 +2175,38 @@ local function paint(hexId, color)
 		-- em cima de tinta até saturar.
 		local base = tile:GetAttribute("BaseColor") or fallbackColor(tile)
 		tile.Color = base:Lerp(color, HIGHLIGHT_STRENGTH)
+	end
+end
+
+-- ===== ESCOLHA DO ESCUDO DA KIRA =====
+-- A CASA do aliado, pelo mesmo `paint` do passo e do ataque. É a linguagem que o
+-- jogador já lê no tabuleiro — casa tingida = ação possível ali —, e sai de
+-- graça no clearHighlights junto com as outras, sem bookkeeping próprio.
+--
+-- Não briga por cor com passo nem ataque: a casa de um aliado está OCUPADA,
+-- então nunca é destino de movimento (o isFree recusa) nem alvo de ataque (é do
+-- mesmo time). As três listas são disjuntas por construção.
+--
+-- Sem texto na tela: o azul já diz o que precisa ser dito, e um aviso fixo no
+-- topo competia com o banner de turno e com a fila de mensagens.
+local SHIELD_CHOICE_COLOR = Color3.fromRGB(70, 150, 235)
+
+-- `selectedUid` é quem está selecionado AGORA. A oferta só acende quando a
+-- própria Kira está na mão do jogador: ela deixou de ser um modo à parte que
+-- nasce no início do turno e virou mais uma coisa que a seleção dela revela,
+-- junto das casas de passo e dos inimigos no alcance.
+local function renderShieldChoice(state, selectedUid)
+	shieldOptionUids = {}
+
+	local pending = state and state.pendingShield
+	if not pending or pending.sourceUid ~= selectedUid then return end
+
+	for _, uid in ipairs(pending.options or {}) do
+		local hero = heroByUid(uid)
+		if hero and hero.isAlive then
+			shieldOptionUids[uid] = true
+			paint(hero.position, SHIELD_CHOICE_COLOR)
+		end
 	end
 end
 
@@ -2238,8 +2301,21 @@ local function selectHero(uid)
 	end
 
 	if not hero.hasAttacked then
-		-- MESMA regra que o servidor aplica em AttackHero, pro alcance pintado
-		-- não prometer um alvo que o clique não entrega.
+		-- O destaque mostra o ALCANCE, não a permissão. Todo inimigo dentro do
+		-- alcance fica clicável, inclusive o que o Taunt vai barrar — quem
+		-- explica a recusa é o balão amarelo em cima do provocador, no clique.
+		--
+		-- O cliente já filtrou Taunt aqui, e o resultado era pior: o corpo a
+		-- corpo simplesmente não via alvo nenhum (some sem dizer por quê) e o
+		-- Ranged via, porque a regra do CORREDOR — tiro que atravessa a casa do
+		-- provocador — nunca foi modelada aqui. Duas leituras diferentes da mesma
+		-- regra, e a mais silenciosa era a que mais confundia.
+		--
+		-- Ensinar > prevenir: descobrir que o Taunt puxa o foco clicando nele uma
+		-- vez é mais barato que ficar olhando pra um inimigo ao lado que
+		-- inexplicavelmente não acende. O clique recusado não custa nada — o
+		-- servidor sai antes do MarkAttacked, então o golpe do turno continua na
+		-- mão do jogador.
 		local attackReach = HexGrid.ComputeReach(hero.position, hero.attackRange, isFree)
 
 		for hexId in pairs(attackReach) do
@@ -2261,6 +2337,12 @@ local function selectHero(uid)
 			end
 		end
 	end
+
+	-- A Égide entra AQUI, no mesmo lugar que as casas de passo e os inimigos no
+	-- alcance: selecionar a Kira revela as três coisas de uma vez. Não é modo
+	-- separado nem botão de habilidade — é mais uma opção da seleção dela, e
+	-- some junto com o resto quando ela é desselecionada (ver clearHighlights).
+	renderShieldChoice(state, uid)
 end
 
 -- ===== CLIQUES =====
@@ -2314,6 +2396,36 @@ mouse.Button1Down:Connect(function()
 
 	if resurrectUid then
 		GameAction:FireServer("resurrect", resurrectUid)
+		return
+	end
+
+	-- Casa azul da Égide: clicar no aliado destacado dá o escudo a ele. Também
+	-- vem ANTES da seleção normal, e pelo motivo oposto ao da promoção — aqui o
+	-- alvo é um herói MEU e vivo, que é exatamente o que a seleção comum captura;
+	-- sem este desvio, clicar no elegível só o selecionaria.
+	--
+	-- O destaque some na hora, sem esperar o snapshot: o servidor já vai fechar a
+	-- oferta, e deixar o azul aceso até a resposta chegar convidava a um segundo
+	-- clique que não faria nada.
+	local shieldUid = nil
+	if heroUid and shieldOptionUids[heroUid] then
+		shieldUid = heroUid
+	elseif hexId then
+		for uid in pairs(shieldOptionUids) do
+			local option = heroByUid(uid)
+			if option and option.position == hexId then
+				shieldUid = uid
+				break
+			end
+		end
+	end
+
+	if shieldUid then
+		-- some na hora, sem esperar o snapshot: o servidor já vai fechar a oferta,
+		-- e deixar o azul aceso até a resposta chegar convidava a um segundo
+		-- clique que não faria nada
+		clearHighlights()
+		GameAction:FireServer("shield", shieldUid)
 		return
 	end
 
@@ -2395,8 +2507,16 @@ local function paintHero(anchor, alpha)
 
 	for _, child in ipairs(anchor:GetChildren()) do
 		if child:IsA("BasePart") then
-			-- anéis de time e o cilindro de placeholder
-			child.Transparency = alpha
+			-- anéis de time, cilindro de placeholder — e VFX pendurado no herói,
+			-- como a bolha do escudo da Kira.
+			--
+			-- `max`, e não atribuição direta: quem tem transparência PRÓPRIA
+			-- (BaseTransparency, gravado por quem criou a peça) nunca fica mais
+			-- opaco do que nasceu, mas continua sumindo junto com o dono quando a
+			-- furtividade pede. Sem isto o laço forçava tudo pra `alpha` — e como
+			-- ele roda a cada snapshot, a bolha aparecia certa por um instante e
+			-- voltava a sólida sozinha, várias vezes por turno.
+			child.Transparency = math.max(alpha, child:GetAttribute("BaseTransparency") or 0)
 		elseif child:IsA("BillboardGui") then
 			-- O crachá de ATK/HP some junto com o dono. O balão de texto também:
 			-- número de dano flutuando sobre uma casa vazia é a denúncia mais
@@ -2581,4 +2701,5 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 			selectHero(previous)
 		end
 	end
+
 end)

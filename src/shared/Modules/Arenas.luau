@@ -5,9 +5,11 @@ local Arenas = {}
 local SMOKE = "rbxasset://textures/particles/smoke_main.dds"
 local SPARK = "rbxasset://textures/particles/sparkles_main.dds"
 
--- Objeto quebrável de reserva, usado por qualquer tema sem `asset` próprio e
--- por aquele cujo asset não carregar. Sem `asset` aqui, cada tema cai no `part`
--- dele como antes.
+-- Objeto quebrável de reserva, usado por qualquer tema que não resolva um
+-- objeto próprio. Cada tema tenta, nesta ordem: `instance` (caminho de um
+-- modelo montado à mão no place, a partir do Workspace — ex. "Objects.MeshPart"),
+-- `asset` (id do catálogo), esta reserva, e por fim o `part` dele. Sem `asset`
+-- aqui, a reserva some da fila e cada tema cai direto no `part`.
 Arenas.DEFAULT_OBJECT = {
 	asset = 8605652118,
 	height = 5.6,
@@ -15,9 +17,9 @@ Arenas.DEFAULT_OBJECT = {
 
 Arenas.THEMES = {
 	{
-		id = "clareira",
+		id = "Florest",
 		group = 1,
-		name = "Clareira Verde",
+		name = "Zarrin",
 		master = nil,
 		music = "MusicClareira",
 		tiles = { a = Color3.fromRGB(126, 134, 96), b = Color3.fromRGB(88, 100, 70) },
@@ -68,9 +70,9 @@ Arenas.THEMES = {
 	},
 
 	{
-		id = "bosque",
+		id = "Rocky",
 		group = 2,
-		name = "Bosque Sombrio",
+		name = "Corcovado rochoso",
 		master = nil,
 		music = "MusicBosque",
 		tiles = { a = Color3.fromRGB(128, 120, 138), b = Color3.fromRGB(90, 84, 102) },
@@ -132,9 +134,9 @@ Arenas.THEMES = {
 	},
 
 	{
-		id = "geleira",
+		id = "Snow",
 		group = 3,
-		name = "Geleira",
+		name = "Sul",
 		master = nil,
 		music = "MusicGeleira",
 		tiles = { a = Color3.fromRGB(170, 190, 210), b = Color3.fromRGB(124, 146, 170) },
@@ -199,9 +201,9 @@ Arenas.THEMES = {
 	},
 
 	{
-		id = "forja",
+		id = "Vulcan",
 		group = 4,
-		name = "Forja de Brasa",
+		name = "Vulcan Primeiro",
 		master = nil,
 		music = "MusicForja",
 		tiles = { a = Color3.fromRGB(132, 100, 84), b = Color3.fromRGB(92, 70, 58) },
@@ -262,9 +264,9 @@ Arenas.THEMES = {
 	},
 
 	{
-		id = "santuario",
+		id = "Desert",
 		group = 5,
-		name = "Santuário de Brasa",
+		name = "Deserto do encontro",
 		master = nil,
 		music = "MusicSantuario",
 		tiles = { a = Color3.fromRGB(198, 172, 136), b = Color3.fromRGB(152, 126, 96) },
@@ -302,8 +304,9 @@ Arenas.THEMES = {
 			label = "Árvore Seca",
 			hitSound = "WoodHit",
 			breakSound = "WoodBreak",
-			asset = 7056965539,
+			instance = "Objects.MeshPart",
 			height = 7,
+			rotation = 45,
 			part = {
 				size = Vector3.new(4.4, 5, 4.4),
 				color = Color3.fromRGB(198, 168, 138),

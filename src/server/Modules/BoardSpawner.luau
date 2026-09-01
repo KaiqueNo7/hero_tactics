@@ -33,7 +33,7 @@ local TILE_THICKNESS = 1
 -- gerado. É o mesmo acordo do LobbyZoneBuilder — o construtor entrega a
 -- primeira versão e sai da frente.
 local ARENA_SLOT_PREFIX = "ArenaSlot_"
-local ARENA_MASTER_PREFIX = "ArenaMaster_"
+local ARENA_MASTER_PREFIX = "Arena_"
 local LEGACY_STORE = "LegacyArenas"
 
 local function ArenaFolderName(slot)
@@ -220,7 +220,7 @@ function BoardSpawner.BuildMaster(themeId, force)
 		warn(("BoardSpawner: %s anterior descartado — o que estava montado à mão foi junto."):format(masterName))
 	end
 
-	local slot = GameConfig.MAX_SIMULTANEOUS_MATCHES + (table.find(Arenas.THEMES, theme) or 1)
+	local slot = GameConfig.MAX_LIVE_MATCHES + (table.find(Arenas.THEMES, theme) or 1)
 	BoardSpawner.SpawnBoard(slot, false, nil, theme)
 
 	local folder = Workspace:FindFirstChild(ArenaFolderName(slot))

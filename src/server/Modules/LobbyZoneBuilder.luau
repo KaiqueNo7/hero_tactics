@@ -222,25 +222,66 @@ local function BuildFallNet(folder)
 	end)
 end
 
+-- O TOPO da ilha montada à mão, pelo nome dela dentro do LobbyTrail. Topo e não
+-- centro: o pad assenta EM CIMA da ilha, e uma ilha de 8 studs de espessura
+-- enterraria o quadrado se ele fosse pro meio dela.
+function LobbyZoneBuilder.IslandTop(name)
+	if not name then return nil end
+
+	local trail = Workspace:FindFirstChild("LobbyTrail")
+	local island = trail and trail:FindFirstChild(name, true)
+	if not island then return nil end
+
+	if island:IsA("BasePart") then
+		return island.Position + Vector3.new(0, island.Size.Y / 2 + 0.5, 0)
+	end
+
+	if island:IsA("Model") then
+		local pivot, size = island:GetBoundingBox()
+		return pivot.Position + Vector3.new(0, size.Y / 2 + 0.5, 0)
+	end
+
+	return nil
+end
+
 -- ===== QUADRADOS DA CAMPANHA =====
 -- Coloca no encaixe da planta SÓ o pad que ainda não tem lugar no place. Pad
 -- que já existe salvo fica onde o Studio deixou, inclusive fora do lobby —
 -- quem manda na coordenada de um quadrado montado à mão é o Explorer.
 function LobbyZoneBuilder.PlacePads()
-	local byGroup = {}
+	-- A FILEIRA é por ilha, não por grupo. Quase sempre dá no mesmo (uma ilha por
+	-- grupo), mas quem tem `island` próprio se separa: dois confrontos do mesmo
+	-- grupo podem morar em ilhas diferentes, e cada fileira precisa contar só os
+	-- quadrados que vão ficar lado a lado — senão o espaçamento abre buracos
+	-- reservando lugar pra quem foi pra outro lugar.
+	local rows, order = {}, {}
 	for _, fight in ipairs(Campaign.FIGHTS) do
-		byGroup[fight.group] = byGroup[fight.group] or {}
-		table.insert(byGroup[fight.group], fight)
+		local key = fight.island or fight.group
+		if not rows[key] then
+			rows[key] = { group = fight.group, island = fight.island, fights = {} }
+			table.insert(order, key)
+		end
+		table.insert(rows[key].fights, fight)
 	end
 
 	local moved, kept = 0, 0
 
-	for group, fights in pairs(byGroup) do
-		local zone = LobbyZones.ForGroup(group)
+	for _, key in ipairs(order) do
+		local row = rows[key]
+		local fights = row.fights
+		local zone = not row.island and LobbyZones.ForGroup(row.group) or nil
+		-- O grupo pode não ter zona na planta e mesmo assim ter ilha no place —
+		-- é o caso da Boske, montada à mão pros heróis novos. `Campaign.island`
+		-- é o nome da Part/Model dentro do LobbyTrail, e a coordenada sai DELA:
+		-- inventar um `center` na planta pra ilha que já existe seria escrever um
+		-- número que ninguém mediu, e o ZoneAt passaria a mentir a ambiência.
+		local anchor = LobbyZoneBuilder.IslandTop(row.island)
 
-		if zone then
-			local slots = LobbyZones.PadSlots(zone, #fights)
-			local zoneIsNew = not adopted or built[zone.id]
+		if zone or anchor then
+			local slots = LobbyZones.PadSlots(zone, #fights, anchor)
+			-- Sem zona na planta não existe "ilha recém-construída": só quadrado
+			-- novo (TrailPending) se encaixa, o resto fica onde o Studio deixou.
+			local zoneIsNew = zone ~= nil and (not adopted or built[zone.id])
 
 			for index, fight in ipairs(fights) do
 				local pad = Workspace:FindFirstChild("FightPad_" .. fight.hero, true)
@@ -256,7 +297,7 @@ function LobbyZoneBuilder.PlacePads()
 						-- torto, e um quadrado inclinado é uma rampa que joga o
 						-- jogador pra fora da ilha
 						pad.CFrame = CFrame.new(slots[index])
-						pad:SetAttribute("TrailZone", zone.id)
+						pad:SetAttribute("TrailZone", zone and zone.id or row.island)
 						pad:SetAttribute("TrailPending", nil)
 						moved += 1
 					end

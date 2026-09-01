@@ -59,6 +59,7 @@ local LivingHeroesOf = MatchQuery.LivingHeroesOf
 local FindStatusEffect = MatchQuery.FindStatusEffect
 local MoveRangeOf = MatchQuery.MoveRangeOf
 local HasSkill = MatchQuery.HasSkill
+local CanMove = MatchQuery.CanMove
 
 local MatchUpdate = ReplicatedStorage.Remotes.MatchUpdate
 local BoardReady = ReplicatedStorage.Remotes.BoardReady
@@ -176,7 +177,11 @@ local function TriggerSkills(match, hero, triggerName, target, isCounterAttack, 
 end
 
 -- ===================== DANO / CURA =====================
-local ApplyDamage, KillHero
+-- IncreaseAttack entra na lista de declaradas cedo porque o ApplyDamage, logo
+-- abaixo, precisa dela (o Sangue Fervendo do Spyke soma ataque no vizinho no
+-- meio do evento de dano) e o corpo dela só aparece bem depois. Sem isto o nome
+-- viraria global no ponto da chamada, e a soma estouraria em runtime.
+local ApplyDamage, KillHero, IncreaseAttack, RemoveStatusEffect
 
 -- ===================== TÚMULO PENDENTE (Golem) =====================
 -- Todo herói é enterrado na hora em que morre, menos o Golem: ele estilhaça, e
@@ -427,8 +432,46 @@ local DAMAGE_SOURCES = {
 	summonerFell = "perder quem a invocou",
 }
 
+-- ===== ESCUDO: BLOQUEIA O PRÓXIMO GOLPE =====
+-- Estado GENÉRICO, e é de propósito que ele não saiba quem o concedeu: o efeito
+-- `shield` só diz "o próximo golpe neste herói não acontece". Hoje quem concede
+-- é a Kira; amanhã pode ser item, casa do tabuleiro ou outra skill, e nada aqui
+-- muda. É o contrário de perguntar `hero.name == "Kira"` no cano do dano.
+--
+-- NÃO é vida extra e NÃO subtrai nada: 1 ou 20 de golpe dão o mesmo zero, e o
+-- escudo sai inteiro no primeiro que chegar. Um golpe em área é uma chamada de
+-- ApplyDamage por vítima, e um ataque de vários golpes é uma por golpe — então
+-- "cada escudo por conta própria" e "só o primeiro dos três hits é barrado" saem
+-- da própria contagem de chamadas, sem regra extra.
+--
+-- SÓ GOLPE, não ambiente: exige `attacker`. Veneno, fogo, Morte Súbita e
+-- maldição de túmulo chegam aqui sem autor e atravessam — um escudo dourado
+-- evaporar numa ticada de veneno seria a pior surpresa possível pra quem gastou
+-- o turno da Kira nele.
+local function ConsumeShield(match, hero, attacker)
+	if not attacker then return false end
+	if not FindStatusEffect(hero, "shield") then return false end
+
+	RemoveStatusEffect(match, hero, "shield")
+	HeroView.SetShieldAura(hero, false)
+	HeroView.PlaySkillEffect(hero, "aegisBreak")
+	HeroView.Say(hero, "BLOQUEADO", "absorb")
+
+	LogEvent(match, "status", hero.sideIndex,
+		("O escudo de %s bloqueou o golpe de %s"):format(hero.name, attacker.name))
+	return true
+end
+
 function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sourceKey)
 	if not hero.isAlive then return end
+
+	-- SAI ANTES DE TUDO. O golpe bloqueado não é um golpe de 0 — é um golpe que
+	-- não aconteceu: não entra na telemetria, não dispara o onDamage da vítima
+	-- (nada de "quando causar dano"), não revela a furtividade do Nash e não
+	-- acende o Sangue Fervendo do Spyke ao lado. Sair aqui em cima é o que faz
+	-- todas essas consequências sumirem juntas, em vez de cada uma precisar
+	-- lembrar de checar escudo.
+	if ConsumeShield(match, hero, attacker) then return end
 
 	-- passivas que reduzem dano recebido (ex: autoDefense do Ralph)
 	for _, key in ipairs(hero.abilities) do
@@ -444,6 +487,17 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sou
 	-- loop acima, mas olhando quem está do lado de quem apanhou, não a própria
 	-- vítima. Primeira aura de dano do jogo; até aqui toda passiva olhava só a
 	-- ficha de quem estava recebendo.
+	--
+	-- O MESMO laço resolve as duas formas de um vizinho reagir ao golpe:
+	--   modifyIncomingDamageNearby  (Lucy)  MUDA o dano da vítima
+	--   attackFromNearbyHit         (Spyke) NÃO encosta no dano da vítima e
+	--                                       rende ataque a quem está ao lado
+	--
+	-- A adjacência que vale é a DESTE instante: o Spyke que se afastou não ganha
+	-- nada, o que chegou com o passo da Agility ganha. Num golpe em área cada
+	-- vítima entra aqui uma vez, então três vizinhos atingidos rendem +3 sem
+	-- ninguém contar nada — é uma soma de eventos, não uma varredura do
+	-- tabuleiro que possa contar a mesma cabeça duas vezes.
 	for _, ally in ipairs(GetAlliesInRange(match, hero, 1)) do
 		for _, key in ipairs(ally.abilities) do
 			local skill = Skills[key]
@@ -460,6 +514,24 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sou
 				local absorbed = before - amount
 				if absorbed > 0 then
 					HeroView.Say(ally, "+" .. tostring(absorbed), "absorb")
+				end
+			end
+
+			-- O bônus é GUARDADO NO EFEITO que a skill abriu (o efeito se chama
+			-- como a skill), e não solto em hero.attack: é o `attackBonus` que o
+			-- ProcessStatusEffects devolve quando o prazo vence, o mesmo caminho
+			-- do empréstimo do barril. Sem efeito aberto a skill devolve 0, então
+			-- a existência do efeito é ao mesmo tempo o interruptor e o cofre —
+			-- não há como sobrar bônus sem prazo pra vencer.
+			if skill and skill.attackFromNearbyHit then
+				local effect = FindStatusEffect(ally, key)
+				local bonus = effect and skill.attackFromNearbyHit({
+					hero = hero, ally = ally, attacker = attacker,
+				}) or 0
+
+				if bonus > 0 then
+					effect.attackBonus = (effect.attackBonus or 0) + bonus
+					IncreaseAttack(match, ally, bonus)
 				end
 			end
 		end
@@ -514,6 +586,7 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sou
 	else
 		TriggerSkills(match, hero, "onDamage", attacker, isCounterAttack)
 	end
+
 end
 
 -- `source` é QUEM curou, e é opcional porque quase toda cura do jogo é em si
@@ -545,7 +618,7 @@ local function Heal(match, hero, amount, source)
 	end
 end
 
-local function IncreaseAttack(match, hero, amount)
+function IncreaseAttack(match, hero, amount)
 	hero.attack += amount
 	HeroView.UpdateStats(hero)
 	HeroView.Say(hero, (amount > 0 and "+" or "") .. tostring(amount) .. " ATK", amount > 0 and "buff" or "debuff")
@@ -557,9 +630,12 @@ end
 
 local CC_EFFECTS = { paralysis = true, freeze = true }
 
+-- PARALYZED e TAUNTED saíram: recusa que tem um herói pra apontar vira balão em
+-- cima dele (HeroView.Say), não banner no topo da tela. O que sobrou aqui é o
+-- que não tem herói pra apontar ou que o destaque do cliente já deveria impedir.
 local REJECTIONS = {
-	PARALYZED = true, NOT_YOUR_TURN = true, OUT_OF_RANGE = true,
-	OCCUPIED = true, INVALID_TARGET = true, INVALID_MOVE = true, TAUNTED = true,
+	NOT_YOUR_TURN = true, OUT_OF_RANGE = true,
+	OCCUPIED = true, INVALID_TARGET = true, INVALID_MOVE = true,
 }
 
 local function AllowsReaction(attacker)
@@ -611,6 +687,7 @@ local EFFECT_NAMES = {
 	paralysis = "paralisado",
 	freeze = "congelado",
 	wound = "ferido",
+	vengeance = "com o sangue fervendo pelos aliados",
 }
 
 -- ===================== STATUS EFFECTS =====================
@@ -647,7 +724,19 @@ local function ApplyStatusEffect(match, hero, effect)
 	end
 end
 
-local function ClearStatusEffects(hero)
+local function ClearStatusEffects(match, hero)
+	-- Devolve o que foi EMPRESTADO antes de esvaziar a lista. O bônus de ataque
+	-- de um efeito é o único estado que mora fora dele (foi somado em
+	-- hero.attack), então apagar a lista sem passar por aqui deixaria o ponto
+	-- grudado pro resto da partida — vale pro empréstimo do barril, pro Embalo
+	-- do Rush e pro Sangue Fervendo do Spyke. É a mesma devolução que o
+	-- RemoveStatusEffect e o ProcessStatusEffects já faziam cada um no seu canto.
+	for _, effect in ipairs(hero.statusEffects) do
+		if effect.attackBonus then
+			IncreaseAttack(match, hero, -effect.attackBonus)
+		end
+	end
+
 	hero.statusEffects = {}
 	HeroView.UpdateStats(hero)
 end
@@ -697,6 +786,15 @@ local function ProcessStatusEffects(match, hero, ownTurnEnding)
 	local remaining = {}
 
 	for _, effect in ipairs(hero.statusEffects) do
+		-- Efeito SEM prazo: não conta turno, não vence sozinho. Quem entra aqui
+		-- sai por consumo (o escudo da Kira, gasto no golpe que ele bloqueia) e
+		-- não por relógio — é o que faz "dura até bloquear" ser uma regra do
+		-- efeito, e não uma duração enorme fingindo de infinita.
+		if effect.permanent then
+			table.insert(remaining, effect)
+			continue
+		end
+
 		-- não é a vez deste efeito: atravessa a passagem intacto
 		if not (ownTurnEnding or effect.ticksEveryTurn) then
 			table.insert(remaining, effect)
@@ -808,7 +906,7 @@ end
 -- Uma API por partida: as closures já sabem em qual tabuleiro mexer, então a
 -- skill continua escrita como antes (ctx.api.ApplyDamage(...)) sem saber que
 -- existem outras partidas rodando.
-local function RemoveStatusEffect(match, hero, effectType)
+function RemoveStatusEffect(match, hero, effectType)
 	for index = #hero.statusEffects, 1, -1 do
 		local effect = hero.statusEffects[index]
 		if effect.type == effectType then
@@ -846,6 +944,73 @@ local function Electrify(match, victim, origin)
 	end
 end
 
+-- ===== A ESCOLHA DO ESCUDO (Kira) =====
+-- Mesmo formato do match.pendingPromotion — dono, lista de uids, o cliente cruza
+-- com os heróis do snapshot — com UMA diferença que muda o jogo: esta escolha
+-- NÃO entra no AuthorizeAction. A promoção trava a partida até o jogador
+-- decidir; esta fica pendurada e o turno segue normal, então ignorar a oferta é
+-- uma jogada válida (só se perde o escudo daquele turno).
+--
+-- Elegível é aliado VIVO e ainda SEM escudo. É a mesma lista que vira o azul no
+-- cliente e a única que o servidor aceita — o "máximo um escudo por herói" mora
+-- neste filtro, não numa contagem em outro lugar.
+--
+-- A própria Kira fica de fora: a habilidade é escolher um ALIADO, e ela já tem
+-- Taunt e 33 de vida pra segurar o que vier.
+-- Aliado COLADO nela (1 casa) e ainda sem escudo. O alcance curto é o preço da
+-- Égide: pra blindar o carry, a Kira tem que estar ao lado dele — ou seja, no
+-- mesmo aperto em que ele está, com o Taunt dela puxando o foco. Proteger de
+-- longe transformava um tanque de suporte num guarda-chuva de tabuleiro inteiro.
+--
+-- Este é o ÚNICO lugar que responde "quem pode receber": é daqui que sai o azul
+-- do cliente e é aqui que o GrantShield confere de novo antes de aplicar.
+local function ShieldOptionsFor(match, hero)
+	local options = {}
+	if not (hero and hero.isAlive) then return options end
+
+	for _, ally in ipairs(GetAlliesInRange(match, hero, 1)) do
+		if not FindStatusEffect(ally, "shield") then
+			table.insert(options, ally.uid)
+		end
+	end
+	table.sort(options)
+	return options
+end
+
+-- A oferta guarda só QUEM oferece, nunca a lista. A lista é recalculada a cada
+-- leitura (snapshot e GrantShield), e tem que ser: com alcance 1, ela muda toda
+-- vez que a Kira ou o aliado dá um passo. Congelada no início do turno, ela
+-- ofereceria quem ficou pra trás e esconderia quem ela acabou de alcançar.
+local function OfferShield(match, hero)
+	if not match.turn or match.turn.ownerId ~= hero.ownerId then return end
+	if match.pendingShield then return end
+
+	match.pendingShield = {
+		ownerId = hero.ownerId,
+		sourceUid = hero.uid,
+	}
+end
+
+-- A CORRENTE DO VOLT SÓ EXISTE DENTRO DA REDE INIMIGA. Quem não passa neste
+-- teste não é atingido E não conduz — as duas coisas juntas, porque separá-las
+-- foi o bug: a busca aceitava QUALQUER coisa em `match.occupied` como ponte
+-- (aliado, lápide, barril) e só filtrava na hora do dano. Um aliado entre dois
+-- inimigos passava a corrente adiante como se fosse fio.
+--
+--   ownerId ~= nil        barril é neutro: não tem dono, não conduz
+--   isAlive == true       lápide ocupa a casa, mas não é combatente
+--   ownerId ~= o do Volt  ele mesmo e o time dele ficam de fora
+--
+-- Invocação inimiga (caveira do Morn, pedaço de Golem) tem dono e está viva,
+-- então entra sozinha — é unidade do lado adversário como outra qualquer.
+local function IsChainTarget(origin, occupant)
+	return occupant ~= nil
+		and occupant ~= origin
+		and occupant.isAlive == true
+		and occupant.ownerId ~= nil
+		and occupant.ownerId ~= origin.ownerId
+end
+
 local function BuildSkillApi(match)
 	return {
 		ApplyDamage = function(hero, amount, attacker, isCounterAttack, sourceKey)
@@ -872,7 +1037,11 @@ local function BuildSkillApi(match)
 		Electrify = function(victim, origin) Electrify(match, victim, origin) end,
 		Say = function(hero, text, kind) HeroView.Say(hero, text, kind) end,
 
+		-- quem pode entrar na corrente é o IsChainTarget, lá em cima
 		ChainFrom = function(origin, hexId)
+			-- A SEMENTE é o que o Volt acabou de atacar, e entra sem passar pelo
+			-- teste: pode ser um inimigo, mas também o barril que ele quebrou (ver
+			-- AttackBarrel). Dali em diante, só rede inimiga.
 			local visited = { [hexId] = true }
 			local depth = { [hexId] = 0 }
 			local queue = { hexId }
@@ -883,7 +1052,7 @@ local function BuildSkillApi(match)
 				local current = table.remove(queue, 1)
 				for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
 					local occupant = match.occupied[neighbor.id]
-					if occupant and occupant ~= origin and not visited[neighbor.id] then
+					if not visited[neighbor.id] and IsChainTarget(origin, occupant) then
 						visited[neighbor.id] = true
 						depth[neighbor.id] = depth[current] + 1
 						table.insert(queue, neighbor.id)
@@ -892,9 +1061,11 @@ local function BuildSkillApi(match)
 							to = neighbor.id,
 							depth = depth[neighbor.id],
 						})
-						if occupant.isAlive and occupant.ownerId ~= origin.ownerId then
-							table.insert(hit, occupant)
-						end
+						-- visitado e atingido viraram a MESMA lista: tudo que
+						-- conduz também apanha, e nada apanha sem conduzir. Era a
+						-- divergência entre as duas que deixava o arco elétrico
+						-- desenhado por cima de aliado que não levava dano nenhum.
+						table.insert(hit, occupant)
 					end
 				end
 			end
@@ -928,7 +1099,7 @@ local function BuildSkillApi(match)
 			HeroView.UpdateStats(hero)
 		end,
 
-		ClearStatusEffects = ClearStatusEffects,
+		ClearStatusEffects = function(hero) ClearStatusEffects(match, hero) end,
 		ClearNegativeEffects = ClearNegativeEffects,
 
 		-- Contagem no TABULEIRO INTEIRO, não por alcance. O GetAlliesInRange só
@@ -1041,6 +1212,8 @@ local function BuildSkillApi(match)
 			end
 		end,
 
+		OfferShield = function(hero) OfferShield(match, hero) end,
+
 		GrantExtraAction = function(hero, includeAttack)
 			if not match.turn then return end
 			match.turn.bonusMove[hero.uid] = true
@@ -1051,10 +1224,18 @@ local function BuildSkillApi(match)
 	}
 end
 
-local function CanMove(match, hero)
-	if not match.turn then return false end
-	if match.turn.bonusMove[hero.uid] then return true end
-	return not (match.turn.moved[hero.uid] or match.turn.attacked[hero.uid])
+-- Marca o golpe do turno como gasto. TODO ataque do jogo passa por aqui — herói,
+-- barril e lápide — e é por isso que a Agility mora nesta função e não em cada
+-- um dos três: o segundo passo nasce do ATO de atacar, seja no que for.
+--
+-- Contra-ataque não entra: ele acontece no turno do adversário, e liberar passo
+-- na mesa de turno alheia daria movimento fora da vez.
+local function MarkAttacked(match, hero)
+	match.turn.attacked[hero.uid] = true
+
+	if GameConfig.HasAgility(hero) and match.turn.ownerId == hero.ownerId then
+		match.turn.bonusMove[hero.uid] = true
+	end
 end
 
 -- ===================== SNAPSHOT =====================
@@ -1181,6 +1362,13 @@ local function Snapshot(match, viewerId)
 			-- retratos mostra o mesmo selo em 3 estágios que o crachá do tabuleiro
 			-- mostrava, e sem o número não dá pra saber qual estágio é
 			poisonTurns = (FindStatusEffect(hero, "poison") or {}).duration or 0,
+
+			-- Vai pros DOIS lados de propósito, ao contrário do stealth: o
+			-- adversário precisa saber que aquele golpe vai ser barrado antes de
+			-- gastá-lo, senão o escudo vira pegadinha em vez de leitura de
+			-- tabuleiro. O brilho dourado em cima do herói já conta isso no
+			-- tabuleiro; isto é o mesmo fato pra coluna de retratos e pra ficha.
+			shielded = FindStatusEffect(hero, "shield") ~= nil or nil,
 			isMine = hero.ownerId == viewerId,
 			-- 1 = azul, 2 = vermelho. Vai junto pra UI pintar o retrato com a
 			-- MESMA cor do anel embaixo do herói no tabuleiro: em PvP quem joga
@@ -1306,6 +1494,27 @@ local function Snapshot(match, viewerId)
 		pendingPromotion = { options = match.pendingPromotion.options }
 	end
 
+	-- Mesma regra da promoção: só o dono da escolha recebe as opções. A
+	-- diferença é que esta não trava nada — o cliente pinta os elegíveis de azul
+	-- e o jogador escolhe se quer usar, sem perder o turno se ignorar.
+	-- Mesma regra da promoção: só o dono da escolha recebe as opções. Duas
+	-- diferenças: esta não trava nada, e vai junto o `sourceUid` — o cliente só
+	-- acende os aliados quando a PRÓPRIA Kira estiver selecionada, dentro do
+	-- fluxo normal de seleção de herói, e sem o uid não teria como saber quem é
+	-- "a própria Kira".
+	local pendingShield = nil
+	if match.pendingShield and match.pendingShield.ownerId == viewerId then
+		-- Recalculado AGORA, não lido de uma lista guardada: com alcance 1, andar
+		-- muda quem está ao lado, e o snapshot sai a cada ação — então o azul do
+		-- cliente acompanha o passo da Kira sem ninguém avisar nada a ele.
+		local source = match.heroes[match.pendingShield.sourceUid]
+		local options = ShieldOptionsFor(match, source)
+
+		if #options > 0 then
+			pendingShield = { sourceUid = match.pendingShield.sourceUid, options = options }
+		end
+	end
+
 	-- ===== RESUMO DA PARTIDA =====
 	-- Do ponto de vista de QUEM RECEBE, como todo o resto do snapshot: cada
 	-- jogador vê o destaque do PRÓPRIO time. Num PvP os dois recebem resumos
@@ -1362,6 +1571,7 @@ local function Snapshot(match, viewerId)
 		barrels = barrels,
 		promotionSquares = promotionSquares,
 		pendingPromotion = pendingPromotion,
+		pendingShield = pendingShield,
 		campaign = match.fight ~= nil,
 		rematch = (match.phase == "finished" and not match.vsBot) and {
 			open = match.rematchOpen == true,
@@ -1609,7 +1819,7 @@ local function AttackBarrel(match, attacker, barrel)
 	-- provocador colado travar a quebra da caixa só tirava do jogador uma jogada
 	-- que não competia com ele.
 
-	match.turn.attacked[attacker.uid] = true
+	MarkAttacked(match, attacker)
 
 	HeroView.PlayAnimation(attacker, "attack")
 	HeroView.PlayAttackSound(attacker)
@@ -1655,7 +1865,7 @@ function AttackGrave(match, attacker, grave)
 	-- Taunt NÃO vale aqui, pelo mesmo motivo do barril: lápide é objeto, não
 	-- combatente — "Taunt só protege aliados, não objetos no mapa".
 
-	match.turn.attacked[attacker.uid] = true
+	MarkAttacked(match, attacker)
 
 	HeroView.PlayAnimation(attacker, "attack")
 	HeroView.PlayAttackSound(attacker)
@@ -1789,6 +1999,21 @@ local function RecordHeroStats(match)
 
 	if match.simulated then
 		if match.onStats then
+			-- A COMPOSIÇÃO REAL de cada lado, lida do tabuleiro e não do pedido
+			-- que abriu a partida: é ela que responde sinergia, matchup e time
+			-- completo no relatório. Invocação fica de fora (a caveira do Morn não
+			-- é uma escolha de time), e a lista sai ordenada pra quem recebe poder
+			-- montar chave normalizada sem reordenar de novo.
+			local rosters = { {}, {} }
+			for _, hero in pairs(match.heroes) do
+				local side = SideOf(match, hero.ownerId)
+				if side and not hero.summoner and not HeroData.IsSummon(hero.dataId) then
+					table.insert(rosters[side.index], hero.dataId)
+				end
+			end
+			table.sort(rosters[1])
+			table.sort(rosters[2])
+
 			match.onStats(entries, {
 				turns = match.turn and match.turn.number or 0,
 				winner = match.winner,
@@ -1796,6 +2021,7 @@ local function RecordHeroStats(match)
 				sideTwoId = match.sides[2].id,
 				theme = match.theme and match.theme.id or "?",
 				timeout = match.winner == "draw",
+				rosters = rosters,
 			})
 		end
 	else
@@ -1983,11 +2209,38 @@ function BotPlayTurn(match, botId)
 	task.spawn(function()
 		task.wait(BOT_ACTION_DELAY)
 
+		-- A ÉGIDE É TENTADA A CADA AÇÃO, não só na largada. Com alcance 1, quem
+		-- pode receber muda a cada passo: no começo do turno a Kira pode estar
+		-- sozinha, e três jogadas depois estar colada no carry. Tentar uma vez só,
+		-- no início, desperdiçaria o escudo em metade dos turnos.
+		--
+		-- Sem opção NENHUMA não chama o GrantShield: ele fecha a oferta mesmo
+		-- quando o alvo é recusado, e fechá-la agora tiraria a chance de proteger
+		-- alguém depois que o time se mexer.
+		local function TentarEscudo()
+			if not (MatchIsLive(match) and match.pendingShield
+				and match.pendingShield.ownerId == botId) then return end
+
+			local source = match.heroes[match.pendingShield.sourceUid]
+			local options = ShieldOptionsFor(match, source)
+			if #options == 0 then return end
+
+			MatchManager.GrantShield(nil, BotBrain.PickShieldTarget(match, botId, options), match)
+			task.wait(BOT_ACTION_DELAY)
+		end
+
+		TentarEscudo()
+
 		-- age sempre com quem tem a melhor jogada disponível; o tabuleiro muda
 		-- a cada movimento/abate, então o plano é refeito a cada iteração
 		local resolved = {}
 
-		for _ = 1, GameConfig.HEROES_PER_PLAYER * 2 do
+		-- TRÊS por herói, não duas: um Agility tem legitimamente três ações no
+		-- turno (andar, bater, andar de novo), e o teto antigo cortava justo o
+		-- reposicionamento — a metade do herói que faz o trabalho. O laço para
+		-- sozinho quando não sobra jogada, então a folga não custa nada a quem
+		-- não usa.
+		for _ = 1, GameConfig.HEROES_PER_PLAYER * 3 do
 			if not MatchIsLive(match) or match.phase ~= "battle" or match.turn.ownerId ~= botId then return end
 
 			-- O bot enxerga a partida pelo estado do servidor, onde o Shadow
@@ -2062,6 +2315,10 @@ function BotPlayTurn(match, botId)
 				-- só reposicionou: encerra o herói pra não reavaliá-lo em loop
 				resolved[best.hero.uid] = true
 			end
+
+			-- o time andou: quem estava fora do alcance da Kira pode estar do
+			-- lado dela agora
+			TentarEscudo()
 		end
 
 		if MatchIsLive(match) and match.phase == "battle" and match.turn.ownerId == botId then
@@ -2088,6 +2345,12 @@ function BeginTurn(match, ownerId, number)
 		token = token,
 		startedAt = os.clock(),
 	}
+
+	-- A oferta de escudo vale pelo turno em que nasceu. Zerar aqui, ANTES do
+	-- onTurnStart, é o que faz a lista ser recalculada do zero a cada turno da
+	-- Kira (quem ganhou escudo no turno passado some das opções sozinho) e o que
+	-- fecha a oferta que o jogador escolheu ignorar.
+	match.pendingShield = nil
 
 	-- onTurnStart dispara pros heróis dos DOIS lados (igual ao Phaser)
 	for _, hero in pairs(match.heroes) do
@@ -2200,7 +2463,10 @@ local function AuthorizeAction(match, player, hero)
 	if match.pendingPromotion then return false end
 	if not hero or not hero.isAlive then return false end
 	if IsDisabled(hero) then
-		Reject(player, "PARALYZED")
+		-- Balão em cima do próprio herói, como o Taunt e o escudo da Kira: ação
+		-- barrada se explica ONDE ela foi barrada. O banner no topo da tela
+		-- contava a mesma coisa longe do lugar em que ela aconteceu.
+		HeroView.Say(hero, "PARALISADO", "taunt")
 		return false
 	end
 	if hero.ownerId ~= match.turn.ownerId then return false end
@@ -2394,28 +2660,47 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	-- quando um tiro à distância teria que atravessar a casa dele (ver MatchQuery.TauntBlocks)
 	local tauntBlocker = MatchQuery.TauntBlocks(match, attacker, target)
 	if tauntBlocker then
-		Reject(player, "TAUNTED")
-		Broadcast(match, ("%s está bloqueado por Taunt de %s"):format(attacker.name, tauntBlocker.name))
+		-- SÓ o balão, em cima de quem está barrando. Antes isto acendia três
+		-- avisos pra um clique só — o banner de recusa, a mensagem do rodapé e
+		-- nada no tabuleiro —, e nenhum dos dois textos dizia QUEM estava
+		-- barrando de um jeito que se achasse no meio da briga. O balão diz.
+		HeroView.Say(tauntBlocker, "BLOQUEADO", "taunt")
 		return
 	end
 
-	match.turn.attacked[attackerUid] = true
+	MarkAttacked(match, attacker)
 	local attackCtx = PerformAttack(match, attacker, target, false)
 
 	-- contra-ataque: uma vez por turno, se o alvo sobreviveu e alcança o
-	-- atacante. Emboscada do Nash (attackCtx.suppressCounter) pula este golpe
-	-- SEM marcar match.turn.counterAttack — o alvo perde a chance de revidar
-	-- ESTE golpe, mas o "ativo" do turno continua de pé pra outro herói.
+	-- atacante.
+	--
+	-- DUAS COISAS NÃO GASTAM O ATIVO DO TURNO, e as duas pelo mesmo motivo — o
+	-- revide não encostou em ninguém:
+	--   Emboscada do Nash (attackCtx.suppressCounter) nem deixa o golpe sair;
+	--   Reflexo Supersônico do Rush (counterCtx.dodged) deixa sair e escapa dele.
+	-- Nos dois casos o alvo perde a chance de revidar ESTE golpe, mas o "ativo"
+	-- continua de pé pro próximo herói do time atacar e apanhar de volta.
 	if not attackCtx.suppressCounter and not match.turn.counterAttack
 		and target.isAlive and attacker.isAlive then
 		if HexGrid.Distance(target.position, attacker.position) <= target.attackRange then
+			-- marcado ANTES de o golpe sair, e não depois: o PerformAttack cede
+			-- (espera animação) e dispara skills que podem atacar de volta. Sem a
+			-- marca já de pé, um revide poderia abrir outro no meio do primeiro.
 			match.turn.counterAttack = true
 
 			match.busy = true
 			task.wait(COUNTER_ATTACK_DELAY)
 			match.busy = false
 
-			PerformAttack(match, target, attacker, true)
+			local counterCtx = PerformAttack(match, target, attacker, true)
+
+			-- DEVOLVE o ativo quando o revide foi desviado. Sem isto o Rush
+			-- atacava, iscava o revide, sumia — e o resto do time dele batia de
+			-- graça pelo resto do turno, porque o inimigo já tinha "gastado" um
+			-- revide que nunca aconteceu.
+			if counterCtx and counterCtx.dodged then
+				match.turn.counterAttack = false
+			end
 		end
 	end
 
@@ -2500,6 +2785,25 @@ local function PerformResurrection(match, pending, grave)
 	-- Vida fixa de "segunda chance", não a vida máxima da ficha — CreateHero
 	-- deixa currentHp = maxHp, isto sobrescreve por cima de propósito.
 	newHero.currentHp = math.min(GameConfig.RESURRECT_HP, newHero.maxHp)
+
+	-- Ele nasce no MEIO do turno, depois do onTurnStart já ter passado — sem
+	-- isto o Ralph voltava sem a carga do First Punch (e o Shadow sem calcular a
+	-- própria furtividade). Roda o mesmo gatilho que um herói em campo teria
+	-- recebido, em vez de repetir a regra de cada passiva aqui; as travas de
+	-- cada skill (firstPunchApplied e afins) garantem uma carga só por vida.
+	TriggerSkills(match, newHero, "onTurnStart")
+
+	-- Um herói APARECEU no tabuleiro, e pro resto do jogo isso é indistinguível
+	-- de alguém ter andado até ali: é o mesmo despacho que MoveHero faz, e é o
+	-- que recalcula a aura do Spyke (e o trustInTeam do Dante) pra quem acabou
+	-- de nascer do lado deles. Sem `path` nem `origin` de propósito — não houve
+	-- caminhada, então nada de rastro de fogo nem embalo.
+	for _, other in pairs(match.heroes) do
+		if other.isAlive then
+			TriggerSkills(match, other, "onMove", nil, false, { movedHero = newHero })
+		end
+	end
+
 	HeroView.UpdateStats(newHero)
 	HeroView.PlayMatchSound(match.view, "Resurrect")
 
@@ -2566,6 +2870,60 @@ end
 
 -- player == nil é o bot resolvendo a própria escolha pendente (ver
 -- BotPickResurrection, em BotPlayTurn).
+-- O jogador (ou o bot, com player == nil) apontando quem recebe o escudo. O
+-- destaque azul do cliente é sugestão; a lista que vale é a que o servidor
+-- montou no início do turno, e cada condição é conferida DE NOVO aqui — o
+-- tabuleiro pode ter mudado entre a oferta e o clique.
+function MatchManager.GrantShield(player, heroUid, match)
+	match = match or MatchOfPlayer(player)
+	local pending = match and match.pendingShield
+	if not pending then return end
+	if match.phase ~= "battle" or not match.turn then return end
+	if match.turn.ownerId ~= pending.ownerId then return end
+
+	if player then
+		local side = SideOfPlayer(match, player)
+		if not side or side.id ~= pending.ownerId then return end
+	end
+
+	-- A lista é montada AGORA, com as posições de agora. Morreu entre o clique e
+	-- esta linha, andou pra longe da Kira, ou já ganhou escudo por outra via: sai
+	-- da lista sozinho e a oferta se fecha em silêncio, sem gastar num alvo que
+	-- não serve mais.
+	--
+	-- O cliente pinta o azul, mas quem decide é isto: adjacência, vida e o
+	-- "nenhum escudo ainda" são conferidos aqui, então um cliente adulterado
+	-- mandando o uid de um aliado do outro lado do tabuleiro é recusado igual.
+	local source = match.heroes[pending.sourceUid]
+	local valid = false
+	for _, uid in ipairs(ShieldOptionsFor(match, source)) do
+		if uid == heroUid then valid = true break end
+	end
+
+	local target = match.heroes[heroUid]
+	if valid and target and target.isAlive
+		and target.ownerId == pending.ownerId
+	then
+		ApplyStatusEffect(match, target, {
+			type = "shield",
+			-- sem prazo: sai por consumo no ApplyDamage, não por contagem de
+			-- turnos (ver ProcessStatusEffects)
+			permanent = true,
+			duration = 0,
+		})
+		HeroView.SetShieldAura(target, true)
+		HeroView.PlaySkillEffect(target, "aegis")
+		HeroView.PlaySkillSound("aegis", match.view)
+
+		local source = match.heroes[pending.sourceUid]
+		LogEvent(match, "skill", target.sideIndex,
+			("%s protegeu %s com um escudo"):format(source and source.name or "Kira", target.name))
+	end
+
+	match.pendingShield = nil
+	Broadcast(match)
+end
+
 function MatchManager.Resurrect(player, heroUid, match)
 	match = match or MatchOfPlayer(player)
 	local pending = match and match.pendingPromotion
@@ -2848,7 +3206,7 @@ end
 
 -- ===================== SLOTS DE ARENA =====================
 local function AllocateSlot()
-	for slot = 1, GameConfig.MAX_SIMULTANEOUS_MATCHES do
+	for slot = 1, GameConfig.MatchCapacity() do
 		if not matchBySlot[slot] then return slot end
 	end
 	return nil
@@ -2981,6 +3339,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		finisher = nil,
 		busy = false,
 		pendingPromotion = nil, -- ver TryTriggerPromotion/MatchManager.Resurrect
+		pendingShield = nil, -- ver OfferShield/MatchManager.GrantShield
 	}
 
 	match.skillApi = BuildSkillApi(match)
@@ -3039,16 +3398,12 @@ function EndMatch(match)
 	matchBySlot[match.slot] = nil
 end
 
--- O primeiro confronto ainda aberto da escada. É pra onde o "Próximo herói"
--- leva quem acabou de vencer: o Campaign já sabe dizer o que está concluído e o
--- que o grupo anterior liberou, então não existe segunda lista de progresso.
-local function NextOpenFight(player)
-	local owned = HeroUnlockService.GetPlayableIds(player)
-
-	for _, fight in ipairs(Campaign.FIGHTS) do
-		if Campaign.StateOf(owned, fight) == "open" then return fight end
-	end
-	return nil
+-- O próximo confronto da escada. A REGRA não mora aqui — mora em
+-- Campaign.NextOpen, que é a mesma consultada por qualquer outro lugar que
+-- precise saber a sequência. Aqui só se lê o progresso do jogador e se passa
+-- adiante o confronto que ele acabou de vencer, pra ele não voltar como opção.
+local function NextOpenFight(player, justWon)
+	return Campaign.NextOpen(HeroUnlockService.GetPlayableIds(player), justWon)
 end
 
 local function RestartMatch(match, fight)
@@ -3099,9 +3454,18 @@ function MatchManager.Replay(player)
 	-- Venceu o confronto da campanha: o botão vira "Próximo herói" e leva pro
 	-- próximo da escada. Perdeu, repete o MESMO cenário — que é o que a revanche
 	-- sempre fez, e o que quem perdeu quer.
+	--
+	-- "Próximo herói" NUNCA é revanche. Sem próximo confronto (escada terminada),
+	-- o botão não faz nada em vez de reabrir o que acabou de ser vencido: a tela
+	-- de resultado continua de pé com o "voltar pro lobby" ao lado, que é o
+	-- desfecho certo pra quem zerou o que existe.
 	local fight = match.fight
 	if fight and match.winner == tostring(player.UserId) then
-		fight = NextOpenFight(player) or fight
+		fight = NextOpenFight(player, fight)
+		if not fight then
+			Broadcast(match, "Você venceu todos os confrontos disponíveis!")
+			return
+		end
 	end
 
 	RestartMatch(match, fight)

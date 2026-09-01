@@ -136,6 +136,7 @@ local ABILITY_BADGES = {
 	Taunt  = { icon = "taunt",  color = Color3.fromRGB(198, 202, 212) },
 	Sprint = { icon = "sprint", color = Color3.fromRGB(132, 206, 255) },
 	Ranged = { icon = "ranged", color = Color3.fromRGB(255, 200, 110) },
+	Agility = { icon = "agility", color = Color3.fromRGB(255, 170, 90) },
 }
 
 local SPRITE_HEIGHT = SPRITE_WIDTH * (HeroData.FRAME_HEIGHT / HeroData.FRAME_WIDTH)
@@ -225,6 +226,11 @@ local TEXT_STYLES = {
 	-- (verde, não é vida entrando) — é a terceira coisa, dano que deixou de
 	-- acontecer. Mesmo corpo/animação/tempo dos outros, só a cor muda.
 	absorb = { color = Color3.fromRGB(190, 160, 255), font = Enum.Font.GothamBlack,  size = 34, rise = 2.8 },
+	-- Taunt barrando o golpe: mesmo balão e mesma palavra do escudo da Kira
+	-- (BLOQUEADO), em AMARELO. As duas coisas são a mesma frase pro jogador —
+	-- "este ataque não vai acontecer" —, e ler igual é o ponto; a cor separa o
+	-- motivo, provocador puxando o foco em vez de barreira gasta.
+	taunt  = { color = Color3.fromRGB(255, 214, 60),  font = Enum.Font.GothamBlack,  size = 34, rise = 2.8 },
 	info   = DEFAULT_STYLE,
 }
 
@@ -337,6 +343,7 @@ local SKILL_SOUNDS = {
 	estopim = "SkillEstopim",
 	raiseSkulls = "SkillRaiseSkulls",
 	dodge = "SkillDodge",
+	aegis = "SkillAegis",
 }
 
 function HeroView.PlaySkillSound(key, view)
@@ -434,6 +441,16 @@ local SKILL_EFFECTS = {
 	dodge         = { color = Color3.fromRGB(150, 220, 255),  texture = FX_SPARK, shape = "burst", count = 26, size = 2.2, speed = 22 },
 	voltChain     = { color = Color3.fromRGB(255, 226, 90),  texture = FX_SPARK, shape = "burst", count = 16, size = 1.8, speed = 18 },
 	tailwind      = { color = Color3.fromRGB(190, 250, 240), texture = FX_SPARK, shape = "rise",  count = 16, size = 2.2, speed = 9 },
+
+	-- Spyke: o sangue fervendo. Sobe em vez de estourar — é um estado ligando pro
+	-- turno seguinte, não um golpe acontecendo agora
+	vengeance      = { color = Color3.fromRGB(255, 170, 90),  texture = FX_SPARK, shape = "rise",  count = 14, size = 2.0, speed = 8 },
+
+	-- Kira: o escudo entrando (sobe, é um estado ligando) e o escudo quebrando
+	-- (estoura, é o golpe batendo nele agora). O brilho que FICA enquanto o
+	-- escudo existe é outro sistema — ver HeroView.SetShieldAura.
+	aegis          = { color = Color3.fromRGB(255, 226, 150), texture = FX_SPARK, shape = "rise",  count = 20, size = 2.2, speed = 7 },
+	aegisBreak     = { color = Color3.fromRGB(255, 240, 200), texture = FX_SPARK, shape = "burst", count = 28, size = 2.4, speed = 20 },
 
 	-- ===== WREN =====
 	-- Estoura NO ALVO (é lá que a skill chama o Effect), não nela: o tiro dela
@@ -729,6 +746,34 @@ end
 -- reserva e a partida segue: objeto invisível no tabuleiro seria bem pior.
 local assetModelCache = {}
 
+-- O que separa "achei alguma coisa" de "tenho um molde": embrulha BasePart solta
+-- num Model (pro resto do código só existir uma forma), recusa o que não tem
+-- geometria nenhuma e estaciona o molde FORA da DataModel.
+--
+-- Vale pras duas origens de objeto — o modelo do catálogo e o montado à mão no
+-- place —, e é por isso que a limpeza de scripts mora aqui: modelo grátis é o
+-- vetor de backdoor mais antigo do Roblox, e este código roda no SERVIDOR. Um
+-- modelo do próprio place não é código de terceiro, mas passar pela mesma peneira
+-- não custa nada e tira a pergunta de cima da mesa.
+local function PrepareTemplate(found)
+	if found and found:IsA("BasePart") then
+		local wrapper = Instance.new("Model")
+		found.Parent = wrapper
+		found = wrapper
+	end
+
+	if not (found and found:FindFirstChildWhichIsA("BasePart", true)) then return nil end
+
+	for _, descendant in ipairs(found:GetDescendants()) do
+		if descendant:IsA("LuaSourceContainer") then descendant:Destroy() end
+	end
+
+	-- Parent nil, e não Destroy: o molde segue vivo pela referência do cache,
+	-- fora da árvore, sem replicar pra ninguém.
+	found.Parent = nil
+	return found
+end
+
 local function ModelFromAsset(assetId)
 	if assetModelCache[assetId] ~= nil then
 		return assetModelCache[assetId] or nil
@@ -740,28 +785,9 @@ local function ModelFromAsset(assetId)
 
 	local template = false
 	if ok and container then
-		local found = container:FindFirstChildWhichIsA("Model") or container:FindFirstChildWhichIsA("BasePart")
-
-		if found and found:IsA("BasePart") then
-			local wrapper = Instance.new("Model")
-			found.Parent = wrapper
-			found = wrapper
-		end
-
-		if found and found:FindFirstChildWhichIsA("BasePart", true) then
-			-- Modelo do catálogo é código de terceiro. Fica só a geometria: script
-			-- dentro de modelo grátis é o vetor de backdoor mais antigo do Roblox, e
-			-- este aqui roda no SERVIDOR.
-			for _, descendant in ipairs(found:GetDescendants()) do
-				if descendant:IsA("LuaSourceContainer") then descendant:Destroy() end
-			end
-
-			-- Parent nil, e não Destroy no container: o molde segue vivo pela
-			-- referência aqui, fora da árvore, sem replicar pra ninguém.
-			found.Parent = nil
-			template = found
-		end
-
+		template = PrepareTemplate(
+			container:FindFirstChildWhichIsA("Model") or container:FindFirstChildWhichIsA("BasePart")
+		) or false
 		container:Destroy()
 	end
 
@@ -774,27 +800,69 @@ local function ModelFromAsset(assetId)
 	return template or nil
 end
 
-local function AssetVisual(assetId, height, skin)
-	if not assetId then return nil end
+-- Objeto MONTADO À MÃO no place, em vez de vindo do catálogo. Mesma fronteira do
+-- resto do cenário Studio-owned (o LobbyTrail, os pads, os Sounds): o Rojo não
+-- versiona aquilo, então o tema guarda só o CAMINHO relativo ao Workspace
+-- ("Objects.MeshPart") e quem resolve é aqui.
+--
+-- CLONA em vez de adotar: o que está no place é a fonte, e ela continua lá,
+-- intocada, pra ser editada no Explorer. Arrancá-la pra dentro do cache faria o
+-- objeto sumir do cenário no primeiro combate.
+local instanceModelCache = {}
 
-	local template = ModelFromAsset(assetId)
+local function ModelFromInstance(path)
+	if instanceModelCache[path] ~= nil then
+		return instanceModelCache[path] or nil
+	end
+
+	local node = Workspace
+	for name in path:gmatch("[^%.]+") do
+		node = node and node:FindFirstChild(name)
+	end
+
+	local template = node and PrepareTemplate(node:Clone()) or false
+	if not template then
+		warn(("HeroView: nao achei Workspace.%s (ou ele nao tem geometria) — objeto do board no visual de reserva.")
+			:format(path))
+	end
+
+	instanceModelCache[path] = template
+	return template or nil
+end
+
+local function TemplateVisual(template, height, skin, rotation)
 	if not template then return nil end
 
 	local extents = template:GetExtentsSize()
 	local scale = height and (height / math.max(extents.Y, 0.001)) or 1
-	return { model = template, scale = scale, size = extents * scale, skin = skin }
+	return {
+		model = template,
+		scale = scale,
+		size = extents * scale,
+		skin = skin,
+		rotation = rotation,
+	}
 end
 
 local function ObjectVisual(view)
 	local spec = ObjectSpec(view)
 	if not spec then return nil end
 
-	local visual = AssetVisual(spec.asset, spec.height, spec.skin)
+	-- O que o place tem à mão ganha do catálogo: `instance` é escolha de quem
+	-- editou a arena no Studio, `asset` é o padrão de fábrica.
+	local visual = spec.instance
+		and TemplateVisual(ModelFromInstance(spec.instance), spec.height, spec.skin, spec.rotation)
 	if visual then return visual end
 
+	if spec.asset then
+		visual = TemplateVisual(ModelFromAsset(spec.asset), spec.height, spec.skin, spec.rotation)
+		if visual then return visual end
+	end
+
 	local fallback = Arenas.DEFAULT_OBJECT
-	if fallback then
-		visual = AssetVisual(fallback.asset, spec.height or fallback.height, spec.skin or fallback.skin)
+	if fallback and fallback.asset then
+		visual = TemplateVisual(ModelFromAsset(fallback.asset),
+			spec.height or fallback.height, spec.skin or fallback.skin, spec.rotation)
 		if visual then return visual end
 	end
 
@@ -1012,8 +1080,19 @@ local function AttachObjectModel(part, visual)
 	-- leva o CENTRO da caixa delimitadora até a caixa de clique; o pivô do
 	-- modelo pode estar em qualquer canto, e usá-lo direto enterraria metade do
 	-- cristal no chão
+	--
+	-- `rotation` (graus, giro em Y) é a ÚNICA forma de virar o objeto: este
+	-- encaixe cola a caixa delimitadora exatamente em part.CFrame, orientação
+	-- inclusive, então girar a fonte no Studio não sobrevive à montagem. Gira só
+	-- o modelo — a caixa de clique continua alinhada com a casa, senão a área
+	-- clicável passaria a cobrir hexágonos vizinhos.
+	local anchor = part.CFrame
+	if visual.rotation then
+		anchor = anchor * CFrame.Angles(0, math.rad(visual.rotation), 0)
+	end
+
 	local boxCFrame = model:GetBoundingBox()
-	model:PivotTo((part.CFrame * boxCFrame:Inverse()) * model:GetPivot())
+	model:PivotTo((anchor * boxCFrame:Inverse()) * model:GetPivot())
 
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if descendant:IsA("BasePart") then
@@ -1361,7 +1440,6 @@ local ICE_CORE = Color3.fromRGB(236, 252, 255)
 local ICE_EDGE = Color3.fromRGB(120, 200, 245)
 local ICE_STORM_TIME = 0.7
 
-local FIRE_CIRCLE_SOURCE = "Fire Circle"
 local FIRE_CIRCLE_GROW = 0.22
 local FIRE_CIRCLE_HOLD = 0.14
 local FIRE_CIRCLE_CLOSE = 0.26
@@ -1375,7 +1453,6 @@ local function SetEmitters(model, enabled)
 end
 
 local FIRE_CIRCLE_HOME = { "VFX", "Karo", "FireCircle" }
-local FIRE_CIRCLE_LEGACY = { "Fire Circle", "FireCircle", "KaroFireCircle", "Fire Ring" }
 
 local function DescendFrom(root, path)
 	local node = root
@@ -1397,49 +1474,135 @@ local function UsableAsVfx(instance)
 	return false
 end
 
-local function FindFireCircleSource()
-	local home = DescendFrom(ReplicatedStorage, FIRE_CIRCLE_HOME)
-	if UsableAsVfx(home) then return home end
+-- ===== VFX MONTADO À MÃO NO PLACE =====
+-- Mesma fronteira do resto do cenário Studio-owned: o Rojo não versiona efeito
+-- montado no Explorer, então o código guarda só o CAMINHO e procura em dois
+-- lugares — ReplicatedStorage primeiro (onde um VFX "de biblioteca" ficaria) e
+-- Workspace depois, que é onde eles realmente estão hoje (Workspace.VFX.*).
+--
+-- O aviso antigo já prometia essa segunda busca; ela é que nunca existiu, e por
+-- isso o anel de fogo do Karo nunca apareceu — o efeito estava em
+-- Workspace.VFX.Karo.FireCircle e a procura só olhava ReplicatedStorage.
+--
+-- Clonado UMA vez e guardado fora da árvore: cada uso clona o molde, e os
+-- emissores nascem desligados pra nenhum deles cuspir partícula no molde.
+local vfxTemplates = {}
 
-	for _, container in ipairs({ ReplicatedStorage, Workspace }) do
-		for _, name in ipairs(FIRE_CIRCLE_LEGACY) do
-			local found = container:FindFirstChild(name)
-			if UsableAsVfx(found) then return found end
+local function PrepareVfx(source)
+	local template = source:Clone()
+	SetEmitters(template, false)
+
+	local parts = template:GetDescendants()
+	if template:IsA("BasePart") then table.insert(parts, template) end
+
+	for _, part in ipairs(parts) do
+		if part:IsA("BasePart") then
+			part.Anchored = true
+			part.CanCollide = false
+			part.CanQuery = false
+			part.CanTouch = false
+			part.CastShadow = false
 		end
 	end
 
-	return nil
+	return template
 end
 
-local fireCircleTemplate, fireCircleWarned = nil, false
+-- Diz ONDE o caminho quebrou, e o que existe naquele nível. Um VFX que não
+-- aparece é sempre a mesma dúvida — "o nome está errado, a pasta está errada, ou
+-- o objeto está vazio?" —, e sem isso a única saída era caçar no Explorer.
+-- Nomes do Roblox distinguem maiúscula, então listar os irmãos entrega de bandeja
+-- um "KIra" escrito "Kira" ou um "Fire Circle" com espaço.
+local function DescribeVfxMiss(path)
+	for _, root in ipairs({ ReplicatedStorage, Workspace }) do
+		local node, walked = root, root.Name
 
-local function FireCircleTemplate()
-	if fireCircleTemplate then return fireCircleTemplate end
-
-	local source = FindFireCircleSource()
-	if not source then
-		if not fireCircleWarned then
-			fireCircleWarned = true
-			warn(("HeroView: VFX/Karo/FireCircle nao encontrado em ReplicatedStorage (nem como %s no Workspace) — o giro do Karo sai sem o anel de fogo.")
-				:format(table.concat(FIRE_CIRCLE_LEGACY, " / ")))
+		for _, name in ipairs(path) do
+			local child = node:FindFirstChild(name)
+			if not child then
+				local irmaos = {}
+				for _, sibling in ipairs(node:GetChildren()) do
+					table.insert(irmaos, sibling.Name)
+				end
+				return ("em %s nao existe '%s'. O que tem la: %s"):format(
+					walked, name,
+					#irmaos > 0 and table.concat(irmaos, ", ") or "(vazio)")
+			end
+			node, walked = child, walked .. "." .. name
 		end
+
+		-- chegou ao fim do caminho: existe, mas não serve como VFX
+		return ("%s existe mas nao tem geometria nem emissor dentro (e um %s vazio nao desenha nada)")
+			:format(walked, node.ClassName)
+	end
+
+	return "caminho nao resolvido"
+end
+
+-- ===== OPACIDADE DE UM VFX INTEIRO =====
+-- Transparência não mora num lugar só. Uma Part guarda um NÚMERO; ParticleEmitter,
+-- Beam e Trail guardam uma NumberSequence (transparência ao longo da vida da
+-- partícula / do comprimento do feixe); Decal e Texture guardam outro número.
+--
+-- É por isso que mexer só em `part.Transparency` não pegava na bolha da Kira: se
+-- o que desenha a esfera é um emissor (ou um decalque numa Part invisível), a
+-- Part já estava em 1 e o ajuste caía no vazio — a peça ficava "mais
+-- transparente" sem nunca ter sido ela quem aparecia.
+local function FadeNumber(value, opacity)
+	return math.clamp(1 - (1 - value) * opacity, 0, 1)
+end
+
+local function FadeSequence(sequence, opacity)
+	local keys = {}
+	for _, key in ipairs(sequence.Keypoints) do
+		local value = FadeNumber(key.Value, opacity)
+		-- o envelope não pode estourar [0,1] em volta do novo valor, senão o
+		-- construtor da NumberSequence recusa
+		local envelope = math.min(key.Envelope, value, 1 - value)
+		table.insert(keys, NumberSequenceKeypoint.new(key.Time, value, envelope))
+	end
+	return NumberSequence.new(keys)
+end
+
+local function FadeVfx(root, opacity)
+	if opacity >= 1 then return end
+
+	local pieces = root:GetDescendants()
+	table.insert(pieces, root)
+
+	for _, piece in ipairs(pieces) do
+		if piece:IsA("ParticleEmitter") or piece:IsA("Beam") or piece:IsA("Trail") then
+			piece.Transparency = FadeSequence(piece.Transparency, opacity)
+		elseif piece:IsA("BasePart") or piece:IsA("Decal") then
+			-- Texture herda de Decal, então entra aqui junto
+			piece.Transparency = FadeNumber(piece.Transparency, opacity)
+		end
+	end
+end
+
+local function VfxTemplate(path, label)
+	local key = table.concat(path, "/")
+	if vfxTemplates[key] ~= nil then return vfxTemplates[key] or nil end
+
+	local source = DescendFrom(ReplicatedStorage, path)
+	if not UsableAsVfx(source) then
+		source = DescendFrom(Workspace, path)
+	end
+
+	if not UsableAsVfx(source) then
+		vfxTemplates[key] = false
+		warn(("HeroView: VFX %s nao encontrado — %s.\n  %s"):format(
+			key:gsub("/", "."), label, DescribeVfxMiss(path)))
 		return nil
 	end
 
-	local template = source:Clone()
-	SetEmitters(template, false)
-	for _, descendant in ipairs(template:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			descendant.Anchored = true
-			descendant.CanCollide = false
-			descendant.CanQuery = false
-			descendant.CanTouch = false
-			descendant.CastShadow = false
-		end
-	end
-
-	fireCircleTemplate = template
+	local template = PrepareVfx(source)
+	vfxTemplates[key] = template
 	return template
+end
+
+local function FireCircleTemplate()
+	return VfxTemplate(FIRE_CIRCLE_HOME, "o giro do Karo sai sem o anel de fogo")
 end
 
 function HeroView.PlayFireCircle(view, hexId)
@@ -1452,7 +1615,11 @@ function HeroView.PlayFireCircle(view, hexId)
 	local center = HexGrid.GetWorldPosition(hexId, view.origin)
 		+ Vector3.new(0, TILE_TOP_Y + 0.15, 0)
 
-	local part = circle:IsA("BasePart") and circle or circle:FindFirstChildWhichIsA("BasePart", true)
+	-- SÓ pega a peça solta quando o efeito INTEIRO é uma peça. Antes ele pescava
+	-- a primeira BasePart de dentro de um Model e movia/encolhia só ela: num
+	-- efeito de várias peças, uma ia pro hexágono e as outras ficavam onde o
+	-- molde estava. Model tem PivotTo e é assim que ele se move — inteiro.
+	local part = circle:IsA("BasePart") and circle or nil
 
 	if not part and not circle:IsA("PVInstance") then
 		local host = Instance.new("Part")
@@ -1469,7 +1636,11 @@ function HeroView.PlayFireCircle(view, hexId)
 	end
 
 	local anchor = part or circle
-	local spin = part and part.CFrame.Rotation or CFrame.identity
+	-- a orientação com que o efeito foi montado no Explorer é preservada: um anel
+	-- deitado no chão continua deitado, e não é endireitado pelo reposicionamento
+	local spin = part and part.CFrame.Rotation
+		or (circle:IsA("PVInstance") and circle:GetPivot().Rotation)
+		or CFrame.identity
 	local full, seed = nil, nil
 
 	if part then
@@ -2074,6 +2245,158 @@ local function SetParalysisSpark(hero, on)
 	spark.SpreadAngle = Vector2.new(180, 180)
 	spark.Rotation = NumberRange.new(0, 360)
 	spark.Parent = attachment
+end
+
+-- ===== ESCUDO DOURADO (Kira) =====
+-- Mesmo arranjo do brilho de paralisia acima — anexo + emissor guardados NO
+-- próprio modelo, ligados e desligados por nome — porque o problema é o mesmo:
+-- é um estado que fica de pé por tempo indeterminado, e não um estouro de um
+-- quadro. Ligar duas vezes reaproveita o que já está lá, então reaplicar não
+-- empilha emissor.
+--
+-- ReplicatedStorage.VFX.KIra.Shield. O nome vem do Explorer, com o I maiúsculo e
+-- tudo: o caminho é uma STRING pro engine, e "Kira" não acharia a pasta "KIra".
+local SHIELD_BUBBLE_HOME = { "VFX", "KIra", "Shield" }
+local SHIELD_AURA = "ShieldAura"
+
+-- ===== AJUSTE DA BOLHA =====
+-- MULTIPLICADORES sobre o asset, não valores absolutos: o desenho continua sendo
+-- do Explorer (cor, formato, emissores), e estes dois números só dizem o quanto
+-- dele entra em cima do herói. Mexer aqui não desfaz nada de lá, e mexer lá
+-- continua valendo — os dois se multiplicam, então não ajuste os mesmos dois
+-- lados ao mesmo tempo ou o efeito vira o dobro do que você pediu.
+--
+-- Por que no código e não só no Studio: a bolha existe em RELAÇÃO ao herói, e o
+-- tamanho do herói é uma constante daqui (SPRITE_HEIGHT). Deixar a proporção
+-- versionada junto do sprite é o que impede o escudo de sair de escala quando
+-- alguém mexer no zoom do tabuleiro.
+--
+-- 1 = exatamente o asset. Abaixo de 1 encolhe / deixa mais transparente.
+--
+-- Os dois números saíram de comparação lado a lado no Studio, não de chute:
+--   escala  0.69 -> 9.52 studs. O hexágono tem 9.8 de ponta a ponta e o herói
+--           8.12 de altura, então esta é a maior bolha que ENVOLVE o herói
+--           inteiro sem invadir a casa do vizinho. Dois aliados protegidos lado
+--           a lado não encostam as bolhas.
+--   opacidade 0.45 -> Transparency 0.82 (o asset já vem em 0.6). Testado contra
+--           Neon e ForceField no mesmo tamanho: acima disso o amarelo lava o
+--           sprite, abaixo a bolha some e ninguém vê que o aliado está protegido.
+local SHIELD_SCALE = 0.69
+local SHIELD_OPACITY = 0.45
+
+-- A bolha é MONTADA À MÃO no place, não desenhada aqui: tamanho, cor e ritmo são
+-- decisão de quem edita o Explorer, e o código só a acende no herói certo.
+--
+-- SOLDADA e sem âncora, ao contrário do resto do VFX: ela precisa ACOMPANHAR o
+-- aliado enquanto o escudo durar, e o herói anda por tween de CFrame na caixa
+-- dele (ver WalkStep). Ancorada, ela ficaria plantada na casa onde o escudo foi
+-- concedido e o herói sairia de dentro dela no primeiro passo.
+function HeroView.SetShieldAura(hero, on)
+	if not (hero.part and hero.part.Parent) then return end
+
+	local existing = hero.part:FindFirstChild(SHIELD_AURA)
+
+	if not on then
+		if existing then
+			SetEmitters(existing, false)
+			Debris:AddItem(existing, 0.6)
+		end
+		return
+	end
+
+	-- Já está de pé: reacende em vez de pendurar uma segunda bolha. Conceder
+	-- escudo duas vezes não deveria acontecer (o servidor recusa), mas empilhar
+	-- emissor é o tipo de coisa que só aparece três partidas depois.
+	if existing then
+		SetEmitters(existing, true)
+		return
+	end
+
+	local template = VfxTemplate(SHIELD_BUBBLE_HOME, "o escudo da Kira fica sem a bolha dourada")
+	if not template then return end
+
+	local bubble = template:Clone()
+	bubble.Name = SHIELD_AURA
+
+	-- PARENTEIA ANTES de posicionar e soldar — mesma ordem do AttachObjectModel,
+	-- que é a que funciona com pai ancorado sendo movido por tween. Soldar peça
+	-- que ainda está fora da DataModel é onde a solda não engata e a bolha fica
+	-- pra trás no primeiro passo do herói.
+	bubble.Parent = hero.part
+
+	-- ENCOLHE ANTES DE CENTRAR. O ScaleTo do Model escala em volta do PIVÔ dele,
+	-- então redimensionar depois de posicionar arrastaria a bolha pra longe do
+	-- herói de novo — a ordem aqui não é estilo, é o que mantém o centro no lugar.
+	if math.abs(SHIELD_SCALE - 1) > 0.01 then
+		if bubble:IsA("BasePart") then
+			bubble.Size *= SHIELD_SCALE
+			-- O Size de uma Part não encolhe a PARTÍCULA que ela emite: quem
+			-- desenha a esfera pode ser o emissor, e ele tem tamanho próprio (uma
+			-- NumberSequence). Num Model o ScaleTo já faz isso sozinho; numa Part
+			-- solta é aqui.
+			for _, piece in ipairs(bubble:GetDescendants()) do
+				if piece:IsA("ParticleEmitter") then
+					local keys = {}
+					for _, key in ipairs(piece.Size.Keypoints) do
+						table.insert(keys, NumberSequenceKeypoint.new(
+							key.Time, key.Value * SHIELD_SCALE, key.Envelope * SHIELD_SCALE))
+					end
+					piece.Size = NumberSequence.new(keys)
+				end
+			end
+		else
+			bubble:ScaleTo(SHIELD_SCALE)
+		end
+	end
+
+	-- CENTRO DA BOLHA NO CENTRO VISUAL DO HERÓI. A caixa do herói já está na
+	-- altura do peito do sprite (o AnchorCFrame sobe ANCHOR_LIFT do chão, e o
+	-- BillboardGui desce o mesmo tanto pra plantar o pé), então o meio dela é o
+	-- meio do desenho — é aí que a bolha fica, e não no pé nem acima da cabeça.
+	if bubble:IsA("BasePart") then
+		bubble.CFrame = CFrame.new(hero.part.Position) * bubble.CFrame.Rotation
+	else
+		-- leva o CENTRO da caixa delimitadora até o alvo, porque o pivô do modelo
+		-- pode estar em qualquer canto. A rotação de origem entra no alvo pra
+		-- bolha não ser endireitada à força.
+		local box = bubble:GetBoundingBox()
+		local target = CFrame.new(hero.part.Position) * box.Rotation
+		bubble:PivotTo((target * box:Inverse()) * bubble:GetPivot())
+	end
+
+	FadeVfx(bubble, SHIELD_OPACITY)
+
+	local parts = bubble:GetDescendants()
+	if bubble:IsA("BasePart") then table.insert(parts, bubble) end
+
+	for _, part in ipairs(parts) do
+		if part:IsA("BasePart") then
+			part.Anchored = false
+			part.Massless = true
+
+			-- NÃO ROUBA O CLIQUE. A bolha fica DENTRO da caixa do herói, que é
+			-- justamente o alvo clicável (ela carrega o atributo HeroUid). Com
+			-- CanQuery ligado, o mouse.Target passaria a acertar a bolha, o
+			-- GetAttribute("HeroUid") viria nil e clicar no aliado protegido não
+			-- faria nada — o escudo viraria uma redoma contra o próprio jogador.
+			part.CanQuery = false
+			part.CanTouch = false
+			part.CanCollide = false
+
+			-- CARIMBA a transparência de nascença. A furtividade do cliente
+			-- (paintHero) repinta todo filho BasePart do herói a cada snapshot;
+			-- sem esta marca ela achatava a bolha em opaca, e o efeito piscava
+			-- entre certo e sólido várias vezes por turno.
+			part:SetAttribute("BaseTransparency", part.Transparency)
+
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = hero.part
+			weld.Part1 = part
+			weld.Parent = part
+		end
+	end
+
+	SetEmitters(bubble, true)
 end
 
 function HeroView.UpdateStats(hero)

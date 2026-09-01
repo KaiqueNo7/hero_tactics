@@ -158,20 +158,34 @@ function HeroUnlockService.Unlock(player, dataId)
 	for id in pairs(set) do table.insert(ids, id) end
 	table.sort(ids)
 
+	-- O CACHE RECEBE O HERÓI ANTES DA GRAVAÇÃO, e é desfeito se ela falhar.
+	--
+	-- Antes só entrava depois, e o SafeStore.Update CEDE (grava, tenta de novo,
+	-- espera orçamento) — havia uma janela de segundos entre vencer o confronto e
+	-- a sessão saber disso. Quem clicasse "Próximo herói" dentro dela era mandado
+	-- de volta pro MESMO adversário: o confronto recém-vencido ainda constava
+	-- como "open" pro Campaign.StateOf. A mesma janela deixava o pad do lobby
+	-- aceso e o menu desatualizado logo depois da vitória.
+	--
+	-- A vitória é fato da SESSÃO no instante em que acontece; o disco é onde ela
+	-- é lembrada depois. Inverter a ordem é o que alinha os dois.
+	local hadBefore = owned[userId]
+	owned[userId] = set
+
 	local stored = SafeStore.Update(heroStore, tostring(userId), function()
 		return ids
 	end, ("gravação de heróis de %s"):format(player.Name))
 
 	if not stored then
-		-- Não gravou: o cache NÃO recebe o herói, pra sessão e disco não
-		-- divergirem. O jogador vence de novo e conquista de novo — melhor do
-		-- que ele achar que tem um herói que some no próximo login.
+		-- Desfaz: sessão e disco não podem divergir. O jogador vence de novo e
+		-- conquista de novo — melhor do que ele achar que tem um herói que some
+		-- no próximo login.
+		set[dataId] = nil
+		owned[userId] = hadBefore
 		warn(("HeroUnlockService: %s venceu %s e o desbloqueio não gravou.")
 			:format(player.Name, data.name))
 		return false, "falha ao gravar"
 	end
-
-	owned[userId] = set
 	RewardQueueService.Push(userId, { hero = dataId })
 	Push(player, dataId)
 

@@ -11,7 +11,7 @@
 	cliente (LobbyMenu), pela tag Campaign.PAD_TAG.
 
 	Várias partidas rodam ao mesmo tempo, cada uma na sua arena. A entrada só
-	recusa quando (a) as arenas acabaram — MAX_SIMULTANEOUS_MATCHES — ou (b) o
+	recusa quando (a) as arenas acabaram — MAX_LIVE_MATCHES — ou (b) o
 	jogador já está numa partida.
 ]]
 
@@ -150,13 +150,40 @@ local FIGHT_PAD_Y = 712.9 -- mesmo chão dos outros pads do lobby
 -- todo mundo logo em seguida — mas ele não faz mais isso num place que já tem a
 -- trilha montada à mão. Num place assim, ESTA é a posição final de um quadrado
 -- recém-criado (herói novo na campanha), até alguém arrastá-lo no Studio.
+-- Dentro do retângulo do lobby (o "círculo" da praça de entrada). Retângulo e
+-- não raio pelo mesmo motivo do LobbyEdgeToward: o lobby é 195 x 185, e um
+-- círculo sobraria grama de um lado e faltaria do outro.
+local function InLobbyCircle(position)
+	local center, half = LobbyZones.LOBBY_CENTER, LobbyZones.LOBBY_HALF
+	return math.abs(position.X - center.X) <= half.X
+		and math.abs(position.Z - center.Y) <= half.Y
+end
+
+-- QUADRADO DE CONFRONTO MORA EM ILHA. Devolve nil quando o confronto não tem
+-- casa — nem `island` no place, nem zona na planta.
+--
+-- Antes o "sem casa" caía num ponto fixo perto do centro do lobby, e era de lá
+-- que saíam os quadrados soltos no círculo principal: o círculo é a praça de
+-- entrada, e o que se pisa lá é partida online ou treino contra bot, não
+-- confronto de campanha. Sem casa, o quadrado simplesmente não existe — o herói
+-- continua alcançável pelo painel CAMPANHA do menu, que não depende de pad.
 local function DefaultFightPadPosition(fight)
+	-- Ilha montada à mão: a coordenada sai do Explorer, e o quadrado JÁ NASCE em
+	-- cima dela. Antes ele nascia no centro do lobby e o PlacePads o mudava de
+	-- lugar depois — o que deixava um quadrado no círculo se a ilha não fosse
+	-- encontrada, que é exatamente o que não pode acontecer.
+	if fight.island then
+		return LobbyZoneBuilder.IslandTop(fight.island)
+	end
+
 	local zone = LobbyZones.ForGroup(fight.group)
-	if not zone then return Vector3.new(0, FIGHT_PAD_Y, -34) end
+	if not zone then return nil end
 
 	local peers = {}
 	for _, other in ipairs(Campaign.FIGHTS) do
-		if other.group == fight.group then table.insert(peers, other) end
+		if other.group == fight.group and not other.island then
+			table.insert(peers, other)
+		end
 	end
 
 	local slots = LobbyZones.PadSlots(zone, #peers)
@@ -188,8 +215,16 @@ local function BuildFightBillboard(pad, data)
 	-- solto no ar, longe do quadrado que ele nomeia
 	billboard.StudsOffset = Vector3.new(0, 3 + 4 * scale, 0)
 	billboard.AlwaysOnTop = true
-	billboard.MaxDistance = 160
-	billboard.Enabled = false
+	-- A DISTÂNCIA é o que esconde a plaquinha, e por isso ela nasce ligada. Ela
+	-- nascia desligada esperando o cliente acender por zona da trilha, e o
+	-- acender exigia zona na planta — a ilha montada à mão não tem, e nenhum
+	-- quadrado dos heróis novos jamais mostrou nome ou retrato (ver
+	-- LobbyClient.ShowPadLabels).
+	--
+	-- 160 alcançava a ilha vizinha e virava parede de retratos; 90 mostra a
+	-- plaquinha de quem está na ilha em que o jogador está pisando.
+	billboard.MaxDistance = 90
+	billboard.Enabled = true
 	billboard.Parent = pad
 
 	local portrait = Instance.new("ImageLabel")
@@ -232,12 +267,37 @@ local function EnsureFightPad(fight)
 
 	local padName = "FightPad_" .. fight.hero
 	local pad = Workspace:FindFirstChild(padName, true)
+	local home = DefaultFightPadPosition(fight)
+
+	-- SEM CASA, SEM QUADRADO NA PRAÇA. O círculo do lobby é a entrada — nele se
+	-- pisa em partida online ou treino contra bot, e mais nada. Confronto de
+	-- campanha sem ilha (grupo fora da planta e sem `island` no Campaign) ficava
+	-- largado ali no meio, e é isso que sai agora.
+	--
+	-- A remoção é POSICIONAL, e de propósito: só apaga o que está dentro do
+	-- retângulo do lobby. Um quadrado sem casa que alguém já arrastou pra uma
+	-- ilha no Explorer fica onde está — nome de ilha digitado errado no Campaign
+	-- não pode apagar montagem manual. `KeepPosition` continua sendo a palavra
+	-- final de quem edita o place.
+	if not home then
+		if pad and InLobbyCircle(pad.Position) and not pad:GetAttribute("KeepPosition") then
+			pad:Destroy()
+			pad = nil
+		end
+
+		if not pad then
+			warn(("GameStartTrigger: confronto de %s nao tem ilha (nem `island` no Campaign, "
+				.. "nem zona do grupo %d no LobbyZones) — sem quadrado no lobby. "
+				.. "O heroi continua acessivel pelo painel CAMPANHA."):format(data.name, fight.group))
+			return nil
+		end
+	end
 
 	if not pad then
 		pad = Instance.new("Part")
 		pad.Name = padName
 		pad.Size = FIGHT_PAD_SIZE
-		pad.Position = DefaultFightPadPosition(fight)
+		pad.Position = home
 		pad.Parent = Workspace:FindFirstChild("Base") or Workspace
 
 		pad:SetAttribute("TrailPending", true)
@@ -559,6 +619,8 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 		MatchManager.Replay(player)
 	elseif action == "resurrect" then
 		MatchManager.Resurrect(player, arg1)
+	elseif action == "shield" then
+		MatchManager.GrantShield(player, arg1)
 	elseif action == "leaveMatch" then
 		MatchManager.LeaveMatch(player)
 	elseif action == "matchLog" then

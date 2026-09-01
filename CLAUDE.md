@@ -21,7 +21,8 @@ reference `models/heroes.js`, `Board.js`, `src/heroes/skills.js` as the ported-f
 
 This project does **not** manage the whole DataModel, only scripts. Everything built by hand in
 Studio (the map, lobby, `HexTile` parts, the `Remotes` folder, `Sounds`, `BotDummyTemplate`,
-Lighting, Baseplate) lives **only in Studio** and is intentionally left out of `default.project.json`.
+`Workspace.Objects`, Lighting, Baseplate) lives **only in Studio** and is intentionally left out of
+`default.project.json`.
 
 `default.project.json` maps exactly:
 

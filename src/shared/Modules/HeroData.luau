@@ -156,9 +156,9 @@ HeroData.CATALOG = {
 	--
 	-- `attack = 3` é DECORATIVO: o longShot sempre substitui o dano pelo valor
 	-- da distância (damageApplied), então este número nunca é o dano de fato.
-	-- Fica em 3 por ser o meio da faixa que ela causa (1 a 5) — é o palpite
+	-- Fica em 3 por ser o meio da faixa que ela causa (1 a 4) — é o palpite
 	-- menos mentiroso pro crachá, que não tem como prever o alvo.
-	{ id = 19, name = "Wren", attack = 3, hp = 15, ability = "Ranged",
+	{ id = 19, name = "Wren", attack = 3, hp = 12, ability = "Ranged",
 		attackRange = GameConfig.WREN_RANGE,
 		abilities = { "longShot" },
 		color = Color3.fromRGB(100, 210, 180),
@@ -169,13 +169,13 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(90, 160, 150),
 		sprite = "106777398591637", spriteSize = Vector2.new(400, 601), scale = 0.84 },
 
-	{ id = 23, name = "Dr. Maluco", attack = 1, hp = 11, ability = nil,
+	{ id = 23, name = "Dr. Maluco", attack = 1, hp = 10, ability = nil,
 		abilities = { "poisonFlask", "estopim" }, attackSound = "PoisonFlask",
 		deathHold = GameConfig.ESTOPIM_DEATH_HOLD,
 		color = Color3.fromRGB(120, 190, 110),
 		sprite = "125043635721594", spriteSize = Vector2.new(734, 866), scale = 0.99 },
 
-	{ id = 24, name = "Rush", attack = 1, hp = 11, ability = GameConfig.ABILITIES.SPRINT,
+	{ id = 24, name = "Rush", attack = 0, hp = 11, ability = GameConfig.ABILITIES.SPRINT,
 		moveRange = GameConfig.RUSH_MOVE_RANGE,
 		abilities = { "momentum", "dodge" },
 		color = Color3.fromRGB(80, 170, 255),
@@ -185,6 +185,32 @@ HeroData.CATALOG = {
 		abilities = { "voltChain" }, attackSound = "VoltAttack",
 		color = Color3.fromRGB(120, 200, 255),
 		sprite = "78746546330925", spriteSize = Vector2.new(400, 400), scale = 1.00 },
+
+	-- Spyke — o primeiro Agility do elenco. `ability = "Agility"` é tudo o que
+	-- separa ele dos outros: o segundo passo depois do golpe sai da ability, não
+	-- de nada escrito com o nome dele (ver GameConfig.HasAgility).
+	--
+	-- 1 de ataque na ficha é de propósito: o que ele soma ao time não é o golpe
+	-- dele, é o +1 que ele empresta a QUEM ESTÁ DO LADO — e o Agility é o que
+	-- deixa ele bater e ainda escolher, no mesmo turno, de quem vai ficar perto.
+	-- Move 2 e alcança 1 como qualquer ficha comum: a mobilidade dele vem do
+	-- SEGUNDO passo, não de um passo maior.
+	{ id = 26, name = "Spyke", attack = 1, hp = 22, ability = "Agility",
+		abilities = { "rallyAura", "vengeance" },
+		color = Color3.fromRGB(255, 190, 90),
+		sprite = "111811180757505", spriteSize = Vector2.new(400, 400), scale = 1.00 },
+
+	-- Kira — tanque de SUPORTE. O Taunt puxa o foco pra ela, e a Égide escolhe
+	-- quem sobrevive ao golpe que ela NÃO conseguiu puxar. 1 de ataque é o preço:
+	-- ela não converte turno em dano, converte em turno de outro.
+	--
+	-- Taunt de ficha, sem uma linha de Taunt própria: ela entra inteira na regra
+	-- que já existe (ver MatchQuery.TauntBlocks), inclusive na de vários
+	-- provocadores em campo ao mesmo tempo.
+	{ id = 27, name = "Kira", attack = 1, hp = 33, ability = "Taunt",
+		abilities = { "aegis" },
+		color = Color3.fromRGB(240, 205, 120),
+		sprite = "86628005150597", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 }
 
 -- ===== TAMANHO APARENTE =====
@@ -263,7 +289,8 @@ HeroData.SKILL_INFO = {
 	poisonAttack  = { name = "Poison Attack",  desc = "Envenena o inimigo por 3 turnos." },
 	poisonFlask   = { name = "Frasco de Veneno", desc = ("Golpe simples que envenena por %d turnos. Não causa dano extra em quem já está envenenado.")
 		:format(GameConfig.POISON_DURATION) },
-	goodLuck      = { name = "Good Luck",      desc = "Tem 50% de chance de ganhar +1 de ataque ao mudar o turno." },
+	goodLuck      = { name = "Good Luck",      desc = ("Tem %d%% de chance de ganhar +1 de ataque e recuperar %d de vida ao mudar o turno.")
+		:format(GameConfig.GOOD_LUCK_CHANCE * 100, GameConfig.GOOD_LUCK_HEAL) },
 	beyondFront   = { name = "Beyond Front",   desc = "Ataca em linha reta na direção do ataque, atingindo inimigos enfileirados." },
 	brokenDefense = { name = "Broken Defense", desc = "Causa +1 de dano contra inimigos com Taunt." },
 	trustInTeam   = { name = "Trust in Team",  desc = "Recebe +1 de ataque ao ter aliados em casas adjacentes." },
@@ -288,6 +315,15 @@ HeroData.SKILL_INFO = {
 		:format(GameConfig.AMBUSH_BONUS_DAMAGE) },
 	huntInstinct  = { name = "Instinto de Caça", desc = "Ao atingir um inimigo isolado sem abatê-lo, pode se mover de novo. Ao abater o alvo, recupera movimento E ataque, e volta à invisibilidade se não sobrar ninguém ao lado — abates em sequência encadeiam sem limite." },
 	shatter       = { name = "Corpo de Pedra", desc = "Ao perder a primeira vida, se parte em dois golens menores: 2 de ataque e 5 de vida cada. Os pedaços não deixam túmulo — o Golem é enterrado uma vez só, quando o último deles cair." },
+
+	-- Kira
+	aegis = { name = "Égide", desc = "Uma vez por turno, escolha um aliado COLADO nela (1 casa) e ainda sem escudo: ele fica com um escudo dourado que anula por completo o próximo golpe que receber, seja de 1 ou de 20. O escudo some ao bloquear, dura o tempo que precisar até lá, e ninguém carrega dois — pra proteger, ela precisa estar no mesmo aperto que o protegido." },
+
+	-- Spyke
+	rallyAura = { name = "Ponto de Apoio", desc = ("Aliados a uma casa de distância ganham +%d de ataque enquanto estiverem colados nele. O bônus entra e sai na hora em que a adjacência muda.")
+		:format(GameConfig.SPYKE_AURA_ATTACK) },
+	vengeance  = { name = "Sangue Fervendo", desc = ("Ao atacar, ferve por %d turno: cada aliado colado nele que sofrer dano rende +%d de ataque ao Spyke. Conta CABEÇA atingida, não o tamanho do golpe. O bônus ACUMULA enquanto ele atacar todo turno — passar um turno sem atacar deixa o efeito vencer e devolve tudo de uma vez.")
+		:format(GameConfig.SPYKE_VENGEANCE_DURATION, GameConfig.SPYKE_VENGEANCE_ATTACK) },
 
 	-- Lucy
 	flameHeal   = { name = "Calor da Família", desc = ("Ao pisar numa casa em chamas (dela ou do Karo), recupera %d de vida por casa.")
@@ -319,6 +355,7 @@ HeroData.ABILITY_INFO = {
 	Ranged = ("Ataca a até %d casas de distância.")
 		:format(GameConfig.RANGED_ATTACK_RANGE),
 	Taunt  = "Inimigos adjacentes só podem atacar este herói.",
+	Agility = "O ataque não encerra o movimento: pode andar, atacar e andar de novo no mesmo turno. O ataque continua sendo um só.",
 }
 
 function HeroData.GetById(id)

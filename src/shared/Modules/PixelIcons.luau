@@ -127,6 +127,19 @@ PixelIcons.PATTERNS = {
 		"#######",
 	},
 
+	-- AGILITY: duas setas apontando pra frente, uma atrás da outra — o segundo
+	-- passo do turno desenhado. Duas pontas em vez de uma é o que separa do
+	-- sprint (bota), que já ocupa a ideia de "anda mais".
+	agility = {
+		"#..#...",
+		"##.##..",
+		"###.###",
+		"#######",
+		"###.###",
+		"##.##..",
+		"#..#...",
+	},
+
 	-- RANGED: círculo com os quatro traços e o ponto no centro
 	ranged = {
 		"...#...",
