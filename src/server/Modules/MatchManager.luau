@@ -302,9 +302,18 @@ function KillHero(match, hero, attacker)
 	-- laço, o lobo só engordava no próximo turno ou no próximo passo dele, e o
 	-- jogador via o aliado cair sem nada acontecer na ficha. Vem depois do
 	-- onKill pra que o abate e a baixa cheguem na mesma ordem de sempre.
-	for _, other in pairs(match.heroes) do
-		if other.isAlive then
-			TriggerSkills(match, other, "onAnyDeath", nil, false, { deadHero = hero })
+	-- Num efeito em ÁREA, este gatilho fica na fila até o evento inteiro
+	-- resolver (ver api.ResolveTogether). Sem isso, a primeira vítima a cair
+	-- mudava a composição do time no MEIO da explosão, e o Frenesi do Merlin
+	-- curava ele antes de o mesmo golpe chegar nele — quem vivia dependia da
+	-- ordem de iteração da tabela de heróis.
+	if match.deferDeathTriggers then
+		table.insert(match.pendingDeathTriggers, hero)
+	else
+		for _, other in pairs(match.heroes) do
+			if other.isAlive then
+				TriggerSkills(match, other, "onAnyDeath", nil, false, { deadHero = hero })
+			end
 		end
 	end
 
@@ -453,6 +462,7 @@ local function ConsumeShield(match, hero, attacker)
 	if not FindStatusEffect(hero, "shield") then return false end
 
 	RemoveStatusEffect(match, hero, "shield")
+	hero.shieldJustBroke = true
 	HeroView.SetShieldAura(hero, false)
 	HeroView.PlaySkillEffect(hero, "aegisBreak")
 	HeroView.Say(hero, "BLOQUEADO", "absorb")
@@ -524,13 +534,18 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sou
 			-- a existência do efeito é ao mesmo tempo o interruptor e o cofre —
 			-- não há como sobrar bônus sem prazo pra vencer.
 			if skill and skill.attackFromNearbyHit then
-				local effect = FindStatusEffect(ally, key)
-				local bonus = effect and skill.attackFromNearbyHit({
+				local bonus = skill.attackFromNearbyHit({
 					hero = hero, ally = ally, attacker = attacker,
 				}) or 0
 
 				if bonus > 0 then
-					effect.attackBonus = (effect.attackBonus or 0) + bonus
+					local effect = FindStatusEffect(ally, key)
+					if not effect then
+						effect = { type = key, duration = math.huge, attackBonus = 0 }
+						table.insert(ally.statusEffects, effect)
+					end
+
+					effect.attackBonus += bonus
 					IncreaseAttack(match, ally, bonus)
 				end
 			end
@@ -701,6 +716,21 @@ local function ApplyStatusEffect(match, hero, effect)
 	-- (GameConfig.IsNegativeEffect), então o lobo continua recebendo o que é
 	-- bom pra ele: o empréstimo de ataque do barril passa direto.
 	if hero.frenzyActive and GameConfig.IsNegativeEffect(effect.type) then
+		return
+	end
+
+	-- ESCUDO DA KIRA: ele barra o GOLPE INTEIRO, não só o número do dano. Sem
+	-- isto o Kor congelava por baixo dele (o onAttack roda ANTES do ApplyDamage,
+	-- então o gelo chegava enquanto o escudo ainda estava de pé) e o estopim
+	-- envenenava por cima (ali o dano vem primeiro, gasta o escudo, e o veneno
+	-- caía num herói já descoberto).
+	--
+	-- `shieldJustBroke` cobre a segunda metade: o escudo que acabou de estourar
+	-- continua recusando efeito até a ação terminar. Quem apaga a marca é o
+	-- Broadcast, no mesmo lugar em que o destaque do finalizador é limpo.
+	if GameConfig.IsNegativeEffect(effect.type)
+		and (hero.shieldJustBroke or FindStatusEffect(hero, "shield")) then
+		HeroView.Say(hero, "PROTEGIDO", "absorb")
 		return
 	end
 
@@ -1032,6 +1062,29 @@ local function BuildSkillApi(match)
 		ApplyStatusEffect = function(hero, effect)
 			effect.appliedTurnToken = match.turnToken
 			ApplyStatusEffect(match, hero, effect)
+		end,
+
+		ResolveTogether = function(fn)
+			if match.deferDeathTriggers then return fn() end
+
+			match.deferDeathTriggers = true
+			match.pendingDeathTriggers = {}
+
+			local ok, err = pcall(fn)
+
+			match.deferDeathTriggers = false
+			local pending = match.pendingDeathTriggers
+			match.pendingDeathTriggers = {}
+
+			for _, dead in ipairs(pending) do
+				for _, other in pairs(match.heroes) do
+					if other.isAlive then
+						TriggerSkills(match, other, "onAnyDeath", nil, false, { deadHero = dead })
+					end
+				end
+			end
+
+			if not ok then warn("ResolveTogether: " .. tostring(err)) end
 		end,
 
 		Electrify = function(victim, origin) Electrify(match, victim, origin) end,
@@ -1369,6 +1422,10 @@ local function Snapshot(match, viewerId)
 			-- tabuleiro. O brilho dourado em cima do herói já conta isso no
 			-- tabuleiro; isto é o mesmo fato pra coluna de retratos e pra ficha.
 			shielded = FindStatusEffect(hero, "shield") ~= nil or nil,
+
+			-- coluna de retratos: choque do Volt, contado e paralisado
+			charge = (FindStatusEffect(hero, "charge") or {}).stacks or 0,
+			paralyzed = FindStatusEffect(hero, "paralysis") ~= nil or nil,
 			isMine = hero.ownerId == viewerId,
 			-- 1 = azul, 2 = vermelho. Vai junto pra UI pintar o retrato com a
 			-- MESMA cor do anel embaixo do herói no tabuleiro: em PvP quem joga
@@ -1466,10 +1523,17 @@ local function Snapshot(match, viewerId)
 		}
 	end
 
-	-- Estado das duas casas de promoção — igual pros dois espectadores, não
-	-- muda por ponto de vista. "used" vence "active" (uma vez gasta, fica gasta
-	-- mesmo depois do turno de liberação); antes do turno de liberação é sempre
-	-- "inactive", mesmo que por algum motivo já estivesse marcada como usada.
+	-- Estado das duas casas de promoção. "used" vence "active" (uma vez gasta,
+	-- fica gasta mesmo depois do turno de liberação); antes do turno de
+	-- liberação é sempre "inactive", mesmo que por algum motivo já estivesse
+	-- marcada como usada.
+	--
+	-- `mine` é o que muda por ponto de vista, e é a razão de este campo existir:
+	-- a casa de cada lado é a DISTANTE da própria largada, e a colada na largada
+	-- (1 passo) é a do adversário. Pintadas iguais, o jogador pisa na que está do
+	-- lado dele, o servidor recusa em silêncio (TryTriggerPromotion confere o hex
+	-- contra o lado) e a mecânica parece quebrada. `ownerSideIndex` sozinho não
+	-- resolvia: o cliente não tem de onde tirar o próprio índice de lado.
 	local promotionSquares = {}
 	for slotIndex, hexId in pairs(GameConfig.PROMOTION_HEX_FOR_SLOT) do
 		local side = match.sides[slotIndex]
@@ -1481,7 +1545,12 @@ local function Snapshot(match, viewerId)
 		else
 			squareState = "inactive"
 		end
-		table.insert(promotionSquares, { hex = hexId, ownerSideIndex = slotIndex, state = squareState })
+		table.insert(promotionSquares, {
+			hex = hexId,
+			ownerSideIndex = slotIndex,
+			mine = slotIndex == viewerSide.index,
+			state = squareState,
+		})
 	end
 	table.sort(promotionSquares, function(a, b) return a.hex < b.hex end)
 
@@ -1624,6 +1693,16 @@ local function Broadcast(match, message)
 
 	-- o destaque é evento, não estado: sai num snapshot só, senão a animação
 	-- dispararia de novo a cada atualização até o fim do turno
+	for _, hero in pairs(match.heroes) do
+		if hero.isAlive and not hero.stealth then
+			match.lastSeen[hero.uid] = hero.position
+		end
+	end
+
+	for _, hero in pairs(match.heroes) do
+		hero.shieldJustBroke = nil
+	end
+
 	match.finisher = nil
 end
 
@@ -2264,7 +2343,48 @@ function BotPlayTurn(match, botId)
 					table.insert(enemies, enemy)
 				end
 			end
-			if #enemies == 0 then break end
+			-- SEM INIMIGO VISÍVEL NÃO É FIM DE TURNO. O Nash invisível zerava
+			-- esta lista e o laço saía inteiro: o time ficava parado esperando
+			-- ele aparecer. Agora vira caçada — mesma árvore de decisão, só com
+			-- outra função de nota (ver BotBrain.SearchPlanFor).
+			if #enemies == 0 then
+				local vivos = LivingHeroesOf(match, OpponentSide(match, botId).id)
+				if #vivos == 0 then break end
+
+				local ctxBusca = BotBrain.BuildBoardContext(match, botId, {})
+
+				-- A pista é a ÚLTIMA CASA EM QUE ELE FOI VISTO, não a de agora:
+				-- match.lastSeen só é gravado enquanto o herói está visível, então
+				-- a IA nunca enxerga mais do que um jogador humano enxergaria.
+				local pista = nil
+				for _, inimigo in ipairs(vivos) do
+					pista = pista or match.lastSeen[inimigo.uid]
+				end
+
+				local goals = BotBrain.SearchGoals(match, ctxBusca, pista)
+				local moveu = false
+
+				-- um objetivo DIFERENTE por herói: é o que espalha o time em vez
+				-- de empilhar os três na mesma casa
+				for index, hero in ipairs(ctxBusca.allies) do
+					local goal = goals[((index - 1) % #goals) + 1]
+					local plan = BotBrain.SearchPlanFor(match, hero, ctxBusca, goal)
+
+					if plan and plan.position ~= hero.position then
+						BotBrain.RememberSearchTile(hero, hero.position)
+						MatchManager.MoveHero(nil, hero.uid, plan.position, match)
+						moveu = true
+						task.wait(BOT_ACTION_DELAY)
+
+						if not MatchIsLive(match) or match.phase ~= "battle"
+							or match.turn.ownerId ~= botId then return end
+						ResolveBotPromotion(match, botId)
+					end
+				end
+
+				if not moveu then break end
+				continue
+			end
 
 			-- Releitura completa do tabuleiro a cada ação: quem é o carry, se o
 			-- Nash está à vista, se a Casa de Promoção virou objetivo. Um abate
@@ -2422,9 +2542,22 @@ function MatchManager.EndTurn(player, match)
 	match = match or MatchOfPlayer(player)
 	if not match or match.phase ~= "battle" then return end
 	if match.busy then return end
-	-- "Entrou na casa, tem que escolher": nada mais acontece até a ressurreição
-	-- pendente ser resolvida — nem passar o turno.
-	if match.pendingPromotion then return end
+	-- "Entrou na casa, tem que escolher": o JOGADOR não passa o turno com a
+	-- escolha aberta. Já o fim de turno do SISTEMA (player == nil: o cronômetro
+	-- do PvP, e o bot fechando o próprio turno) resolve a escolha sozinho antes
+	-- de seguir — mesma regra do prazo de largada, em que estourar o tempo rende
+	-- uma escolha automática em vez de travar a partida do outro. Sem isto, o
+	-- cronômetro (que em PvP roda nos DOIS turnos humanos, e num jogo contra o
+	-- bot não roda no turno do humano — ver TurnIsTimed) batia nesta linha e
+	-- voltava calado: a partida parava pra sempre no turno de quem pisou na casa
+	-- e não escolheu, e nenhum outro cronômetro era armado depois.
+	if match.pendingPromotion then
+		if player then return end
+		MatchManager.Resurrect(nil,
+			BotPickResurrection(match, match.pendingPromotion.ownerId,
+				match.pendingPromotion.options),
+			match)
+	end
 
 	local currentSide = SideOf(match, match.turn.ownerId)
 	if player and currentSide.player ~= player then return end
@@ -2693,7 +2826,7 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	-- Nos dois casos o alvo perde a chance de revidar ESTE golpe, mas o "ativo"
 	-- continua de pé pro próximo herói do time atacar e apanhar de volta.
 	if not attackCtx.suppressCounter and not match.turn.counterAttack
-		and target.isAlive and attacker.isAlive then
+		and target.isAlive and attacker.isAlive and not IsDisabled(target) then
 		if HexGrid.Distance(target.position, attacker.position) <= target.attackRange then
 			-- marcado ANTES de o golpe sair, e não depois: o PerformAttack cede
 			-- (espera animação) e dispara skills que podem atacar de volta. Sem a
@@ -3349,6 +3482,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		turnToken = 0,
 		winner = nil,
 		finisher = nil,
+		lastSeen = {},
 		busy = false,
 		pendingPromotion = nil, -- ver TryTriggerPromotion/MatchManager.Resurrect
 		pendingShield = nil, -- ver OfferShield/MatchManager.GrantShield

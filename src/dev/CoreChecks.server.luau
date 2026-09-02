@@ -8,6 +8,7 @@ local MatchQuery = require(ServerScriptService.Modules.MatchQuery)
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local Arenas = require(ReplicatedStorage.Modules.Arenas)
 local Skills = require(ServerScriptService.Modules.Skills)
+local BotBrain = require(ServerScriptService.Modules.BotBrain)
 
 local KOR_ID = 10
 
@@ -81,8 +82,10 @@ local function FakeMatch(heroes)
 	return match
 end
 
+local missingApi = {}
+
 local function FakeApi()
-	local log = { damage = {}, heals = {}, flames = {}, status = {}, summons = {}, board = {} }
+	local log = { damage = {}, heals = {}, flames = {}, status = {}, summons = {}, board = {}, missing = {} }
 	local api = {
 		ApplyDamage = function(hero, amount, attacker)
 			table.insert(log.damage, { hero = hero, amount = amount, attacker = attacker })
@@ -110,6 +113,7 @@ local function FakeApi()
 		CountDeaths = function() return 0 end,
 		LightFlame = function(hexId) table.insert(log.flames, hexId) end,
 		FindStatusEffect = MatchQuery.FindStatusEffect,
+		ResolveTogether = function(fn) return fn() end,
 		RemoveStatusEffect = function(hero, effectType)
 			for index = #hero.statusEffects, 1, -1 do
 				local effect = hero.statusEffects[index]
@@ -142,6 +146,19 @@ local function FakeApi()
 			return minion
 		end,
 	}
+	-- QUALQUER funcao da API real que nao tenha dublê aqui vira um no-op em vez
+	-- de estourar "attempt to call a nil value" no meio de um Play. O nome fica
+	-- gravado em log.missing, e a checagem no fim do arquivo denuncia a lista —
+	-- assim o harness acompanha a API sozinho e a falha vira aviso, nao crash.
+	setmetatable(api, {
+		__index = function(_, key)
+			return function()
+				log.missing[key] = (log.missing[key] or 0) + 1
+				missingApi[key] = true
+			end
+		end,
+	})
+
 	return api, log
 end
 
@@ -758,33 +775,28 @@ do
 	-- efeito aberto, o bonus e somado DENTRO dele (`attackBonus`) e no ataque.
 	-- Cada aliado atingido e uma passagem — e um golpe em area vira N passagens,
 	-- que e exatamente como os +2/+3 nascem.
+	-- Refaz o que o ApplyDamage faz por evento de dano: o cofre nasce sozinho no
+	-- primeiro aliado ferido e o bonus mora DENTRO dele (`attackBonus`), nunca
+	-- solto no ataque. Cada aliado atingido e uma passagem — e um golpe em area
+	-- vira N passagens, que e exatamente como os +2/+3 nascem.
 	local function AllyWasHit(spyke)
-		local effect = MatchQuery.FindStatusEffect(spyke, "vengeance")
-		local bonus = effect and Skills.vengeance.attackFromNearbyHit({
+		local bonus = Skills.vengeance.attackFromNearbyHit({
 			hero = victim, ally = spyke,
 		}) or 0
 
 		if bonus > 0 then
-			effect.attackBonus = (effect.attackBonus or 0) + bonus
+			local effect = MatchQuery.FindStatusEffect(spyke, "vengeance")
+			if not effect then
+				effect = { type = "vengeance", duration = math.huge, attackBonus = 0 }
+				table.insert(spyke.statusEffects, effect)
+			end
+			effect.attackBonus += bonus
 			spyke.attack += bonus
 		end
 	end
 
 	AllyWasHit(guard)
-	check("skill) sem o efeito aberto, dano em aliado nao rende nada",
-		guard.attack == guardAtk, guard.attack)
-
-	Skills.vengeance.apply({ hero = guard, api = FakeApi(), trigger = "onAttack" })
-	check("skill) atacar abre o efeito por 1 turno",
-		MatchQuery.FindStatusEffect(guard, "vengeance") ~= nil
-			and MatchQuery.FindStatusEffect(guard, "vengeance").duration
-				== GameConfig.SPYKE_VENGEANCE_DURATION)
-
-	-- 1 aliado atingido: +1 de ATAQUE, e ZERO de vida perdida — o ponto inteiro
-	-- da correcao. O tamanho do golpe que o aliado levou nao entra na conta, e
-	-- por isso a funcao da skill nem recebe o dano.
-	AllyWasHit(guard)
-	check("skill) 1 aliado atingido rende +1 ATK",
+	check("skill) 1 aliado atingido rende +1 ATK sem precisar ter atacado antes",
 		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK, guard.attack)
 	check("skill) o Spyke nao perde vida nenhuma", guard.currentHp == guardHp, guard.currentHp)
 
@@ -797,32 +809,39 @@ do
 		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK * 3, guard.attack)
 	check("skill) HP intacto depois dos tres", guard.currentHp == guardHp, guard.currentHp)
 
-	-- o bonus acumulado mora NO EFEITO, que e o que faz o ProcessStatusEffects
-	-- devolver tudo quando o prazo vence — sem residuo no ataque
+	-- o bonus acumulado mora NO EFEITO, que e o cofre que o onAttackResolved
+	-- esvazia — sem residuo solto no ataque
 	local effect = MatchQuery.FindStatusEffect(guard, "vengeance")
 	check("skill) o bonus fica guardado no efeito, nao solto no ataque",
-		effect.attackBonus == GameConfig.SPYKE_VENGEANCE_ATTACK * 3, effect.attackBonus)
+		effect ~= nil and effect.attackBonus == GameConfig.SPYKE_VENGEANCE_ATTACK * 3,
+		effect and effect.attackBonus)
 
-	-- ATACAR DE NOVO RENOVA, NAO ZERA. Era o bug: o apply removia o efeito antes
-	-- de reaplicar, o estorno saia no onAttack (que roda ANTES do dano) e o Spyke
-	-- batia com o ataque de ficha justamente no turno em que tinha juntado mais.
-	local api = FakeApi()
-	Skills.vengeance.apply({ hero = guard, api = api, trigger = "onAttack" })
-	check("skill) atacar de novo nao perde o que ja tinha juntado",
-		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK * 3, guard.attack)
-	check("skill) e continua com um efeito so aberto",
+	check("skill) so um efeito aberto, por mais aliados que caiam",
 		#guard.statusEffects == 1, #guard.statusEffects)
 
-	AllyWasHit(guard)
-	check("skill) e segue acumulando por cima do renovado",
-		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK * 4, guard.attack)
+	-- ATACAR GASTA. O bonus acompanha o golpe inteiro e so e devolvido depois
+	-- que ele resolve (onAttackResolved), nunca no onAttack — que roda ANTES do
+	-- dano e deixaria o Spyke batendo com o ataque de ficha.
+	local api = FakeApi()
+	api.RemoveStatusEffect = function(hero, effectType)
+		for index = #hero.statusEffects, 1, -1 do
+			local open = hero.statusEffects[index]
+			if open.type == effectType then
+				table.remove(hero.statusEffects, index)
+				if open.attackBonus then hero.attack -= open.attackBonus end
+			end
+		end
+	end
 
-	-- so o prazo vencendo (um turno sem atacar) e que devolve — e devolve TUDO
-	api.RemoveStatusEffect(guard, "vengeance")
-	check("skill) ao vencer o prazo o ataque volta ao que era",
+	Skills.vengeance.apply({ hero = guard, api = api, trigger = "onAttackResolved" })
+	check("skill) depois do golpe o ataque volta pra ficha",
 		guard.attack == guardAtk, guard.attack)
 	check("skill) sem residuo de efeito depois do estorno",
 		#guard.statusEffects == 0, #guard.statusEffects)
+
+	AllyWasHit(guard)
+	check("skill) e volta a acumular do zero",
+		guard.attack == guardAtk + GameConfig.SPYKE_VENGEANCE_ATTACK, guard.attack)
 
 	guard.isAlive = false
 	check("skill) Spyke morto nao acumula mais nada",
@@ -1461,6 +1480,103 @@ if lineA and lineB and lineC then
 	end
 end
 
+do
+	local faltando = {}
+	for key in pairs(missingApi) do table.insert(faltando, key) end
+	table.sort(faltando)
+	check("FakeApi cobre a API que as skills usam", #faltando == 0, table.concat(faltando, ", "))
+end
+
+
+do
+	local core
+	for _, hex in ipairs(hexes) do
+		if #HexGrid.GetNeighbors(idOf(hex)) == 6 then
+			core = idOf(hex)
+			break
+		end
+	end
+
+	if core then
+		local hunter = FakeHero(1, "A", core)
+		local mate = FakeHero(6, "A", HexGrid.GetNeighbors(core)[1].id)
+		local board = {
+			occupied = { [core] = hunter },
+			heroes = {},
+			turn = { moved = {}, attacked = {} },
+		}
+		board.occupied[mate.position] = mate
+		board.heroes[hunter.uid] = hunter
+		board.heroes[mate.uid] = mate
+
+		local ctx = { allies = { hunter, mate }, enemies = {} }
+
+		local goals = BotBrain.SearchGoals(board, ctx, core)
+		check("busca) a ultima casa vista vira o primeiro objetivo",
+			goals[1] == core, goals[1])
+		check("busca) sempre sobra objetivo mesmo sem pista",
+			#BotBrain.SearchGoals(board, ctx, nil) > 0)
+
+		local longe = goals[#goals]
+		local plan = BotBrain.SearchPlanFor(board, hunter, ctx, longe)
+		check("busca) o bot sempre acha uma jogada", plan ~= nil)
+		check("busca) e ela nao e ficar parado",
+			plan ~= nil and plan.position ~= hunter.position, plan and plan.position)
+		check("busca) o passo aproxima do objetivo",
+			plan ~= nil and HexGrid.Distance(plan.position, longe)
+				< HexGrid.Distance(core, longe))
+
+		BotBrain.RememberSearchTile(hunter, core)
+		check("busca) a casa recem-visitada fica na memoria",
+			#hunter.searchMemory == 1 and hunter.searchMemory[1] == core)
+
+		table.insert(hunter.statusEffects, { type = "paralysis", duration = 1 })
+		check("busca) paralisado nao entra na caçada",
+			BotBrain.SearchPlanFor(board, hunter, ctx, longe) == nil)
+		hunter.statusEffects = {}
+
+		board.turn.moved[hunter.uid] = true
+		check("busca) quem ja andou no turno nao anda de novo",
+			BotBrain.SearchPlanFor(board, hunter, ctx, longe) == nil)
+	end
+end
+
+do
+	local NEGATIVOS = { "poison", "freeze", "wound", "charge", "paralysis" }
+	for _, tipo in ipairs(NEGATIVOS) do
+		check("escudo cobre o efeito negativo: " .. tipo,
+			GameConfig.IsNegativeEffect(tipo) == true)
+	end
+	check("escudo nao e tratado como negativo",
+		GameConfig.IsNegativeEffect("shield") == false)
+
+	-- espelha a guarda do ApplyStatusEffect
+	local function aceita(hero, tipo)
+		if hero.frenzyActive and GameConfig.IsNegativeEffect(tipo) then return false end
+		if GameConfig.IsNegativeEffect(tipo)
+			and (hero.shieldJustBroke or MatchQuery.FindStatusEffect(hero, "shield")) then
+			return false
+		end
+		return true
+	end
+
+	local karo = FakeHero(12, "A", lineA)
+	check("sem escudo, o gelo entra", aceita(karo, "freeze") == true)
+
+	table.insert(karo.statusEffects, { type = "shield", duration = math.huge })
+	check("com escudo, o gelo do Kor e recusado", aceita(karo, "freeze") == false)
+	check("com escudo, o veneno e recusado", aceita(karo, "poison") == false)
+	check("escudo nao barra efeito bom", aceita(karo, "vengeance") == true)
+
+	-- estopim: o dano gasta o escudo ANTES do veneno sair
+	karo.statusEffects = {}
+	karo.shieldJustBroke = true
+	check("escudo recem-estourado ainda barra o veneno do estopim",
+		aceita(karo, "poison") == false)
+
+	karo.shieldJustBroke = nil
+	check("passada a acao, o veneno volta a entrar", aceita(karo, "poison") == true)
+end
 if #failures == 0 then
 	print(("CoreChecks: %d verificacoes, tudo certo."):format(passed))
 else

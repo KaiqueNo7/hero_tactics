@@ -950,19 +950,23 @@ Skills.estopim = {
 		ctx.api.PoisonBomb(ctx.hero)
 		ctx.api.PlaySkillSound("estopim")
 
-		for _, enemy in ipairs(ctx.api.GetEnemiesInRange(ctx.hero, 1)) do
-			ctx.api.Effect(enemy)
-			ctx.api.ApplyDamage(enemy, GameConfig.ESTOPIM_DAMAGE, ctx.hero, false)
+		local alvos = ctx.api.GetEnemiesInRange(ctx.hero, 1)
 
-			if enemy.isAlive then
-				ctx.api.ApplyStatusEffect(enemy, {
-					type = "poison",
-					duration = GameConfig.POISON_DURATION,
-					damagePerTurn = 1,
-					ticksEveryTurn = true,
-				})
+		ctx.api.ResolveTogether(function()
+			for _, enemy in ipairs(alvos) do
+				ctx.api.Effect(enemy)
+				ctx.api.ApplyDamage(enemy, GameConfig.ESTOPIM_DAMAGE, ctx.hero, false)
+
+				if enemy.isAlive then
+					ctx.api.ApplyStatusEffect(enemy, {
+						type = "poison",
+						duration = GameConfig.POISON_DURATION,
+						damagePerTurn = 1,
+						ticksEveryTurn = true,
+					})
+				end
 			end
-		end
+		end)
 	end,
 }
 
@@ -1070,29 +1074,9 @@ Skills.rallyAura = {
 -- continua lá. Deixar de atacar um turno é o que corta: aí o prazo vence, o
 -- ProcessStatusEffects devolve tudo de uma vez e ele recomeça do ataque de ficha.
 Skills.vengeance = {
-	triggers = { "onAttack" },
+	triggers = { "onAttackResolved" },
 	apply = function(ctx)
-		-- RENOVAR, não reabrir. Remover e aplicar de novo devolvia o acumulado
-		-- (o RemoveStatusEffect estorna o attackBonus) — e devolvia bem na hora
-		-- errada: o onAttack roda ANTES do dano, então o Spyke perdia os pontos
-		-- no instante em que ia usá-los e batia com o ataque de ficha.
-		--
-		-- Passar a MESMA tabela pro ApplyStatusEffect é o que renova sem estornar:
-		-- lá dentro ela sai da lista e volta pra ela, com o carimbo de turno novo
-		-- (é o carimbo que decide quando o prazo começa a correr) e o attackBonus
-		-- intacto.
-		local open = ctx.api.FindStatusEffect(ctx.hero, "vengeance")
-		if open then
-			open.duration = GameConfig.SPYKE_VENGEANCE_DURATION
-			ctx.api.ApplyStatusEffect(ctx.hero, open)
-		else
-			ctx.api.ApplyStatusEffect(ctx.hero, {
-				type = "vengeance",
-				duration = GameConfig.SPYKE_VENGEANCE_DURATION,
-			})
-		end
-
-		ctx.api.Effect(ctx.hero)
+		ctx.api.RemoveStatusEffect(ctx.hero, "vengeance")
 	end,
 
 	attackFromNearbyHit = function(info)

@@ -1399,7 +1399,7 @@ local POISON_CORE = Color3.fromRGB(196, 255, 150)
 local POISON_EDGE = Color3.fromRGB(96, 200, 70)
 local POISON_BOMB_TIME = 1.1
 
-function HeroView.PlayPoisonBomb(view, hexId)
+local function PlayBlast(view, hexId, coreColor, edgeColor)
 	if not view then return end
 
 	local size = HexGrid.GetHexSize()
@@ -1409,14 +1409,14 @@ function HeroView.PlayPoisonBomb(view, hexId)
 	for _, hex in ipairs(HexGrid.GetNeighbors(hexId)) do
 		table.insert(hexIds, hex.id)
 	end
-	HeroView.FlashAttackRange(view, hexIds, POISON_CORE, POISON_EDGE)
+	HeroView.FlashAttackRange(view, hexIds, coreColor, edgeColor)
 
 	local cloud = Instance.new("Part")
-	cloud.Name = "PoisonBomb"
+	cloud.Name = "Blast"
 	cloud.Shape = Enum.PartType.Ball
 	cloud.Size = Vector3.new(size * 0.5, size * 0.5, size * 0.5)
 	cloud.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y + size * 0.4, 0))
-	cloud.Color = POISON_CORE
+	cloud.Color = coreColor
 	cloud.Material = Enum.Material.Neon
 	cloud.Transparency = 0.45
 	cloud.Anchored = true
@@ -1430,10 +1430,14 @@ function HeroView.PlayPoisonBomb(view, hexId)
 		TweenInfo.new(POISON_BOMB_TIME, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
 			Size = Vector3.new(blast, blast, blast),
 			Transparency = 1,
-			Color = POISON_EDGE,
+			Color = edgeColor,
 		}):Play()
 
 	Debris:AddItem(cloud, POISON_BOMB_TIME + 0.15)
+end
+
+function HeroView.PlayPoisonBomb(view, hexId)
+	PlayBlast(view, hexId, POISON_CORE, POISON_EDGE)
 end
 
 local ICE_CORE = Color3.fromRGB(236, 252, 255)
@@ -1751,6 +1755,8 @@ end
 
 function HeroView.PlayIceStorm(view, hexId)
 	if not view then return end
+
+	PlayBlast(view, hexId, ICE_CORE, ICE_EDGE)
 
 	local size = HexGrid.GetHexSize()
 	local center = HexGrid.GetWorldPosition(hexId, view.origin)

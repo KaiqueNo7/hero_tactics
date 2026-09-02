@@ -48,9 +48,17 @@ local COLOR_B = GameConfig.HEX_COLOR_B
 -- 255 no vermelho: com a lareira e as janelas acesas em cima dele, a casa
 -- passava do Threshold do Bloom e virava um borrão branco a cada pulso, bem no
 -- momento em que ela mais precisa ser lida.
+--
+-- A DO ADVERSÁRIO É OUTRA COR, e não a mesma dourada. As duas casas ficam nas
+-- pontas opostas da coluna C: a SUA é a distante (6 casas da largada), a dele é
+-- a que encosta na sua linha de largada (1 passo). Pintadas iguais, o caminho
+-- óbvio era pisar na de um passo — a do inimigo —, o servidor recusava em
+-- silêncio e a mecânica inteira parecia quebrada. Verde-pedra frio, estático,
+-- sem pulso: continua legível como casa especial, sem convidar ninguém a ir lá.
 local PROMOTION_INACTIVE_COLOR = Color3.fromRGB(52, 44, 38)
 local PROMOTION_ACTIVE_COLOR_LOW = Color3.fromRGB(120, 92, 34)
 local PROMOTION_ACTIVE_COLOR_HIGH = Color3.fromRGB(196, 158, 78)
+local PROMOTION_ENEMY_COLOR = Color3.fromRGB(48, 62, 70)
 
 local function fallbackColor(tile)
 	local col = string.byte(tile.Name, 1) - string.byte("A", 1)
@@ -257,6 +265,20 @@ local function buildPortrait(parent)
 	image.ResampleMode = Enum.ResamplerMode.Pixelated
 	image.Parent = parent
 	return image
+end
+
+local STATUS_BADGES = {
+	{ key = "frozen", glyph = "❄", color = Color3.fromRGB(150, 225, 255) },
+	{ key = "poison", glyph = "☠", color = Color3.fromRGB(150, 245, 110) },
+	{ key = "shock", glyph = "⚡", color = Color3.fromRGB(255, 226, 90) },
+}
+
+local function statusOf(hero)
+	return {
+		frozen = hero.frozen == true,
+		poison = (hero.poisonTurns or 0) > 0,
+		shock = hero.paralyzed == true or (hero.charge or 0) > 0,
+	}
 end
 
 local function buildTeamColumn(alignLeft)
@@ -495,6 +517,46 @@ local function buildTeamColumn(alignLeft)
 			table.insert(cross, dash)
 		end
 
+		local statusStrip = Instance.new("Frame")
+		statusStrip.Name = "StatusStrip"
+		statusStrip.AnchorPoint = Vector2.new(1, 0)
+		statusStrip.Position = UDim2.new(1, -3, 0, 17)
+		statusStrip.Size = UDim2.new(0, 44, 0, 12)
+		statusStrip.BackgroundTransparency = 1
+		statusStrip.ZIndex = 7
+		statusStrip.Parent = card
+
+		local statusLayout = Instance.new("UIListLayout")
+		statusLayout.FillDirection = Enum.FillDirection.Horizontal
+		statusLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		statusLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+		statusLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		statusLayout.Padding = UDim.new(0, 2)
+		statusLayout.Parent = statusStrip
+
+		local statusBadges = {}
+		for order, spec in ipairs(STATUS_BADGES) do
+			local badge = Instance.new("TextLabel")
+			badge.Name = spec.key
+			badge.LayoutOrder = order
+			badge.Size = UDim2.new(0, 13, 0, 12)
+			badge.BackgroundTransparency = 0.25
+			badge.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
+			badge.TextColor3 = spec.color
+			badge.Font = Enum.Font.GothamBold
+			badge.TextSize = 9
+			badge.Text = spec.glyph
+			badge.ZIndex = 8
+			badge.Visible = false
+			badge.Parent = statusStrip
+
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(0, 3)
+			corner.Parent = badge
+
+			statusBadges[spec.key] = badge
+		end
+
 		rows[index] = {
 			card = card,
 			stroke = stroke,
@@ -507,6 +569,7 @@ local function buildTeamColumn(alignLeft)
 			clickCatcher = clickCatcher,
 			cross = cross,
 			subs = subs,
+			statusBadges = statusBadges,
 			hero = nil,
 		}
 	end
@@ -838,7 +901,7 @@ local function renderPromotionSquares(state)
 				atual = nil
 			end
 
-			if square.state == "active" then
+			if square.state == "active" and square.mine then
 				if not atual then
 					tile:SetAttribute("BaseColor", PROMOTION_ACTIVE_COLOR_LOW)
 					-- A cor tem que ir pra LOW ANTES da tween nascer: uma tween
@@ -859,7 +922,15 @@ local function renderPromotionSquares(state)
 					promotionGlowTweens[square.hex] = nil
 				end
 
-				local color = (square.state == "used") and fallbackColor(tile) or PROMOTION_INACTIVE_COLOR
+				local color
+				if square.state == "used" then
+					color = fallbackColor(tile)
+				elseif square.state == "active" then
+					color = PROMOTION_ENEMY_COLOR
+				else
+					color = PROMOTION_INACTIVE_COLOR
+				end
+
 				tile:SetAttribute("BaseColor", color)
 				tile.Color = color
 			end
@@ -876,8 +947,10 @@ end
 -- antes desta guarda — ou seja, continua sempre fresco sem forçar re-render.
 local function rowSignature(hero)
 	if not hero then return "vazio" end
-	local signature = ("%d|%d|%d|%s|%s|%s"):format(hero.dataId, hero.currentHp, hero.attack,
-		tostring(hero.isAlive), tostring(hero.sideIndex), tostring(hero.hidden))
+	local status = statusOf(hero)
+	local signature = ("%d|%d|%d|%s|%s|%s|%s|%s|%s"):format(hero.dataId, hero.currentHp, hero.attack,
+		tostring(hero.isAlive), tostring(hero.sideIndex), tostring(hero.hidden),
+		tostring(status.frozen), tostring(status.poison), tostring(status.shock))
 
 	-- OS PEDAÇOS ENTRAM NA ASSINATURA. O card do Golem partido é desenhado com
 	-- dados que NÃO estão no herói pai — o corpo já morreu e não muda mais nunca.
@@ -903,6 +976,7 @@ local function renderRow(row, hero)
 
 	if not hero then
 		row.card.Visible = false
+		for _, badge in pairs(row.statusBadges) do badge.Visible = false end
 		return
 	end
 
@@ -925,6 +999,11 @@ local function renderRow(row, hero)
 
 	local alive = hero.isAlive
 	local broken = (not alive) and #pieces > 0
+
+	local status = statusOf(hero)
+	for key, badge in pairs(row.statusBadges) do
+		badge.Visible = alive and status[key] == true
+	end
 
 	row.card.Visible = true
 

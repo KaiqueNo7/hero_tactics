@@ -896,6 +896,97 @@ function BotBrain.PickShieldTarget(match, ownerId, options)
 	return best
 end
 
+local SEARCH_MEMORY = 4
+local SEARCH_GOAL_WEIGHT = 12
+local SEARCH_SPREAD_WEIGHT = 5
+local SEARCH_REVISIT_PENALTY = 9
+local SEARCH_STAY_PENALTY = 14
+
+local function RememberSearchTile(hero, hexId)
+	hero.searchMemory = hero.searchMemory or {}
+	table.insert(hero.searchMemory, hexId)
+	while #hero.searchMemory > SEARCH_MEMORY do
+		table.remove(hero.searchMemory, 1)
+	end
+end
+
+local function VisitedRecently(hero, hexId)
+	for _, seen in ipairs(hero.searchMemory or {}) do
+		if seen == hexId then return true end
+	end
+	return false
+end
+
+function BotBrain.SearchGoals(match, ctx, lastSeen)
+	local goals = {}
+
+	if lastSeen and HexGrid.Exists(lastSeen) then
+		table.insert(goals, lastSeen)
+	end
+
+	if ctx.promotionHex then
+		table.insert(goals, ctx.promotionHex)
+	end
+
+	-- Sem pista nenhuma, os alvos viram as casas mais LONGE do time: é o que
+	-- transforma "andar por andar" em cobertura de tabuleiro.
+	local far, bestScore = nil, -1
+	for _, hex in ipairs(HexGrid.GetAllHexes()) do
+		local id = hex.id or hex
+		local nearest = math.huge
+		for _, ally in ipairs(ctx.allies) do
+			nearest = math.min(nearest, HexGrid.Distance(id, ally.position))
+		end
+		if nearest > bestScore then
+			far, bestScore = id, nearest
+		end
+	end
+	if far then table.insert(goals, far) end
+
+	return goals
+end
+
+-- Uma ação de BUSCA, não de combate: sem inimigo visível não há o que pontuar
+-- em ScoreAttack nem em ScorePosition (que lê ctx.enemies e devolveria zero pra
+-- toda casa, deixando o bot parado). Aqui a nota vem de três coisas: encostar no
+-- objetivo, abrir distância dos aliados e não repisar o que acabou de ser visto.
+function BotBrain.SearchPlanFor(match, hero, ctx, goal)
+	if not goal then return nil end
+	if FindStatusEffect(hero, "paralysis") then return nil end
+	if match.turn.moved[hero.uid] or match.turn.attacked[hero.uid] then return nil end
+
+	local positions = { [hero.position] = true }
+	for hexId in pairs(HexGrid.ComputeReach(hero.position, MoveRangeOf(match, hero), FreeChecker(match))) do
+		if IsFree(match, hexId) then positions[hexId] = true end
+	end
+
+	local best = nil
+	for hexId in pairs(positions) do
+		local score = -HexGrid.Distance(hexId, goal) * SEARCH_GOAL_WEIGHT
+
+		local nearest = math.huge
+		for _, ally in ipairs(ctx.allies) do
+			if ally ~= hero then
+				nearest = math.min(nearest, HexGrid.Distance(hexId, ally.position))
+			end
+		end
+		if nearest ~= math.huge then
+			score += math.min(nearest, 4) * SEARCH_SPREAD_WEIGHT
+		end
+
+		if VisitedRecently(hero, hexId) then score -= SEARCH_REVISIT_PENALTY end
+		if hexId == hero.position then score -= SEARCH_STAY_PENALTY end
+
+		if not best or score > best.score then
+			best = { hero = hero, position = hexId, score = score }
+		end
+	end
+
+	return best
+end
+
+BotBrain.RememberSearchTile = RememberSearchTile
+
 -- ===================== API =====================
 -- Só o que o MatchManager chama. Todo o resto — as camadas de pontuação, as
 -- heurísticas por habilidade, os ajudantes de linha e empurrão — fica privado:
