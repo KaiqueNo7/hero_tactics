@@ -10,9 +10,9 @@ local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 
-local BALANCE_SIM_MATCHES = 300
+local BALANCE_SIM_MATCHES = 1000
 local BALANCE_SIM_SEED = nil
-local CONCURRENT = 30
+local CONCURRENT = 300
 local PROGRESS_EVERY = 25
 local HEROES_PER_SIDE = 3
 local MIN_SYNERGY_GAMES = 5

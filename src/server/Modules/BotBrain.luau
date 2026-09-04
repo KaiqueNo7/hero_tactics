@@ -110,6 +110,7 @@ local function ThreatScore(hero)
 	-- mais saindo da sombra, e some de novo assim que ninguém estiver perto.
 	-- Quem chega aqui já está visível (o invisível nem entra na lista de alvos).
 	if HasSkill(hero, "ambush") then threat += 12 end
+	if HasSkill(hero, "weakPoint") then threat += 8 end
 
 	if HasSkill(hero, "poisonAttack") then threat += 4 end
 	if HasSkill(hero, "poisonFlask") then threat += 3 end
@@ -130,6 +131,7 @@ local function CarryValue(hero)
 	if HasSkill(hero, "beyondFront") then value += 4 end
 	if HasSkill(hero, "aloneIsBetter") then value += 4 end
 	if HasSkill(hero, "ambush") then value += 5 end
+	if HasSkill(hero, "weakPoint") then value += 4 end
 	if HasSkill(hero, "flameStrike") then value += 3 end
 	if HasSkill(hero, "health") then value += 6 end -- cura é dano que não se perde
 	if HasSkill(hero, "longShot") then value += GameConfig.WREN_RANGE end
@@ -455,6 +457,35 @@ local function CounterDamage(attacker, target, fromPos, damage)
 	return incoming
 end
 
+local WEAK_POINT_ATTACK_VALUE = 55
+local WEAK_POINT_CHAIN_VALUE = 18
+local WEAK_POINT_POSITION_VALUE = 30
+
+local function HitsWeakPoint(target, fromPos)
+	return target.weakPoint ~= nil
+		and HexGrid.DirectionBetween(target.position, fromPos) == target.weakPoint
+end
+
+local function AlreadyChained(match, attacker, target)
+	local hits = match.turn and match.turn.weakChain and match.turn.weakChain[attacker.uid]
+	return hits ~= nil and hits[target.uid] == true
+end
+
+local function ChainPotential(match, attacker, target, ctx)
+	local reach = MoveRangeOf(match, attacker) + attacker.attackRange
+	local count = 0
+
+	for _, enemy in ipairs(ctx.enemies) do
+		if enemy ~= target and enemy.isAlive
+			and not AlreadyChained(match, attacker, enemy)
+			and HexGrid.Distance(target.position, enemy.position) <= reach then
+			count += 1
+		end
+	end
+
+	return count
+end
+
 local function ScoreAttack(match, attacker, target, fromPos, ctx)
 	if TauntBlocks(match, attacker, target, fromPos) then return nil end
 	if HasSkill(target, "dodge") and MatchQuery.DodgeHexFor(match, target, fromPos) then return nil end
@@ -516,6 +547,12 @@ local function ScoreAttack(match, attacker, target, fromPos, ctx)
 		for _, ally in ipairs(AlliesAdjacentTo(match, attacker, fromPos)) do
 			if #ally.statusEffects > 0 then score += 25 end
 		end
+	end
+
+	if HasSkill(attacker, "weakPoint") and HitsWeakPoint(target, fromPos)
+		and not AlreadyChained(match, attacker, target) then
+		score += WEAK_POINT_ATTACK_VALUE
+		score += ChainPotential(match, attacker, target, ctx) * WEAK_POINT_CHAIN_VALUE
 	end
 
 	score -= CounterDamage(attacker, target, fromPos, damage) * 7
@@ -721,6 +758,14 @@ local function ScorePosition(match, hero, fromPos, ctx)
 	-- e a ausência de contra-ataque) passa por cima deste bônus sozinho.
 	if HasSkill(hero, "stealth") and nearest > GameConfig.STEALTH_RANGE then
 		score += 26
+	end
+
+	if HasSkill(hero, "weakPoint") then
+		for _, enemy in ipairs(enemies) do
+			if HitsWeakPoint(enemy, fromPos) and not AlreadyChained(match, hero, enemy) then
+				score += WEAK_POINT_POSITION_VALUE
+			end
+		end
 	end
 
 	-- ===== ENFRENTANDO O NASH =====

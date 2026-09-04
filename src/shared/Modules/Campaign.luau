@@ -61,6 +61,8 @@ Campaign.FIGHTS = {
 	{ hero = 25, group = 6, team = { 25, 24, 6 }, island = "Boske" },
 	{ hero = 26, group = 6, team = { 26, 1, 9 }, island = "Boske" },   -- Spyke: Spyke, Ralph, Bramm — dois vizinhos que aproveitam o +1 dele, e é o time que ensina a aura
 	{ hero = 27, group = 6, team = { 27, 4, 8 }, island = "Boske" }, -- Kira: Kira, Blade, Elaria — ela puxa o foco e blinda o Blade, que é quem realmente machuca
+
+	{ hero = 28, group = 7, team = { 28, 6, 8 } },
 }
 
 -- Quantos heróis abrem o PvP. A condição é a CONTAGEM, não a lista: seis

@@ -1717,6 +1717,123 @@ do
 	end
 end
 
+do
+	local centro
+	for _, hex in ipairs(hexes) do
+		if #HexGrid.GetNeighbors(idOf(hex)) == 6 then centro = idOf(hex) break end
+	end
+
+	if centro then
+		check("o grid tem 6 direcoes", HexGrid.DIRECTION_COUNT == 6, HexGrid.DIRECTION_COUNT)
+
+		local vistos = {}
+		for dir = 1, HexGrid.DIRECTION_COUNT do
+			local vizinho = HexGrid.NeighborInDirection(centro, dir)
+			check("direcao " .. dir .. " tem vizinho", vizinho ~= nil)
+
+			if vizinho then
+				check("direcao " .. dir .. " e ida e volta",
+					HexGrid.DirectionBetween(centro, vizinho) == dir,
+					HexGrid.DirectionBetween(centro, vizinho))
+				check("direcao " .. dir .. " nao repete vizinho", vistos[vizinho] == nil)
+				vistos[vizinho] = true
+
+				local delta = HexGrid.GetWorldPosition(vizinho) - HexGrid.GetWorldPosition(centro)
+				local esperado = HexGrid.DirectionAngle(dir)
+				local real = math.atan2(delta.Z, delta.X)
+				local erro = math.abs(((esperado - real + math.pi) % (2 * math.pi)) - math.pi)
+				check("direcao " .. dir .. ": o angulo bate com o mundo", erro < 0.001, erro)
+			end
+		end
+
+		local longe = nil
+		for _, hex in ipairs(hexes) do
+			if HexGrid.Distance(idOf(hex), centro) == 2 then longe = idOf(hex) break end
+		end
+		check("nao adjacente nao tem direcao",
+			longe ~= nil and HexGrid.DirectionBetween(centro, longe) == nil)
+		check("a propria casa nao tem direcao", HexGrid.DirectionBetween(centro, centro) == nil)
+	end
+end
+
+do
+	local ZARO_ID = HeroData.GetByName("Zaro").id
+
+	local centro
+	for _, hex in ipairs(hexes) do
+		if #HexGrid.GetNeighbors(idOf(hex)) == 6 then centro = idOf(hex) break end
+	end
+
+	if centro then
+		local alvoHex = centro
+		local ladoCerto = HexGrid.NeighborInDirection(alvoHex, 1)
+		local ladoErrado = HexGrid.NeighborInDirection(alvoHex, 4)
+
+		local function Cenario(zaroHex)
+			local zaro = FakeHero(ZARO_ID, "A", zaroHex)
+			local alvo = FakeHero(6, "B", alvoHex)
+			alvo.weakPoint = 1
+			zaro.currentHp = zaro.maxHp - 5
+
+			local turn = { moved = {}, attacked = {}, bonusMove = {}, weakChain = {} }
+			turn.attacked[zaro.uid] = true
+
+			local api = FakeApi()
+			api.Heal = function(hero, amount) hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp) end
+			api.WeakPointDirection = HexGrid.DirectionBetween
+			api.RerollWeakPoint = function(hero) hero.weakPoint = 4 end
+			api.RecordChainHit = function(hero, target)
+				local hits = turn.weakChain[hero.uid] or {}
+				hits[target.uid] = true
+				turn.weakChain[hero.uid] = hits
+			end
+			api.GrantExtraAction = function(hero, includeAttack)
+				turn.bonusMove[hero.uid] = true
+				if includeAttack then turn.attacked[hero.uid] = nil end
+			end
+
+			local ctx = { hero = zaro, target = alvo, api = api }
+			ctx.trigger = "onAttack"
+			Skills.weakPoint.apply(ctx)
+			ctx.trigger = "onAttackResolved"
+			Skills.weakPoint.apply(ctx)
+
+			return zaro, alvo, turn, ctx
+		end
+
+		local zaro, alvo, turn, ctx = Cenario(ladoCerto)
+		check("Zaro) atacar pelo lado certo ativa o Ponto Fraco", ctx.weakPointHit == true)
+		check("Zaro) a ativacao cura", zaro.currentHp == zaro.maxHp - 5 + GameConfig.WEAK_POINT_HEAL,
+			zaro.currentHp)
+		check("Zaro) a ativacao devolve o ataque", turn.attacked[zaro.uid] == nil)
+		check("Zaro) a ativacao devolve o movimento", turn.bonusMove[zaro.uid] == true)
+		check("Zaro) o alvo ganha um Ponto Fraco novo", alvo.weakPoint == 4, alvo.weakPoint)
+		check("Zaro) o alvo entra na cadeia", turn.weakChain[zaro.uid][alvo.uid] == true)
+
+		local zaroErrado, alvoErrado, turnErrado, ctxErrado = Cenario(ladoErrado)
+		check("Zaro) lado errado nao ativa", ctxErrado.weakPointHit == false)
+		check("Zaro) lado errado nao cura", zaroErrado.currentHp == zaroErrado.maxHp - 5)
+		check("Zaro) lado errado nao devolve acao", turnErrado.attacked[zaroErrado.uid] == true)
+		check("Zaro) lado errado nao re-sorteia", alvoErrado.weakPoint == 1)
+		check("Zaro) mesmo sem ativar, o alvo entra na cadeia",
+			turnErrado.weakChain[zaroErrado.uid][alvoErrado.uid] == true)
+
+		local zaroCheio = FakeHero(ZARO_ID, "A", ladoCerto)
+		local antes = zaroCheio.currentHp
+		local apiCheio = FakeApi()
+		apiCheio.Heal = function(hero, amount) hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp) end
+		apiCheio.WeakPointDirection = HexGrid.DirectionBetween
+		local alvoCheio = FakeHero(6, "B", alvoHex)
+		alvoCheio.weakPoint = 1
+		local ctxCheio = { hero = zaroCheio, target = alvoCheio, api = apiCheio }
+		ctxCheio.trigger = "onAttack"
+		Skills.weakPoint.apply(ctxCheio)
+		ctxCheio.trigger = "onAttackResolved"
+		Skills.weakPoint.apply(ctxCheio)
+		check("Zaro) a cura respeita o HP maximo", zaroCheio.currentHp == antes, zaroCheio.currentHp)
+	end
+end
+
 if #failures == 0 then
 	print(("CoreChecks: %d verificacoes, tudo certo."):format(passed))
 else

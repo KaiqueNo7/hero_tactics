@@ -1119,4 +1119,31 @@ Skills.aegis = {
 	end,
 }
 
+Skills.weakPoint = {
+	triggers = { "onAttack", "onAttackResolved" },
+	apply = function(ctx)
+		local target = ctx.target
+		if not target then return end
+
+		if ctx.trigger == "onAttack" then
+			ctx.weakPointHit = target.weakPoint ~= nil
+				and target.weakPoint == ctx.api.WeakPointDirection(target.position, ctx.hero.position)
+			return
+		end
+
+		ctx.api.RecordChainHit(ctx.hero, target)
+
+		if not ctx.weakPointHit then return end
+
+		ctx.api.Effect(target, "weakPoint")
+		ctx.api.PlaySkillSound("weakPoint")
+		ctx.api.Heal(ctx.hero, GameConfig.WEAK_POINT_HEAL, ctx.hero)
+		ctx.api.GrantExtraAction(ctx.hero, true)
+
+		if target.isAlive then
+			ctx.api.RerollWeakPoint(target)
+		end
+	end,
+}
+
 return Skills

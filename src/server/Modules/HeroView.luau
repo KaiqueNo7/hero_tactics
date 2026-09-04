@@ -344,6 +344,7 @@ local SKILL_SOUNDS = {
 	raiseSkulls = "SkillRaiseSkulls",
 	dodge = "SkillDodge",
 	aegis = "SkillAegis",
+	weakPoint = "SkillWeakPoint",
 }
 
 function HeroView.PlaySkillSound(key, view)
@@ -397,6 +398,8 @@ local SKILL_EFFECTS = {
 	-- o goodLuck que não deu sorte: fumacinha cinza, pra ficar claro que a
 	-- habilidade rodou e não deu em nada (antes era o "Nada..." escrito)
 	goodLuckFail  = { color = Color3.fromRGB(140, 140, 150), texture = FX_SMOKE, shape = "rise",  count = 8,  size = 2.2, speed = 3 },
+
+	weakPoint     = { color = Color3.fromRGB(255, 255, 255), texture = FX_SPARK, shape = "burst", count = 26, size = 2.6, speed = 18 },
 
 	-- prêmios do barril: sobem do herói que quebrou, com as cores que o jogo já
 	-- usa pra vida (verde) e pra ataque (o mesmo âmbar do crachá de buff)
@@ -2541,6 +2544,76 @@ function HeroView.SetFrenzyAura(hero, on)
 	end
 
 	SetEmitters(host, true)
+end
+
+local WEAK_POINT_EDGE = "WeakPointEdge"
+local WEAK_POINT_ATTRIBUTE = "WeakPointDirection"
+local WEAK_POINT_COLOR = Color3.fromRGB(255, 255, 255)
+local WEAK_POINT_DIM = Color3.fromRGB(150, 160, 185)
+local WEAK_POINT_THICKNESS = RING_THICKNESS * 1.15
+local WEAK_POINT_LIFT = 0.06
+local WEAK_POINT_PULSE = 0.75
+
+local function WeakPointCFrame(hero, direction)
+	local view = hero.view
+	local angle = HexGrid.DirectionAngle(direction)
+	if not (view and angle) then return nil end
+
+	local center = HexGrid.GetWorldPosition(hero.position, view.origin)
+		+ Vector3.new(0, TILE_TOP_Y + RING_HEIGHT + WEAK_POINT_LIFT, 0)
+
+	local circumradius = HexGrid.GetHexSize() * RING_SCALE
+	local apothem = circumradius * math.sqrt(3) / 2
+
+	local outward = Vector3.new(math.cos(angle), 0, math.sin(angle))
+	local tangent = Vector3.new(-math.sin(angle), 0, math.cos(angle))
+	local position = center + outward * apothem
+
+	return CFrame.new(position, position + tangent), circumradius
+end
+
+function HeroView.SetWeakPoint(hero, direction)
+	if not (hero.part and hero.part.Parent) then return end
+
+	local existing = hero.part:FindFirstChild(WEAK_POINT_EDGE)
+
+	if not direction then
+		if existing then existing:Destroy() end
+		return
+	end
+
+	if existing and existing:GetAttribute(WEAK_POINT_ATTRIBUTE) == direction then return end
+
+	local cframe, circumradius = WeakPointCFrame(hero, direction)
+	if not cframe then return end
+
+	if existing then existing:Destroy() end
+
+	local edge = Instance.new("Part")
+	edge.Name = WEAK_POINT_EDGE
+	edge.Size = Vector3.new(WEAK_POINT_THICKNESS, WEAK_POINT_THICKNESS, circumradius + WEAK_POINT_THICKNESS)
+	edge.CFrame = cframe
+	edge.Color = WEAK_POINT_COLOR
+	edge.Material = Enum.Material.Neon
+	edge.CastShadow = false
+	edge:SetAttribute(WEAK_POINT_ATTRIBUTE, direction)
+	edge:SetAttribute("BaseTransparency", 0)
+	AttachTo(hero.part, edge)
+
+	local glow = Instance.new("PointLight")
+	glow.Name = "WeakPointGlow"
+	glow.Color = WEAK_POINT_COLOR
+	glow.Brightness = 1.4
+	glow.Range = 7
+	glow.Parent = edge
+
+	TweenService:Create(edge,
+		TweenInfo.new(WEAK_POINT_PULSE, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ Color = WEAK_POINT_DIM }):Play()
+
+	TweenService:Create(glow,
+		TweenInfo.new(WEAK_POINT_PULSE, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ Brightness = 0.35 }):Play()
 end
 
 function HeroView.UpdateStats(hero)

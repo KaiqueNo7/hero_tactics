@@ -205,6 +205,11 @@ HeroData.CATALOG = {
 		abilities = { "aegis" },
 		color = Color3.fromRGB(240, 205, 120),
 		sprite = "86628005150597", spriteSize = Vector2.new(400, 400), scale = 1.00 },
+
+	{ id = 28, name = "Zaro", attack = 3, hp = 15, ability = nil,
+		abilities = { "weakPoint" },
+		color = Color3.fromRGB(190, 200, 225),
+		sprite = "73708047829791", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 }
 
 -- ===== TAMANHO APARENTE =====
@@ -323,6 +328,9 @@ HeroData.SKILL_INFO = {
 	flameHeal   = { name = "Calor da Família", desc = ("Ao pisar numa casa em chamas (dela ou do Karo), recupera %d de vida por casa.")
 		:format(GameConfig.LUCY_FLAME_HEAL) },
 	emberShield = { name = "Chama que Protege", desc = "Aliados adjacentes recebem 1 ponto a menos de dano ao serem atacados." },
+
+	weakPoint = { name = "Ponto Fraco", desc = ("Cada inimigo tem um lado aberto, marcado por uma borda branca no hexágono dele. Atacar por esse lado cura %d de vida, sorteia um lado novo pro alvo e devolve movimento E ataque — dá pra encadear em outro inimigo, mas nunca no mesmo duas vezes na sequência.")
+		:format(GameConfig.WEAK_POINT_HEAL) },
 
 	-- Zeff
 	gustPush = { name = "Rajada", desc = ("Ao atacar, empurra 1 casa para longe do alvo todo aliado do alvo que estiver colado nele, e o próprio alvo 1 casa para trás. Colado sem para onde ir leva %d de dano; alvo sem para onde ir não se move e o golpe causa +%d.")

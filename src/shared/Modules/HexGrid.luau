@@ -176,6 +176,36 @@ function HexGrid.GetNeighbors(id)
 	return neighbors
 end
 
+HexGrid.DIRECTION_COUNT = #AXIAL_DIRECTIONS
+
+function HexGrid.NeighborInDirection(id, direction)
+	local hex = hexes[id]
+	local delta = AXIAL_DIRECTIONS[direction]
+	if not (hex and delta) then return nil end
+
+	return axialToId[(hex.q + delta[1]) .. "," .. (hex.r + delta[2])]
+end
+
+function HexGrid.DirectionBetween(fromId, toId)
+	local from, to = hexes[fromId], hexes[toId]
+	if not (from and to) then return nil end
+
+	local dq, dr = to.q - from.q, to.r - from.r
+	for index, delta in ipairs(AXIAL_DIRECTIONS) do
+		if delta[1] == dq and delta[2] == dr then return index end
+	end
+	return nil
+end
+
+function HexGrid.DirectionAngle(direction)
+	local delta = AXIAL_DIRECTIONS[direction]
+	if not delta then return nil end
+
+	local x = 3 / 2 * delta[1]
+	local z = math.sqrt(3) / 2 * delta[1] + math.sqrt(3) * delta[2]
+	return math.atan2(z, x)
+end
+
 -- Casa existe e (na visão de quem perguntou) está vazia. Sem `isFree` assume
 -- tabuleiro vazio: serve pro cliente, que já filtra pelo próprio snapshot.
 function HexGrid.Exists(id)
