@@ -1211,11 +1211,50 @@ end
 -- pintura das casas e a regra do servidor discordaram.
 local REJECTION_TEXT = {
 	NOT_YOUR_TURN = "Não é o turno deste herói.",
-	OUT_OF_RANGE = "Alvo fora do alcance.",
+	MOVE_OUT_OF_RANGE = "Casa fora do alcance",
+	ATTACK_OUT_OF_RANGE = "Inimigo fora do alcance",
 	OCCUPIED = "Esta casa está ocupada.",
 	INVALID_TARGET = "Alvo inválido.",
 	INVALID_MOVE = "Movimento inválido.",
 }
+
+local feedback = { gap = 0.9, lastText = nil, lastAt = 0 }
+
+function feedback.refuse(text)
+	local now = os.clock()
+	if text == feedback.lastText and now - feedback.lastAt < feedback.gap then return end
+	feedback.lastText, feedback.lastAt = text, now
+
+	flashTurnBanner(text, WAIT_TURN_COLOR)
+	PlayUiSound("ActionBlocked")
+end
+
+function feedback.outOfReach(hexId)
+	local selected = heroByUid(selectedUid)
+	if not (selected and hexId) then return end
+
+	local occupant = nil
+	for _, other in ipairs(state.heroes) do
+		if other.position == hexId and (other.isAlive or not other.graveDestroyed) then
+			occupant = other
+			break
+		end
+	end
+
+	if occupant then
+		if occupant.isMine or not occupant.isAlive then return end
+		if selected.hasAttacked then return end
+		feedback.refuse(REJECTION_TEXT.ATTACK_OUT_OF_RANGE)
+		return
+	end
+
+	for _, barrel in ipairs(state.barrels or {}) do
+		if barrel.position == hexId then return end
+	end
+
+	if selected.hasMoved then return end
+	feedback.refuse(REJECTION_TEXT.MOVE_OUT_OF_RANGE)
+end
 
 GameAction.OnClientEvent:Connect(function(action, payload)
 	if action ~= "reject" then return end
@@ -1223,8 +1262,7 @@ GameAction.OnClientEvent:Connect(function(action, payload)
 	local text = REJECTION_TEXT[payload]
 	if not text then return end
 
-	flashTurnBanner(text, WAIT_TURN_COLOR)
-	PlayUiSound("ActionBlocked")
+	feedback.refuse(text)
 end)
 
 local messageLabel = Instance.new("TextLabel")
@@ -2516,6 +2554,8 @@ mouse.Button1Down:Connect(function()
 			selectHero(newUid)
 		elseif selectedUid and hero and attackTargets[hero.position] then
 			GameAction:FireServer("attack", selectedUid, hero.uid)
+		elseif selectedUid and hero then
+			feedback.outOfReach(hexId or hero.position)
 		end
 		return
 	end
@@ -2525,6 +2565,8 @@ mouse.Button1Down:Connect(function()
 			GameAction:FireServer("attack", selectedUid, attackTargets[hexId])
 		elseif moveTargets[hexId] then
 			GameAction:FireServer("move", selectedUid, hexId)
+		else
+			feedback.outOfReach(hexId)
 		end
 	end
 end)
@@ -2558,6 +2600,46 @@ local function queueMessage(text)
 	pumpMessages()
 end
 
+do
+	local label = Instance.new("TextLabel")
+	label.Name = "ReconnectWait"
+	label.Size = UDim2.new(0, 520, 0, 34)
+	label.Position = UDim2.new(0.5, -260, 0, 96)
+	label.BackgroundColor3 = Color3.fromRGB(28, 24, 34)
+	label.BackgroundTransparency = 0.25
+	label.BorderSizePixel = 0
+	label.TextColor3 = Color3.fromRGB(255, 205, 120)
+	label.TextStrokeTransparency = 0.4
+	label.TextScaled = true
+	label.Font = Enum.Font.GothamBold
+	label.Text = ""
+	label.Visible = false
+	label.Parent = gui
+
+	feedback.waitLabel = label
+	feedback.waitSeconds = nil
+	feedback.waitMine = false
+end
+
+function feedback.paintWait()
+	if not feedback.waitSeconds then
+		feedback.waitLabel.Visible = false
+		return
+	end
+
+	feedback.waitLabel.Visible = true
+	feedback.waitLabel.Text = (feedback.waitMine and "Reconectando... (%ds)"
+		or "Adversário desconectado. Aguardando reconexão... (%ds)")
+		:format(math.max(0, math.ceil(feedback.waitSeconds)))
+end
+
+function feedback.renderWait(snapshot)
+	local waiting = snapshot and snapshot.reconnect
+	feedback.waitSeconds = waiting and waiting.secondsLeft or nil
+	feedback.waitMine = waiting ~= nil and waiting.mine == true
+	feedback.paintWait()
+end
+
 -- ===== CRONÔMETRO LOCAL =====
 RunService.Heartbeat:Connect(function(dt)
 	if secondsLeft then
@@ -2566,6 +2648,11 @@ RunService.Heartbeat:Connect(function(dt)
 		if secondsLeft <= 10 then
 			timerLabel.Text = ("%d"):format(math.ceil(secondsLeft))
 		end
+	end
+
+	if feedback.waitSeconds then
+		feedback.waitSeconds = math.max(0, feedback.waitSeconds - dt)
+		feedback.paintWait()
 	end
 end)
 
@@ -2649,6 +2736,8 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	-- os heróis é justamente o que ensina que elas existem e que ainda não
 	-- valem. Só mexe em cor de casa, então não depende da GUI de batalha.
 	renderPromotionSquares(state)
+
+	feedback.renderWait(state)
 
 	-- ANTES do desvio por fase, como as casas de promoção e pelo mesmo motivo:
 	-- mexe só em objeto do Workspace, não depende da GUI de batalha, e um

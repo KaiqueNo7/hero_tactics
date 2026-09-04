@@ -260,6 +260,8 @@ GameConfig.TURN_TIME_LIMIT = 60 -- segundos por turno; 0 desliga o cronômetro
 GameConfig.PLACEMENT_TIME_LIMIT = 60
 GameConfig.BOT_PLACE_DELAY = 0.8 -- pausa antes do bot escolher, pra dar pra acompanhar
 
+GameConfig.RECONNECT_WINDOW = 90
+
 -- ===== CASAS DE PROMOÇÃO =====
 -- Duas casas extras na ponta da coluna central (C), além da grade normal de
 -- C1..C6 — ver HexGrid.Generate. Ficam trancadas até o turno (rodada)

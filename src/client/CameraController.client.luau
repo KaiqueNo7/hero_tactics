@@ -23,6 +23,9 @@ local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
+local DEFAULT_FOV = camera.FieldOfView
+local matchConnections = {}
+
 -- ===== ENQUADRAMENTO (medido em jogo) =====
 -- Calibrado no voo livre (F) e copiado do HUD: o log de lá usa a MESMA origem
 -- (boardCenter) e a mesma convenção de ângulo do applyCamera, então os números
@@ -320,6 +323,8 @@ local function placeCharacter(character, standPos, lookAt)
 		character:ScaleTo(GameConfig.PLAYER_STAND_SCALE)
 	end)
 
+	humanoid.Sit = false
+
 	-- standPos vem no nível do CHÃO; a altura do boneco entra aqui. O alvo do
 	-- olhar sobe junto, senão o personagem encara o piso em vez do adversário.
 	local restY = standPos.Y + standingRootHeight(character, humanoid, rootPart)
@@ -378,11 +383,21 @@ local function returnToLobby()
 	if not activated then return end
 	activated = false
 	freeFlying = false
+	flyLooking = false
+
+	for _, connection in ipairs(matchConnections) do
+		connection:Disconnect()
+	end
+	table.clear(matchConnections)
+
+	finishToken += 1
 
 	local platform = workspace:FindFirstChild("PlayerStand")
 	if platform then platform:Destroy() end
 
 	camera.CameraType = Enum.CameraType.Custom
+	camera.FieldOfView = DEFAULT_FOV
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 	setDefaultControls(true) -- devolve o thumbstick pra andar pelo lobby
 
 	local character = player.Character
@@ -439,18 +454,18 @@ local function activateBoardCamera(hexSize, boardOffset, slot)
 	buildStandPlatform(standPos, groundY)
 	placeCharacter(player.Character or player.CharacterAdded:Wait(), standPos, lookAt)
 
-	player.CharacterAdded:Connect(function(newCharacter)
+	table.insert(matchConnections, player.CharacterAdded:Connect(function(newCharacter)
 		if activated then
 			placeCharacter(newCharacter, standPos, lookAt)
 		end
-	end)
+	end))
 
 	camera.CameraType = Enum.CameraType.Scriptable
-	camera:GetPropertyChangedSignal("CameraType"):Connect(function()
+	table.insert(matchConnections, camera:GetPropertyChangedSignal("CameraType"):Connect(function()
 		if activated and camera.CameraType ~= Enum.CameraType.Scriptable then
 			camera.CameraType = Enum.CameraType.Scriptable
 		end
-	end)
+	end))
 
 	buildDebugReadout()
 	resetZoom()

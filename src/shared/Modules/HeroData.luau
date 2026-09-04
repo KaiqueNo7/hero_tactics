@@ -43,19 +43,13 @@ function HeroData.GetFrameOffset(data)
 	)
 end
 
--- ===== PROPORÇÃO DA ARTE (por que precisa estar guardada) =====
--- No tabuleiro o sprite é desenhado com ScaleType.Fit dentro de uma moldura
--- 165x231 (RETRATO). Fit preserva a proporção e CENTRALIZA: arte mais larga que
--- a moldura entra "deitada" e sobra faixa vazia em cima E embaixo. A faixa de
--- baixo é o que faz o herói parecer flutuando — quem fica plantado na casa é o
--- pé da MOLDURA, não o do desenho. O Golem (447x361, largo) perdia 21% da
--- altura só nessa faixa, e ampliar a escala dele ampliou a faixa junto.
---
--- Fit não tem alinhamento ("encosta embaixo" não existe), então o HeroView
--- desconta a faixa na mão — e pra isso precisa da proporção da arte, que o
--- engine não expõe em runtime. Daí o spriteSize: é o tamanho em pixels do
--- arquivo, que dá pra ler nas propriedades da imagem ao trocar um sprite.
--- Errar o número não quebra nada, só desalinha o pé daquele herói.
+function HeroData.GetByName(name)
+	for _, data in ipairs(HeroData.CATALOG) do
+		if data.name == name then return data end
+	end
+	return nil
+end
+
 function HeroData.GetArtAspect(data)
 	local rect = data and data.spriteRect
 	if rect then return rect[3] / rect[4] end
@@ -313,7 +307,7 @@ HeroData.SKILL_INFO = {
 	stealthHeal   = { name = "Sombra Densa", desc = "Recupera 1 de vida a cada turno enquanto estiver invisível." },
 	ambush        = { name = "Emboscada",    desc = ("O ataque que sai da invisibilidade causa +%d de dano e não pode ser revidado, venha ele de onde vier. Revelado, ele volta na hora ao ataque de ficha.")
 		:format(GameConfig.AMBUSH_BONUS_DAMAGE) },
-	huntInstinct  = { name = "Instinto de Caça", desc = "Ao atingir um inimigo isolado sem abatê-lo, pode se mover de novo. Ao abater o alvo, recupera movimento E ataque, e volta à invisibilidade se não sobrar ninguém ao lado — abates em sequência encadeiam sem limite." },
+	huntInstinct  = { name = "Instinto de Caça", desc = "Ao atingir um inimigo isolado sem abatê-lo, pode se mover de novo. Ao abater o alvo, recupera movimento E ataque, e volta à invisibilidade na hora, mesmo com inimigo colado — abates em sequência encadeiam sem limite." },
 	shatter       = { name = "Corpo de Pedra", desc = "Ao perder a primeira vida, se parte em dois golens menores: 2 de ataque e 5 de vida cada. Os pedaços não deixam túmulo — o Golem é enterrado uma vez só, quando o último deles cair." },
 
 	-- Kira

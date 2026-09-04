@@ -31,10 +31,6 @@ local LobbyZoneBuilder = require(ServerScriptService.Modules.LobbyZoneBuilder)
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 local RewardQueueService = require(ServerScriptService.Modules.RewardQueueService)
-
--- Mesmo motivo do Store.server acordar o CoinService: o TutorialService cria o
--- remote e escuta entrada/saída de jogador ao ser exigido, e ninguém mais o
--- exige — o tutorial é entre o cliente e o DataStore, a partida não sabe dele.
 local TutorialService = require(ServerScriptService.Modules.TutorialService)
 
 local PlaceHero = ReplicatedStorage.Remotes.PlaceHero
@@ -42,13 +38,6 @@ local GameAction = ReplicatedStorage.Remotes.GameAction
 local LobbyStatus = ReplicatedStorage.Remotes.LobbyStatus
 
 local TOUCH_DEBOUNCE = 1.5
-
--- Os pads são construídos à mão no place, e onde eles moram é decisão de quem
--- edita o cenário: agrupar o lobby inteiro numa pasta (Workspace.Base) tirava os
--- dois da raiz do Workspace, o WaitForChild direto ficava pendurado pra sempre e
--- ninguém conseguia entrar em partida nenhuma — sem erro na saída, só silêncio.
--- Agora procura em qualquer profundidade, e continua esperando o que ainda não
--- replicou.
 local PAD_WAIT_TIMEOUT = 20
 
 local function WaitForPad(name)
@@ -72,9 +61,6 @@ local pvpPad = WaitForPad("StartPvpMatch")
 local queue = {}
 local lastTouch = {}
 
--- ===================== PADS =====================
--- Os pads vieram do build à mão soltos e tortos; deixa em pé, ancorado e
--- com placa legível pra virar um botão de verdade.
 local function DecoratePad(pad, color, title, subtitle)
 	if not pad then return end
 
@@ -124,54 +110,18 @@ local function DecoratePad(pad, color, title, subtitle)
 	subtitleLabel.Parent = billboard
 end
 
--- O pad do bot continua sendo treino LIVRE (time sorteado, sem prêmio). Quem
--- desbloqueia herói é o painel CAMPANHA, no menu do lobby.
 DecoratePad(botPad, Color3.fromRGB(60, 170, 130), "TREINO CONTRA O BOT", "campanha: menu CAMPANHA")
 DecoratePad(pvpPad, Color3.fromRGB(200, 70, 70), "JOGAR CONTRA JOGADOR", "pise para entrar na fila")
 
--- ===================== QUADRADOS DA CAMPANHA =====================
--- Um pad por confronto, com o retrato do herói e o nome flutuando em cima.
---
--- ADOTA o que já existir: se houver uma Part chamada FightPad_<id> em qualquer
--- lugar do Workspace, ela é usada como está — posição, tamanho e material do
--- jeito que foram deixados no Studio. Só quando não existe é que uma é criada,
--- numa grade solta perto da neve. É o mesmo acordo dos pads de bot e PvP: o
--- cenário é de quem edita o place, o script só liga o comportamento.
---
--- A COR e o CADEADO não saem daqui: o estado (aberto/trancado/concluído) é POR
--- JOGADOR, e uma Part tem uma cor só pra todo mundo. Quem pinta é o cliente
--- (LobbyMenu), na cópia dele, pela tag CollectionService abaixo.
-
 local FIGHT_PAD_SIZE = Vector3.new(10, 1, 11)
-local FIGHT_PAD_Y = 712.9 -- mesmo chão dos outros pads do lobby
 
--- Onde um pad NOVO nasce: o encaixe da zona do grupo dele, na trilha (ver
--- LobbyZones). Antes era só um anti-piscada, porque o PlacePads reposicionava
--- todo mundo logo em seguida — mas ele não faz mais isso num place que já tem a
--- trilha montada à mão. Num place assim, ESTA é a posição final de um quadrado
--- recém-criado (herói novo na campanha), até alguém arrastá-lo no Studio.
--- Dentro do retângulo do lobby (o "círculo" da praça de entrada). Retângulo e
--- não raio pelo mesmo motivo do LobbyEdgeToward: o lobby é 195 x 185, e um
--- círculo sobraria grama de um lado e faltaria do outro.
 local function InLobbyCircle(position)
 	local center, half = LobbyZones.LOBBY_CENTER, LobbyZones.LOBBY_HALF
 	return math.abs(position.X - center.X) <= half.X
 		and math.abs(position.Z - center.Y) <= half.Y
 end
 
--- QUADRADO DE CONFRONTO MORA EM ILHA. Devolve nil quando o confronto não tem
--- casa — nem `island` no place, nem zona na planta.
---
--- Antes o "sem casa" caía num ponto fixo perto do centro do lobby, e era de lá
--- que saíam os quadrados soltos no círculo principal: o círculo é a praça de
--- entrada, e o que se pisa lá é partida online ou treino contra bot, não
--- confronto de campanha. Sem casa, o quadrado simplesmente não existe — o herói
--- continua alcançável pelo painel CAMPANHA do menu, que não depende de pad.
 local function DefaultFightPadPosition(fight)
-	-- Ilha montada à mão: a coordenada sai do Explorer, e o quadrado JÁ NASCE em
-	-- cima dela. Antes ele nascia no centro do lobby e o PlacePads o mudava de
-	-- lugar depois — o que deixava um quadrado no círculo se a ilha não fosse
-	-- encontrada, que é exatamente o que não pode acontecer.
 	if fight.island then
 		return LobbyZoneBuilder.IslandTop(fight.island)
 	end
@@ -191,16 +141,6 @@ local function DefaultFightPadPosition(fight)
 	return slots[index]
 end
 
--- ===== TAMANHO DO RETRATO NO CENÁRIO =====
--- O billboard é medido em PIXELS e o Roblox já o encolhe com a distância, então
--- estes números são o tamanho NA TELA de quem está em cima do pad. No valor
--- original (120x150) o herói cobria o quadrado inteiro e tapava o cenário atrás
--- — de perto virava outdoor, e com onze pads o lobby ficava uma parede de
--- retratos.
---
--- Um número só governa tudo: moldura, retrato, nome e altura do poste saem
--- daqui multiplicados. Mexer na escala não desalinha nada — era isso que
--- acontecia quando cada medida era ajustada na mão.
 local FIGHT_PORTRAIT_SCALE = 0.55
 
 local function BuildFightBillboard(pad, data)
@@ -211,18 +151,8 @@ local function BuildFightBillboard(pad, data)
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "FightLabel"
 	billboard.Size = UDim2.new(0, math.round(120 * scale), 0, portraitHeight + nameHeight + 6)
-	-- o poste desce junto: retrato menor pendurado na mesma altura ficava
-	-- solto no ar, longe do quadrado que ele nomeia
 	billboard.StudsOffset = Vector3.new(0, 3 + 4 * scale, 0)
 	billboard.AlwaysOnTop = true
-	-- A DISTÂNCIA é o que esconde a plaquinha, e por isso ela nasce ligada. Ela
-	-- nascia desligada esperando o cliente acender por zona da trilha, e o
-	-- acender exigia zona na planta — a ilha montada à mão não tem, e nenhum
-	-- quadrado dos heróis novos jamais mostrou nome ou retrato (ver
-	-- LobbyClient.ShowPadLabels).
-	--
-	-- 160 alcançava a ilha vizinha e virava parede de retratos; 90 mostra a
-	-- plaquinha de quem está na ilha em que o jogador está pisando.
 	billboard.MaxDistance = 90
 	billboard.Enabled = true
 	billboard.Parent = pad
@@ -258,9 +188,6 @@ local function BuildFightBillboard(pad, data)
 	nameLabel.Parent = billboard
 end
 
--- Monta a Part (ou adota a que já existe) e devolve ela pronta. Quem liga o
--- toque é o final do arquivo, junto dos outros pads — lá o OnFightRequested já
--- existe.
 local function EnsureFightPad(fight)
 	local data = HeroData.GetById(fight.hero)
 	if not data then return nil end
@@ -269,16 +196,6 @@ local function EnsureFightPad(fight)
 	local pad = Workspace:FindFirstChild(padName, true)
 	local home = DefaultFightPadPosition(fight)
 
-	-- SEM CASA, SEM QUADRADO NA PRAÇA. O círculo do lobby é a entrada — nele se
-	-- pisa em partida online ou treino contra bot, e mais nada. Confronto de
-	-- campanha sem ilha (grupo fora da planta e sem `island` no Campaign) ficava
-	-- largado ali no meio, e é isso que sai agora.
-	--
-	-- A remoção é POSICIONAL, e de propósito: só apaga o que está dentro do
-	-- retângulo do lobby. Um quadrado sem casa que alguém já arrastou pra uma
-	-- ilha no Explorer fica onde está — nome de ilha digitado errado no Campaign
-	-- não pode apagar montagem manual. `KeepPosition` continua sendo a palavra
-	-- final de quem edita o place.
 	if not home then
 		if pad and InLobbyCircle(pad.Position) and not pad:GetAttribute("KeepPosition") then
 			pad:Destroy()
@@ -306,18 +223,9 @@ local function EnsureFightPad(fight)
 	pad.Anchored = true
 	pad.CanCollide = true
 	pad.Material = Enum.Material.SmoothPlastic
-	-- cor de partida; o cliente repinta conforme o estado DELE
 	pad.Color = Color3.fromRGB(70, 90, 120)
 	pad:SetAttribute("FightHero", fight.hero)
 
-	-- REFAZ, não "cria se faltar". O billboard fica SALVO no place junto com o
-	-- pad adotado, então a versão antiga sobrevivia ao arquivo novo: mexer em
-	-- FIGHT_PORTRAIT_SCALE não mudava nada em lugar nenhum, e o único jeito de
-	-- ver o efeito era apagar os onze billboards na mão pelo Explorer.
-	--
-	-- Mesma política do LightingSetup e do LobbyZones: quem manda na aparência é
-	-- este arquivo. O pad em si continua sendo adotado como está — o que se
-	-- descarta aqui é só a plaquinha que o próprio script desenhou antes.
 	local existingLabel = pad:FindFirstChild("FightLabel")
 	if existingLabel then existingLabel:Destroy() end
 	BuildFightBillboard(pad, data)
@@ -326,24 +234,10 @@ local function EnsureFightPad(fight)
 	return pad
 end
 
--- O cenário da arena é persistente: só constrói se ainda não existir no place.
--- As arenas dos slots seguintes são clonadas sob demanda, na primeira partida
--- que precisar delas.
 BoardSpawner.EnsureArena(1)
-
--- A trilha de biomas do lobby. Vem ANTES dos quadrados: eles são posicionados
--- em cima das ilhas, e ilha que não existe ainda não segura pad nenhum.
 LobbyZoneBuilder.BuildTerrain()
 
--- ===================== RAIO DE SPAWN =====================
--- Os 19 SpawnLocations do lobby chegam a ~30 studs do centro e o pad de PvP
--- está a ~33 — dava pra renascer praticamente em cima do pad e entrar na fila
--- sem querer. Desliga os pontos mais afastados; os de dentro do raio bastam.
 local function TrimSpawnRadius()
-	-- Antes isso descia por um caminho fixo (Workspace.Folder.Lobby.Spawns) e
-	-- quebrava calado assim que o lobby era reorganizado ou renomeado no Studio.
-	-- Varrer o Workspace atrás de SpawnLocation dá no mesmo e não depende de
-	-- onde as coisas estão guardadas.
 	local parts = {}
 	local sum = Vector3.new()
 
@@ -366,7 +260,6 @@ local function TrimSpawnRadius()
 		if inside then kept += 1 end
 	end
 
-	-- se o raio for apertado demais, mantém o mais próximo do centro ligado
 	if kept == 0 then
 		local closest, bestDistance = parts[1], math.huge
 		for _, spawn in ipairs(parts) do
@@ -392,9 +285,6 @@ local function SetPvpSubtitle(text)
 	if subtitle then subtitle.Text = text end
 end
 
--- ===================== FILA =====================
--- `extra` leva campos soltos do estado (hoje só o confronto que o modal de
--- confirmação está perguntando).
 local function SendStatus(player, state, text, extra)
 	local payload = { state = state, text = text }
 	if extra then
@@ -422,9 +312,6 @@ local function LeaveQueue(player, notify)
 	RefreshQueue()
 end
 
--- ===================== PARTIDA =====================
--- O MatchManager é quem escolhe a arena livre, monta o tabuleiro e avisa os
--- clientes: daqui em diante o pad só decide QUEM joga com QUEM.
 local function CanStart(player)
 	if MatchManager.IsInMatch(player) then
 		SendStatus(player, "busy", "Você já está numa partida")
@@ -445,23 +332,11 @@ local function OnBotPadTouched(player)
 	LeaveQueue(player, false)
 	SendStatus(player, "loading", "Preparando a arena...")
 
-	-- corrida: entre o CanStart e aqui, outra pessoa pode ter pego a última arena
 	if not MatchManager.StartMatch(player, nil) then
 		SendStatus(player, "busy", "Todas as arenas estão ocupadas — tente em instantes")
 	end
 end
 
--- ===================== CAMPANHA =====================
--- Confronto liberado pra ESTE jogador, ou nil (já avisando o motivo). A conta é
--- a mesma que o lobby faz pra desenhar o quadrado — e agora sobre a MESMA lista
--- dos dois lados (ver HeroUnlockService.Push), senão a tela mostra cadeado e o
--- servidor deixa passar.
---
--- Roda nas DUAS pontas do fluxo, de propósito: quando o jogador pisa no
--- quadrado (pra decidir se pergunta) e de novo quando ele responde "Sim" (pra
--- valer de verdade). Confiar na primeira seria confiar no cliente — um
--- FireServer à mão pularia a escada inteira e pegaria o Golem no primeiro
--- minuto.
 local function ResolveFight(player, heroId)
 	local fight = Campaign.GetFight(tonumber(heroId))
 	if not fight then return nil end
@@ -474,8 +349,6 @@ local function ResolveFight(player, heroId)
 	return fight
 end
 
--- Pisou no quadrado: PERGUNTA, não entra. Quem entra é o "Sim" do modal, que
--- volta pelo GameAction como um pedido normal.
 local function OnFightPadTouched(player, heroId)
 	local fight = ResolveFight(player, heroId)
 	if not fight then return end
@@ -494,8 +367,6 @@ local function OnFightRequested(player, heroId)
 	LeaveQueue(player, false)
 	SendStatus(player, "loading", "Preparando a arena...")
 
-	-- confronto CONCLUÍDO continua entrando: é revanche/treino contra o mesmo
-	-- time, e o Unlock idempotente cuida de não premiar duas vezes
 	if not MatchManager.StartMatch(player, nil, nil, fight) then
 		SendStatus(player, "busy", "Todas as arenas estão ocupadas — tente em instantes")
 	end
@@ -504,8 +375,6 @@ end
 local function OnPvpPadTouched(player)
 	if table.find(queue, player) then return end
 
-	-- O PvP abre com PVP_MIN_HEROES heróis na mão, quaisquer que sejam. Mesma
-	-- regra que o lobby usa pra apagar o botão — aqui é onde ela vale.
 	if not Campaign.PvpUnlocked(HeroUnlockService.GetPlayableIds(player)) then
 		SendStatus(player, "busy", ("Desbloqueie %d heróis para jogar online")
 			:format(Campaign.PVP_MIN_HEROES))
@@ -527,16 +396,12 @@ local function OnPvpPadTouched(player)
 	SendStatus(playerTwo, "loading", "Oponente encontrado! Preparando a arena...")
 
 	if not MatchManager.StartMatch(playerOne, playerTwo) then
-		-- sem arena livre: devolve os dois pra fila em vez de perder o par
 		SendStatus(playerOne, "busy", "Todas as arenas estão ocupadas — tente em instantes")
 		SendStatus(playerTwo, "busy", "Todas as arenas estão ocupadas — tente em instantes")
 	end
 end
 
--- ===================== ENTRADA =====================
 local function ConnectPad(pad, handler)
-	-- pad faltando não pode derrubar o script: os RemoteEvents lá embaixo são o
-	-- que faz uma partida em andamento continuar respondendo
 	if not pad then return end
 
 	pad.Touched:Connect(function(hit)
@@ -554,38 +419,14 @@ end
 ConnectPad(botPad, OnBotPadTouched)
 ConnectPad(pvpPad, OnPvpPadTouched)
 
--- Os quadrados da campanha entram pelo MESMO caminho dos outros pads (debounce
--- de toque incluído) — só que pisar abre a pergunta em vez de começar a
--- partida. Quem recusa confronto trancado é o ResolveFight, nas duas pontas.
 for _, fight in ipairs(Campaign.FIGHTS) do
 	ConnectPad(EnsureFightPad(fight), function(player)
 		OnFightPadTouched(player, fight.hero)
 	end)
 end
 
--- Com todos os quadrados de pé, a trilha os leva pra ilha do grupo deles — a
--- menos que ela tenha sido adotada do place, e aí ninguém encosta neles. Roda
--- DEPOIS do laço acima de propósito: ver o comentário em
--- LobbyZoneBuilder.BuildTerrain sobre as duas metades.
 LobbyZoneBuilder.PlacePads()
 
--- ===================== LIMITE DE VAZÃO =====================
--- O Roblox garante que o `player` que chega num OnServerEvent é autêntico, mas
--- NÃO limita quantas vezes um cliente dispara o remote. Todo o resto da defesa
--- deste jogo é validação de CONTEÚDO (é a sua vez? o herói é seu? a casa está
--- livre?) e ela está completa — o que faltava era o custo de PERGUNTAR.
---
--- Um cliente adulterado num laço de FireServer("move", ...) é recusado em todas
--- as tentativas, mas cada recusa ainda paga um MatchOfPlayer (varre as partidas
--- ativas) e, quando a jogada é legítima, um FindPath. Milhares por segundo viram
--- lag pros DOIS jogadores da partida — não é roubo, é negação de serviço.
---
--- Janela de 1 segundo, e o orçamento é por JOGADOR e compartilhado entre os
--- remotes: um humano num jogo de turnos toca a tela 2 ou 3 vezes por segundo no
--- pico, então ACTION_BUDGET dá uma folga de 4x sem nunca atrapalhar quem joga
--- de verdade. Passou do teto, o excedente é descartado calado até a janela
--- virar — sem kick e sem log por evento, que seriam DUAS formas novas de o
--- atacante gastar recurso do servidor.
 local ACTION_BUDGET = 12
 local windowStart, actionCount = {}, {}
 
@@ -639,20 +480,20 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 	end
 end)
 
--- "Já vi esta lição." Único remote do jogo em que a palavra do cliente vale sem
--- conferência, e o TutorialService explica por quê no cabeçalho: forjar isto só
--- pula o próprio tutorial de quem forjou. O MarkSeen valida o id contra a lista
--- de lições, então lixo não chega ao DataStore.
 ReplicatedStorage.Remotes[Tutorial.REMOTE_NAME].OnServerEvent:Connect(function(player, lessonId)
 	if not AllowAction(player) then return end
 	TutorialService.MarkSeen(player, lessonId)
 end)
 
+Players.PlayerAdded:Connect(function(player)
+	if not player.Character then player.CharacterAdded:Wait() end
+	task.wait(1)
+	if player.Parent then MatchManager.HandlePlayerRejoined(player) end
+end)
+
 Players.PlayerRemoving:Connect(function(player)
 	lastTouch[player] = nil
-	-- as duas tabelas do limite de vazão são indexadas por Player: sem esta
-	-- limpeza elas seguram uma referência ao jogador que saiu, e num servidor de
-	-- vida longa isso é vazamento de memória puro
+
 	windowStart[player] = nil
 	actionCount[player] = nil
 	LeaveQueue(player, false)

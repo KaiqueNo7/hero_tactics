@@ -37,10 +37,7 @@ local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local HeroView = require(ServerScriptService.Modules.HeroView)
 
--- ===== O QUE MOSTRAR =====
--- hpRatio: fração da vida atual (1 = cheia). buffed: ATK acima do base (crachá
--- vira verde). poison: 3 = acabou de envenenar, 1 = último turno (nil = sem
--- veneno). frozen: liga o selo de gelo.
+
 local PREVIEW = {
 	{ dataId = 1,  hex = "A1", hpRatio = 1 },                                    -- Ralph, normal
 	{ dataId = 1,  hex = "A3", hpRatio = 1,    buffed = true },                  -- Ralph, ATK buffado (verde)
@@ -55,26 +52,22 @@ local PREVIEW = {
 	{ dataId = 6,  hex = "D3", hpRatio = 0.5,  buffed = true, poison = 2, frozen = true }, -- Ceos, pior caso: passiva + buff + veneno + gelo juntos
 }
 
--- attacker/target usam o `hex` acima pra disparar o efeito de ataque à
--- distância (bolinha + retícula) uma vez, ao montar. nil desliga isso.
 local RANGED_DEMO = { attackerHex = "B3", targetHex = "D3" }
 
-local PREVIEW_ORIGIN = Vector3.new(0, 40, 0) -- bem acima do tabuleiro real, pra não se misturar
-local MATCH_ID = "preview" -- nunca colide com partidas reais (MatchManager usa número)
+local PREVIEW_ORIGIN = Vector3.new(0, 40, 0)
+local MATCH_ID = "preview"
 
--- ===== LIMPEZA DA RODADA ANTERIOR =====
 local previousView = {
 	heroesFolder = Workspace:FindFirstChild("Heroes_" .. MATCH_ID),
 	gravesFolder = Workspace:FindFirstChild("Graves_" .. MATCH_ID),
 }
 HeroView.DestroyView(previousView)
 
--- ===== MONTAGEM =====
 HexGrid.Generate()
 
 local view = HeroView.CreateView(MATCH_ID, PREVIEW_ORIGIN, {})
 
-local built = {} -- hex -> hero de mentirinha, pra achar attacker/target do RANGED_DEMO
+local built = {}
 
 for index, entry in ipairs(PREVIEW) do
 	local data = HeroData.GetById(entry.dataId)
@@ -107,17 +100,16 @@ for index, entry in ipairs(PREVIEW) do
 			view = view,
 		}
 
-		HeroView.Create(hero) -- monta sprite + anel + crachá e já chama UpdateStats
+		HeroView.Create(hero)
 		built[entry.hex] = hero
 	end
 end
 
--- ===== DEMO DO ATAQUE À DISTÂNCIA =====
 if RANGED_DEMO then
 	local attacker = built[RANGED_DEMO.attackerHex]
 	local target = built[RANGED_DEMO.targetHex]
 	if attacker and target then
-		task.wait(0.3) -- deixa a UI assentar antes da bolinha viajar
+		task.wait(0.3)
 		HeroView.ShowRangedAttack(attacker, target)
 	end
 end

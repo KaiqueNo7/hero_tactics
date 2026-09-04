@@ -78,6 +78,10 @@ local BotBrain = {}
 local TAUNT = GameConfig.ABILITIES.TAUNT
 local RANGED = GameConfig.ABILITIES.RANGED
 
+local FLAME_NEAR_RANGE = 2
+local FLAME_NEAR_VALUE = 3
+local FLAME_PATH_MAX = 30
+
 -- O quanto vale a pena derrubar este inimigo.
 --
 -- É por HABILIDADE, não por nome de herói: um personagem novo entra na conta da
@@ -618,13 +622,33 @@ local function ScorePosition(match, hero, fromPos, ctx)
 		end
 	end
 
-	if HasSkill(hero, "flameFury") or HasSkill(hero, "flameHeal") then
-		local crossed = 0
+	if HasSkill(hero, "flamePath") then
+		local path = nil
 		if fromPos ~= hero.position then
-			local path = HexGrid.FindPath(hero.position, fromPos,
+			path = HexGrid.FindPath(hero.position, fromPos,
 				MoveRangeOf(match, hero), FreeChecker(match), ctx.flameBias)
-			for _, hexId in ipairs(path or {}) do
-				if ctx.ownFlame(hexId) then crossed += 1 end
+		end
+
+		local crossed, flamePathValue = 0, 0
+		for _, hexId in ipairs(path or {}) do
+			if ctx.ownFlame(hexId) then
+				crossed += 1
+			else
+				for _, enemy in ipairs(enemies) do
+					local distance = HexGrid.Distance(hexId, enemy.position)
+					if distance <= FLAME_NEAR_RANGE then
+						flamePathValue += (FLAME_NEAR_RANGE + 1 - distance) * FLAME_NEAR_VALUE
+					end
+				end
+			end
+		end
+
+		score += math.min(flamePathValue, FLAME_PATH_MAX)
+
+		for _, enemy in ipairs(enemies) do
+			local distance = HexGrid.Distance(fromPos, enemy.position)
+			if distance <= FLAME_NEAR_RANGE then
+				score += (FLAME_NEAR_RANGE + 1 - distance) * 6
 			end
 		end
 
@@ -988,12 +1012,13 @@ end
 BotBrain.RememberSearchTile = RememberSearchTile
 
 -- ===================== API =====================
--- Só o que o MatchManager chama. Todo o resto — as camadas de pontuação, as
--- heurísticas por habilidade, os ajudantes de linha e empurrão — fica privado:
--- é detalhe de COMO se decide, e mexer neles não deve exigir tocar em quem
--- executa.
+-- O que o MatchManager chama, mais o que o CoreChecks precisa medir. O resto —
+-- as heurísticas por habilidade, os ajudantes de linha e empurrão — fica
+-- privado: é detalhe de COMO se decide, e mexer neles não deve exigir tocar em
+-- quem executa.
 BotBrain.ThreatScore = ThreatScore
 BotBrain.BuildBoardContext = BuildBoardContext
+BotBrain.ScorePosition = ScorePosition
 BotBrain.BuildLineBlocks = BuildLineBlocks
 BotBrain.PlanFor = PlanFor
 BotBrain.BarrelInReach = BarrelInReach

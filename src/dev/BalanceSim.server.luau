@@ -10,26 +10,11 @@ local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 
-local BALANCE_SIM_MATCHES = 100
+local BALANCE_SIM_MATCHES = 300
 local BALANCE_SIM_SEED = nil
--- Quantas partidas correm ao MESMO TEMPO. Cada uma ocupa um slot de arena, e o
--- teto de slots (GameConfig.MAX_LIVE_MATCHES) é dimensionado pro
--- servidor de verdade, não pra simulação — por isso a sim levanta o teto na
--- largada e devolve no fim, do mesmo jeito que já faz com o BOT_PLACE_DELAY.
--- Sem levantar, o que passa do teto só rodava no retry de 2 segundos e a
--- concorrência real ficava presa no valor de produção.
-local CONCURRENT = 15
+local CONCURRENT = 30
 local PROGRESS_EVERY = 25
 local HEROES_PER_SIDE = 3
-
--- ===== AMOSTRA MÍNIMA =====
--- Em 300 partidas uma dupla aparece umas 20 vezes e uma composição inteira umas
--- 5. Sem piso, a tabela abriria com uma linha de "100% de vitória em 1 jogo" —
--- que não é informação, é ruído com aparência de conclusão.
---
--- O que fica de fora do piso continua CONTADO em memória; só não sobe pro
--- relatório. Rodar mais partidas passa a revelar as linhas sozinho, sem mexer
--- em coleta nenhuma.
 local MIN_SYNERGY_GAMES = 5
 local MIN_COMPOSITION_GAMES = 3
 local MIN_MATCHUP_GAMES = 5
@@ -58,26 +43,10 @@ end
 local totals = {}
 local arenas = {}
 
--- ===== SINERGIA, COMPOSIÇÃO E MATCHUP =====
--- Três tabelas de contagem, todas alimentadas UMA VEZ por partida, no
--- encerramento. Com times de três, cada partida gera 3 duplas por lado, 1
--- composição por lado e 9 matchups por lado — custo fixo e minúsculo, e nada
--- disso encosta no laço de turno ou de ataque.
---
--- CHAVE NORMALIZADA por ordenação nas duas primeiras: "Kira|Spyke" e
--- "Spyke|Kira" têm que cair na mesma linha, senão a mesma dupla aparece duas
--- vezes com metade da amostra cada.
---
--- MATCHUP É DIRECIONAL e por isso NÃO ordena: "Wren vs Blade" é a taxa de
--- vitória da Wren enfrentando o Blade, e "Blade vs Wren" é a do Blade — são as
--- duas faces do mesmo confronto, e guardar só uma perderia a leitura.
 local synergyStats = {}      -- ["a|b"]   = { games, wins }
 local compositionStats = {}  -- ["a|b|c"] = { games, wins }
 local matchupStats = {}      -- ["a|b"]   = { games, wins }  (a enfrentando b)
 
--- Composição contra composição. COLETADO E NÃO EXIBIDO: em 300 partidas um
--- confronto específico de dois times fechados aparece uma ou nenhuma vez, e uma
--- tabela dessas seria só ruído. Fica gravado pra quando o volume crescer.
 local matchupCompositionStats = {} -- ["a|b|c vs d|e|f"] = { games, wins }
 
 local function Bump(store, key, won)
@@ -95,8 +64,6 @@ local function NameOf(dataId)
 	return data and data.name or ("#" .. tostring(dataId))
 end
 
--- Ordena por NOME, não por id: a chave vira o próprio rótulo do relatório, e o
--- id é detalhe de armazenamento que ninguém quer ler numa tabela.
 local function KeyOf(ids, separator)
 	local names = {}
 	for _, dataId in ipairs(ids) do table.insert(names, NameOf(dataId)) end
@@ -104,9 +71,6 @@ local function KeyOf(ids, separator)
 	return table.concat(names, separator)
 end
 
--- `won` é nil no empate: a partida conta como JOGO pra todas as combinações dos
--- dois lados e como vitória pra nenhuma. Jogar o empate fora inflaria a taxa de
--- quem empata muito, e contar como derrota puniria os dois lados por igual.
 local function RecordTeams(rosters, sideOneWon, sideTwoWon)
 	if not rosters or not rosters[1] or not rosters[2] then return end
 
@@ -116,16 +80,11 @@ local function RecordTeams(rosters, sideOneWon, sideTwoWon)
 		local won = venceu[index]
 		local outros = rosters[index == 1 and 2 or 1]
 
-		-- DUPLAS: cada par UMA vez (j começa em i+1), então um time de três gera
-		-- exatamente três linhas e nenhuma repetida.
 		for i = 1, #team do
 			for j = i + 1, #team do
 				Bump(synergyStats, KeyOf({ team[i], team[j] }, " + "), won)
 			end
 
-			-- MATCHUPS: cada herói deste time contra cada um do outro, na
-			-- perspectiva DESTE time. O laço do outro lado grava a perspectiva
-			-- oposta na volta, e por isso não se inverte nada aqui.
 			for _, inimigo in ipairs(outros) do
 				Bump(matchupStats, NameOf(team[i]) .. "|" .. NameOf(inimigo), won)
 			end
@@ -215,8 +174,6 @@ local function Accumulate(entries, summary)
 		arena.sideTwo += 1
 	end
 
-	-- uma passada só por partida, com a composição que o servidor leu do
-	-- tabuleiro (ver RecordHeroStats)
 	RecordTeams(summary.rosters, umVenceu, doisVenceu)
 end
 
@@ -346,13 +303,9 @@ local function Report()
 		end
 	end
 
-	-- ===== SINERGIAS, COMPOSIÇÕES E MATCHUPS =====
-	-- Taxa individual de cada herói, pra calcular o DELTA logo abaixo.
 	local soloRate = {}
 	for _, row in ipairs(rows) do soloRate[row.name] = row.winRate end
 
-	-- Ordena por taxa e devolve só o que passou da amostra mínima. `extra` é a
-	-- coluna opcional (o delta, nas duplas) — quem não tem passa nil.
 	local function Ranked(store, minimum, extra)
 		local out = {}
 		for key, row in pairs(store) do
@@ -366,16 +319,11 @@ local function Report()
 		end
 		table.sort(out, function(a, b)
 			if a.rate ~= b.rate then return a.rate > b.rate end
-			return a.games > b.games -- empate na taxa: a amostra maior vem antes
+			return a.games > b.games
 		end)
 		return out
 	end
 
-	-- DELTA = o quanto a dupla rende ACIMA do que os dois renderiam sozinhos.
-	-- É heurística, não teste estatístico: serve pra separar "dois heróis fortes
-	-- que jogaram juntos" (delta perto de zero) de "dois heróis medianos que
-	-- juntos viram outra coisa" (delta alto) — que é a sinergia de verdade, e a
-	-- que a taxa bruta esconde.
 	local function SynergyDelta(key, rate)
 		local a, b = key:match("^(.-) %+ (.+)$")
 		local rateA, rateB = soloRate[a], soloRate[b]
@@ -387,8 +335,6 @@ local function Report()
 	local comps = Ranked(compositionStats, MIN_COMPOSITION_GAMES)
 	local matchups = Ranked(matchupStats, MIN_MATCHUP_GAMES)
 
-	-- AMOSTRA SEMPRE VISÍVEL: toda linha destas tabelas carrega JOGOS ao lado da
-	-- porcentagem, porque 80% em 5 jogos e 80% em 50 são leituras diferentes.
 	if #duplas > 0 then
 		table.insert(lines, "")
 		table.insert(lines, ("SINERGIAS — DUPLAS (minimo %d jogos)"):format(MIN_SYNERGY_GAMES))
@@ -415,8 +361,6 @@ local function Report()
 		table.insert(lines, ("MATCHUPS (minimo %d jogos)"):format(MIN_MATCHUP_GAMES))
 		table.insert(lines, ("%-14s %-14s %6s %7s"):format("HEROI", "CONTRA", "JOGOS", "WIN%"))
 
-		-- os dois extremos, não só o topo: um matchup terrível diz tanto quanto
-		-- um dominante, e ordenado por taxa ele fica escondido no fim da lista
 		local mostra = {}
 		for index = 1, math.min(TOP_ROWS // 2, #matchups) do
 			table.insert(mostra, matchups[index])
@@ -460,9 +404,6 @@ local function Report()
 		table.insert(lines, ("  Maior kills/J: %s (%.2f)   Maior sobrev.: %s (%.1f%%)"):format(
 			best.kills.name, best.kills.kills, best.survival.name, best.survival.survival * 100))
 
-		-- Extremos das tabelas novas. Sempre com a AMOSTRA junto: sem ela, "melhor
-		-- sinergia: 100%" pode ser uma partida sortuda, e é justamente essa linha
-		-- que alguém copia pra uma decisão de balanceamento.
 		local function Extremos(rotuloAlto, rotuloBaixo, lista, formata)
 			if #lista == 0 then return end
 			table.insert(lines, ("  %s: %s (%.1f%%, %d jogos)"):format(
@@ -481,10 +422,6 @@ local function Report()
 		Extremos("Melhor composicao", "Pior composicao", comps, ComoEsta)
 		Extremos("Matchup mais favoravel", "Matchup mais desfavoravel", matchups, ComoMatchup)
 
-		-- O MAIOR DELTA merece linha própria, e não é o mesmo que a maior taxa:
-		-- dois heróis fortes jogando juntos lideram a tabela de WIN% sem sinergia
-		-- nenhuma. Quem sobe aqui é a dupla que rende mais do que a soma das
-		-- partes — o caso que realmente pede investigação.
 		local maiorDelta = nil
 		for _, row in ipairs(duplas) do
 			if row.extra and (not maiorDelta or row.extra > maiorDelta.extra) then
@@ -496,8 +433,6 @@ local function Report()
 				:format(maiorDelta.key, maiorDelta.extra, maiorDelta.rate * 100, maiorDelta.games))
 		end
 
-		-- coletado mas não tabelado: em 300 partidas quase todo confronto de
-		-- composições fechadas aparece uma vez só (ver matchupCompositionStats)
 		local confrontos, comAmostra = 0, 0
 		for _, row in pairs(matchupCompositionStats) do
 			confrontos += 1

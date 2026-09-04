@@ -10,7 +10,8 @@ local Arenas = require(ReplicatedStorage.Modules.Arenas)
 local Skills = require(ServerScriptService.Modules.Skills)
 local BotBrain = require(ServerScriptService.Modules.BotBrain)
 
-local KOR_ID = 10
+local KOR_ID = HeroData.GetByName("Kor").id
+local RUSH_ID = HeroData.GetByName("Rush").id
 
 local passed, failures = 0, {}
 
@@ -123,11 +124,7 @@ local function FakeApi()
 				end
 			end
 		end,
-		-- SUBSTITUI o efeito do mesmo tipo, como o de verdade (ver
-		-- MatchManager.ApplyStatusEffect). Enquanto so empilhava, a fake dizia
-		-- que renovar um efeito criava um segundo — e a renovacao acumulativa do
-		-- Sangue Fervendo, que passa a MESMA tabela de volta, ficava impossivel
-		-- de testar aqui.
+
 		ApplyStatusEffect = function(hero, effect)
 			for index = #hero.statusEffects, 1, -1 do
 				if hero.statusEffects[index].type == effect.type then
@@ -138,6 +135,7 @@ local function FakeApi()
 			table.insert(log.status, effect)
 		end,
 		IsMyTurn = function() return true end,
+		SetFrenzyAura = function(_, on) log.frenzyAura = on end,
 		GetAllyByData = function(_, dataId) return log.board[dataId] end,
 		Summon = function(origin, dataId)
 			local minion = FakeHero(dataId, origin.ownerId, origin.position)
@@ -181,7 +179,7 @@ for _, data in ipairs(HeroData.CATALOG) do
 	check("IsRangedAttack coerente: " .. data.name,
 		GameConfig.IsRangedAttack(range) == (range > GameConfig.BASE_ATTACK_RANGE))
 
-	if data.id ~= KOR_ID then
+	if data.id ~= KOR_ID and data.id ~= RUSH_ID then
 		check("so o Kor alcanca 3: " .. data.name, range < 3, range)
 	end
 
@@ -189,6 +187,15 @@ for _, data in ipairs(HeroData.CATALOG) do
 	local expectedMove = data.ability == GameConfig.ABILITIES.SPRINT
 		and GameConfig.SPRINT_MOVE_RANGE
 		or GameConfig.BASE_MOVE_RANGE
+
+		if data.id ~= RUSH_ID then
+			check("so o Rush alcanca 4: " .. data.name, move < 4, move)
+		end
+
+		if data.id == RUSH_ID then
+			check("Rush alcanca 4: " .. data.name, move == 4, move)
+		end
+
 	check("alcance de movimento: " .. data.name, move == expectedMove, move)
 end
 
@@ -589,11 +596,23 @@ do
 	end
 
 	-- e a Kira andando ate ele tem o mesmo efeito
+	local longeDeLineB = nil
+	for _, hex in ipairs(hexes) do
+		local id = idOf(hex)
+		if HexGrid.Distance(id, lineB) > 1 and id ~= lineA and id ~= lineC then
+			longeDeLineB = id
+			break
+		end
+	end
+
+	local ralphHex = ralph.position
+	ralph.position = longeDeLineB or ralphHex
 	kira.position = lineB
 	eligible = Eligible()
 	check("a Kira andando ate o aliado tambem habilita",
 		#eligible == 1 and eligible[1] == ceos, #eligible)
 	kira.position = lineA
+	ralph.position = ralphHex
 
 	GiveShield(ralph)
 	eligible = Eligible()
@@ -959,9 +978,6 @@ do
 			check("o Taunt colado continua atacavel pelo Ranged",
 				MatchQuery.TauntBlocks(board, shooter, wall) == nil, sideStep)
 
-			-- Taunt LONGE tambem e alvo legitimo. O provocador colado barra o
-			-- inimigo SEM Taunt, nao os outros provocadores: "nao passe por cima
-			-- de mim" nao e "ataque exatamente a mim".
 			local farTaunt = FakeHero(9, "B", lineD)
 			put(victim, lineC)
 			put(farTaunt, lineD)
@@ -988,9 +1004,6 @@ do
 	end
 end
 
--- ===== MULTIPLOS TAUNTS NAO SE TRAVAM =====
--- Tabuleiro proprio: estes casos precisam de dois provocadores ao mesmo tempo, e
--- misturar com o tabuleiro do corredor acima so confundiria quem for ler.
 if lineA and lineB and lineC then
 	local board = { occupied = {}, heroes = {} }
 	local function put(hero, hexId)
@@ -1000,9 +1013,6 @@ if lineA and lineB and lineC then
 		board.heroes[hero.uid] = hero
 	end
 
-	-- Dois provocadores colados, um de cada lado. Era o caso que travava: a
-	-- varredura de vizinhos devolvia um bloqueador ANTES de olhar se o proprio
-	-- alvo era Taunt, e nenhum dos dois conseguia bater no outro.
 	local tauntA = FakeHero(6, "A", lineA)
 	local tauntB = FakeHero(9, "B", lineB)
 	put(tauntA, lineA)
@@ -1013,8 +1023,6 @@ if lineA and lineB and lineC then
 	check("e o de volta tambem",
 		MatchQuery.TauntBlocks(board, tauntB, tauntA) == nil)
 
-	-- Agora um atacante comum cercado por DOIS provocadores inimigos: os dois
-	-- valem, e o terceiro inimigo nao.
 	local hitter = FakeHero(1, "A", lineA)
 	local guardOne = FakeHero(6, "B", lineB)
 	local guardTwo = nil
@@ -1577,6 +1585,138 @@ do
 	karo.shieldJustBroke = nil
 	check("passada a acao, o veneno volta a entrar", aceita(karo, "poison") == true)
 end
+
+do
+	local vizinho = HexGrid.GetNeighbors(lineA)[1].id
+	local api = FakeApi()
+
+	local nash = FakeHero(13, "A", lineA)
+	nash.stealth = false
+	api.GetEnemiesInRange = function() return { FakeHero(1, "B", vizinho) } end
+
+	Skills.huntInstinct.apply({
+		hero = nash, api = api, trigger = "onAttackResolved",
+		targetKilled = true, attackerWasStealthed = true,
+	})
+	check("Nash) abate saindo da sombra devolve a invisibilidade", nash.stealth == true)
+
+	nash.stealth = false
+	Skills.huntInstinct.apply({
+		hero = nash, api = api, trigger = "onAttackResolved",
+		targetKilled = true, attackerWasStealthed = false,
+	})
+	check("Nash) abate estando visivel nao inventa invisibilidade com inimigo ao lado",
+		nash.stealth == false)
+
+	nash.stealth = false
+	api.GetEnemiesInRange = function() return {} end
+	Skills.huntInstinct.apply({
+		hero = nash, api = api, trigger = "onAttackResolved",
+		targetKilled = true, attackerWasStealthed = false,
+	})
+	check("Nash) sem ninguem por perto ele some pela regra de sempre", nash.stealth == true)
+
+	nash.stealth = true
+	Skills.stealth.apply({ hero = nash, api = api, trigger = "onAttack" })
+	check("Nash) atacar continua quebrando a sombra", nash.stealth == false)
+end
+
+do
+	local merlin = FakeHero(11, "A", lineA)
+	local api = FakeApi()
+	local ligou = 0
+
+	api.CountAllies = function() return 0, 2 end
+	api.SetFrenzyAura = function(_, on)
+		if on then ligou += 1 end
+	end
+
+	local function sync()
+		Skills.frenzy.apply({ hero = merlin, api = api, trigger = "onTurnStart" })
+	end
+
+	sync()
+	check("Merlin) o Frenesi liga o VFX", merlin.frenzyActive == true and ligou == 1)
+
+	sync()
+	sync()
+	check("Merlin) reavaliar nao pendura uma segunda copia", ligou == 1)
+
+	local desligou = false
+	api.CountAllies = function() return 1, 2 end
+	api.SetFrenzyAura = function(_, on)
+		if not on then desligou = true end
+	end
+	sync()
+	check("Merlin) aliado de volta desliga o efeito",
+		merlin.frenzyActive == false and desligou == true)
+end
+
+do
+	local KARO_ID, LUCY_ID = 12, 17
+
+	local beyond = lineC and HexGrid.GetLineBeyond(lineB, lineC, 2) or nil
+	local distante = beyond and beyond[2]
+
+	local margem = nil
+	for _, vizinho in ipairs(lineB and HexGrid.GetNeighbors(lineB) or {}) do
+		local id = idOf(vizinho)
+		if id ~= lineA and id ~= lineC and HexGrid.Distance(id, lineC) == 2 then
+			margem = id
+			break
+		end
+	end
+
+	local function Tabuleiro(dataId, inimigoHex)
+		local heroi = FakeHero(dataId, "A", lineA)
+		local inimigo = FakeHero(1, "B", inimigoHex)
+		local board = FakeMatch({ heroi, inimigo })
+		board.turn = { number = 3, moved = {}, attacked = {} }
+		board.sides = { { index = 1, id = "A" }, { index = 2, id = "B" } }
+		board.sideIndexById = { A = 1, B = 2 }
+		return board, heroi, { inimigo }
+	end
+
+	local function Nota(dataId, inimigoHex, destino)
+		local board, heroi, inimigos = Tabuleiro(dataId, inimigoHex)
+		local ctx = BotBrain.BuildBoardContext(board, "A", inimigos)
+		return BotBrain.ScorePosition(board, heroi, destino, ctx)
+	end
+
+	if margem and distante then
+		local karoTrilha = Nota(KARO_ID, margem, lineC)
+		local karoVazio = Nota(KARO_ID, distante, lineC)
+		check("Karo) rota que passa ao lado do inimigo vale mais que a rota vazia",
+			karoTrilha > karoVazio, ("%d vs %d"):format(karoTrilha, karoVazio))
+
+		check("Lucy) a mesma leitura de trilha vale pra ela",
+			Nota(LUCY_ID, margem, lineC) > Nota(LUCY_ID, distante, lineC))
+	end
+
+	local vizinhosDoDestino = {}
+	for _, vizinho in ipairs(lineC and HexGrid.GetNeighbors(lineC) or {}) do
+		local id = idOf(vizinho)
+		if id ~= lineB then table.insert(vizinhosDoDestino, id) end
+	end
+
+	if #vizinhosDoDestino >= 2 then
+		local umBoard, lucy, umInimigo = Tabuleiro(LUCY_ID, vizinhosDoDestino[1])
+		local umCtx = BotBrain.BuildBoardContext(umBoard, "A", umInimigo)
+		local comUm = BotBrain.ScorePosition(umBoard, lucy, lineC, umCtx)
+
+		local doisBoard, lucyDois, doisInimigos = Tabuleiro(LUCY_ID, vizinhosDoDestino[1])
+		local outro = FakeHero(1, "B", vizinhosDoDestino[2])
+		doisBoard.heroes[outro.uid] = outro
+		doisBoard.occupied[outro.position] = outro
+		table.insert(doisInimigos, outro)
+		local doisCtx = BotBrain.BuildBoardContext(doisBoard, "A", doisInimigos)
+		local comDois = BotBrain.ScorePosition(doisBoard, lucyDois, lineC, doisCtx)
+
+		check("Lucy) a casa que encosta em dois vale mais que a que encosta em um",
+			comDois > comUm, ("%d vs %d"):format(comDois, comUm))
+	end
+end
+
 if #failures == 0 then
 	print(("CoreChecks: %d verificacoes, tudo certo."):format(passed))
 else

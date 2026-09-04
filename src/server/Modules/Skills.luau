@@ -417,6 +417,10 @@ local function SyncWolf(ctx)
 		api.ClearNegativeEffects(hero)
 	end
 
+	if frenzy ~= hero.frenzyActive then
+		api.SetFrenzyAura(hero, frenzy)
+	end
+
 	hero.frenzyActive = frenzy
 end
 
@@ -839,12 +843,23 @@ Skills.ambush = {
 	end,
 }
 
+local function Restealth(ctx)
+	if ctx.hero.stealth then return end
+	ctx.api.Effect(ctx.hero, "stealth")
+	ctx.api.PlaySkillSound("stealth")
+	ctx.hero.stealth = true
+end
+
 Skills.huntInstinct = {
 	triggers = { "onAttackResolved" },
 	apply = function(ctx)
 		if ctx.targetKilled then
 			ctx.api.GrantExtraAction(ctx.hero, true)
-			SyncStealth(ctx)
+			if ctx.attackerWasStealthed then
+				Restealth(ctx)
+			else
+				SyncStealth(ctx)
+			end
 		elseif ctx.targetWasAlone then
 			ctx.api.GrantExtraAction(ctx.hero, false)
 		end

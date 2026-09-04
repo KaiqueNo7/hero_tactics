@@ -2405,6 +2405,144 @@ function HeroView.SetShieldAura(hero, on)
 	SetEmitters(bubble, true)
 end
 
+local MERLIN_EYE_HOME = { "VFX", "Merlin", "Red Eye" }
+local FRENZY_AURA = "FrenzyAura"
+
+local EYE_SPACING = SPRITE_WIDTH * 0.085
+local EYE_FORWARD = SPRITE_WIDTH * 0.16
+local EYE_HEIGHT = SPRITE_HEIGHT * 0.80 - ANCHOR_LIFT
+local EYE_SCALE = 0.35
+
+local function CameraAxes()
+	local az = math.rad(GameConfig.CAMERA_AZIMUTH)
+	return Vector3.new(math.sin(az), 0, math.cos(az)),
+		Vector3.new(math.cos(az), 0, -math.sin(az))
+end
+
+local function AttachEye(hero, host, template, side, toCamera, screenRight)
+	local eye = template:Clone()
+	eye.Name = "Eye" .. tostring(side)
+	eye.Parent = host
+
+	if eye:IsA("BasePart") then
+		eye.Size *= EYE_SCALE
+	else
+		eye:ScaleTo(EYE_SCALE)
+	end
+
+	local target = hero.part.Position
+		+ Vector3.new(0, EYE_HEIGHT, 0)
+		+ screenRight * (EYE_SPACING * side)
+		+ toCamera * EYE_FORWARD
+
+	if eye:IsA("BasePart") then
+		eye.CFrame = CFrame.new(target) * eye.CFrame.Rotation
+	else
+		local box = eye:GetBoundingBox()
+		eye:PivotTo((CFrame.new(target) * box.Rotation * box:Inverse()) * eye:GetPivot())
+	end
+
+	local parts = eye:GetDescendants()
+	if eye:IsA("BasePart") then table.insert(parts, eye) end
+
+	for _, part in ipairs(parts) do
+		if part:IsA("BasePart") then
+			part.Anchored = false
+			part.Massless = true
+			part.CanQuery = false
+			part.CanTouch = false
+			part.CanCollide = false
+			part:SetAttribute("BaseTransparency", part.Transparency)
+
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = hero.part
+			weld.Part1 = part
+			weld.Parent = part
+		end
+	end
+
+	return eye
+end
+
+local function BuildFrenzyEmber(host)
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "EmberAnchor"
+	attachment.Position = Vector3.new(0, -ANCHOR_LIFT * 0.5, 0)
+	attachment.Parent = host
+
+	local ember = Instance.new("ParticleEmitter")
+	ember.Name = "Ember"
+	ember.Texture = FX_SPARK
+	ember.Color = ColorSequence.new(
+		Color3.fromRGB(255, 90, 60), Color3.fromRGB(150, 12, 12))
+	ember.LightEmission = 0.85
+	ember.LightInfluence = 0
+	ember.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.55),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	ember.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.25),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	ember.Lifetime = NumberRange.new(0.7, 1.2)
+	ember.Rate = 11
+	ember.Speed = NumberRange.new(2.2, 3.8)
+	ember.Acceleration = Vector3.new(0, 4, 0)
+	ember.SpreadAngle = Vector2.new(22, 22)
+	ember.Rotation = NumberRange.new(0, 360)
+	ember.Parent = attachment
+end
+
+function HeroView.SetFrenzyAura(hero, on)
+	if not (hero.part and hero.part.Parent) then return end
+
+	local existing = hero.part:FindFirstChild(FRENZY_AURA)
+
+	if not on then
+		if existing then
+			SetEmitters(existing, false)
+			Debris:AddItem(existing, 0.6)
+		end
+		return
+	end
+
+	if existing then
+		SetEmitters(existing, true)
+		return
+	end
+
+	local host = Instance.new("Part")
+	host.Name = FRENZY_AURA
+	host.Size = Vector3.new(0.2, 0.2, 0.2)
+	host.CFrame = CFrame.new(hero.part.Position)
+	host.Transparency = 1
+	host.Anchored = false
+	host.Massless = true
+	host.CanCollide = false
+	host.CanQuery = false
+	host.CanTouch = false
+	host.CastShadow = false
+	host:SetAttribute("BaseTransparency", 1)
+	host.Parent = hero.part
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = hero.part
+	weld.Part1 = host
+	weld.Parent = host
+
+	BuildFrenzyEmber(host)
+
+	local template = VfxTemplate(MERLIN_EYE_HOME, "o Frenesi do Merlin sai sem os olhos vermelhos")
+	if template then
+		local toCamera, screenRight = CameraAxes()
+		AttachEye(hero, host, template, -1, toCamera, screenRight)
+		AttachEye(hero, host, template, 1, toCamera, screenRight)
+	end
+
+	SetEmitters(host, true)
+end
+
 function HeroView.UpdateStats(hero)
 	if not hero.part or not hero.part.Parent then return end
 

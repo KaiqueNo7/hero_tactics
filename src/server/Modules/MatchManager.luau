@@ -649,7 +649,8 @@ local CC_EFFECTS = { paralysis = true, freeze = true }
 -- cima dele (HeroView.Say), não banner no topo da tela. O que sobrou aqui é o
 -- que não tem herói pra apontar ou que o destaque do cliente já deveria impedir.
 local REJECTIONS = {
-	NOT_YOUR_TURN = true, OUT_OF_RANGE = true,
+	NOT_YOUR_TURN = true,
+	MOVE_OUT_OF_RANGE = true, ATTACK_OUT_OF_RANGE = true,
 	OCCUPIED = true, INVALID_TARGET = true, INVALID_MOVE = true,
 }
 
@@ -683,6 +684,12 @@ local function Reject(player, reason)
 	if not (player and REJECTIONS[reason]) then return end
 	local remote = ReplicatedStorage.Remotes:FindFirstChild("GameAction")
 	if remote then remote:FireClient(player, "reject", reason) end
+end
+
+local function SetStandScale(player, scale)
+	local character = player and player.Character
+	if not character then return end
+	pcall(function() character:ScaleTo(scale) end)
 end
 
 local function RootOf(hero)
@@ -1154,6 +1161,7 @@ local function BuildSkillApi(match)
 
 		ClearStatusEffects = function(hero) ClearStatusEffects(match, hero) end,
 		ClearNegativeEffects = ClearNegativeEffects,
+		SetFrenzyAura = function(hero, on) HeroView.SetFrenzyAura(hero, on) end,
 
 		-- Contagem no TABULEIRO INTEIRO, não por alcance. O GetAlliesInRange só
 		-- enxerga vizinhança, e o Merlin precisa saber se sobrou alguém do time
@@ -1309,8 +1317,16 @@ end
 
 local function TurnSecondsLeft(match)
 	if not TurnIsTimed(match) then return nil end
+	if match.turn.pausedLeft then return match.turn.pausedLeft end
+
 	local elapsed = os.clock() - match.turn.startedAt
 	return math.max(0, math.floor(GameConfig.TURN_TIME_LIMIT - elapsed))
+end
+
+local function ReconnectSecondsLeft(match)
+	if not match.suspendedAt then return nil end
+	local elapsed = os.clock() - match.suspendedAt
+	return math.max(0, math.ceil(GameConfig.RECONNECT_WINDOW - elapsed))
 end
 
 local function PlacementSecondsLeft(match)
@@ -1651,6 +1667,13 @@ local function Snapshot(match, viewerId)
 		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,
 		turnSecondsLeft = TurnSecondsLeft(match),
 		turnTimeLimit = GameConfig.TURN_TIME_LIMIT,
+
+		reconnect = match.suspendedAt and {
+			secondsLeft = ReconnectSecondsLeft(match),
+			window = GameConfig.RECONNECT_WINDOW,
+			name = match.suspendedName,
+			mine = match.suspendedId == viewerId,
+		} or nil,
 		placementSecondsLeft = PlacementSecondsLeft(match),
 		placementTimeLimit = GameConfig.PLACEMENT_TIME_LIMIT,
 		suddenDeath = match.turn and match.turn.number >= GameConfig.SUDDEN_DEATH_START_TURN or false,
@@ -2115,7 +2138,10 @@ local function IsRankedPvp(match)
 	if not match.turn then return nil, "partida nao chegou a comecar" end
 
 	for _, side in ipairs(match.sides) do
-		if side.isBot or not side.player then return nil, "envolve bot" end
+		if side.isBot then return nil, "envolve bot" end
+		if not (side.player or side.awaitingReconnect) then
+			return nil, "lado sem jogador"
+		end
 	end
 
 	return true
@@ -2154,7 +2180,7 @@ function CheckGameOver(match)
 			match.rankingDone = true
 
 			local ranked, why = IsRankedPvp(match)
-			if ranked then
+			if ranked and winningSide.player then
 				print(("[Ranking] PvP valido — vitoria registrada para %s"):format(winningSide.player.Name))
 				LeaderboardService.RecordWin(tonumber(winningSide.id))
 			else
@@ -2453,6 +2479,36 @@ function BotPlayTurn(match, botId)
 	end)
 end
 
+function ArmTurnClock(match, token)
+	if not TurnIsTimed(match) then return end
+
+	local left = TurnSecondsLeft(match) or GameConfig.TURN_TIME_LIMIT
+
+	task.delay(math.max(left, 0.1), function()
+		if not (MatchIsLive(match) and match.turn and match.turn.token == token
+			and match.phase == "battle") then return end
+
+		if match.suspendedAt then return end
+		if (TurnSecondsLeft(match) or 0) > 0 then
+			ArmTurnClock(match, token)
+			return
+		end
+
+		-- espera uma animação em curso terminar, senão o EndTurn seria recusado
+		local waited = 0
+		while MatchIsLive(match) and match.busy and waited < 3 do
+			task.wait(0.1)
+			waited += 0.1
+		end
+
+		if MatchIsLive(match) and match.turn and match.turn.token == token
+			and match.phase == "battle" and not match.suspendedAt then
+			Broadcast(match, "⏱ Tempo esgotado!")
+			MatchManager.EndTurn(nil, match)
+		end
+	end)
+end
+
 function BeginTurn(match, ownerId, number)
 	match.turnToken += 1
 	local token = match.turnToken
@@ -2507,23 +2563,7 @@ function BeginTurn(match, ownerId, number)
 	Broadcast(match, message)
 
 	-- cronômetro: encerra o turno sozinho quando o tempo acaba
-	if TurnIsTimed(match) then
-		task.delay(GameConfig.TURN_TIME_LIMIT, function()
-			if not (MatchIsLive(match) and match.turn and match.turn.token == token and match.phase == "battle") then return end
-
-			-- espera uma animação em curso terminar, senão o EndTurn seria recusado
-			local waited = 0
-			while MatchIsLive(match) and match.busy and waited < 3 do
-				task.wait(0.1)
-				waited += 0.1
-			end
-
-			if MatchIsLive(match) and match.turn and match.turn.token == token and match.phase == "battle" then
-				Broadcast(match, "⏱ Tempo esgotado!")
-				MatchManager.EndTurn(nil, match)
-			end
-		end)
-	end
+	ArmTurnClock(match, token)
 
 	local promotionHex = side and GameConfig.PROMOTION_HEX_FOR_SLOT[side.index]
 	local standing = promotionHex and match.occupied[promotionHex]
@@ -2542,6 +2582,7 @@ function MatchManager.EndTurn(player, match)
 	match = match or MatchOfPlayer(player)
 	if not match or match.phase ~= "battle" then return end
 	if match.busy then return end
+	if match.suspendedAt then return end
 	-- "Entrou na casa, tem que escolher": o JOGADOR não passa o turno com a
 	-- escolha aberta. Já o fim de turno do SISTEMA (player == nil: o cronômetro
 	-- do PvP, e o bot fechando o próprio turno) resolve a escolha sozinho antes
@@ -2603,6 +2644,7 @@ end
 local function AuthorizeAction(match, player, hero)
 	if not match or match.phase ~= "battle" then return false end
 	if match.busy then return false end
+	if match.suspendedAt then return false end
 	-- Escolha de ressurreição pendente bloqueia QUALQUER outra ação — mover,
 	-- atacar, o que for — até ser resolvida via MatchManager.Resurrect.
 	if match.pendingPromotion then return false end
@@ -2656,7 +2698,7 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	local path = HexGrid.FindPath(hero.position, hexId, MoveRangeOf(match, hero),
 		FreeChecker(match), FlameBias(match, hero))
 	if not path then
-		Reject(player, "OUT_OF_RANGE")
+		Reject(player, "MOVE_OUT_OF_RANGE")
 		return
 	end
 
@@ -2797,7 +2839,7 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 	-- imprevisível — inimigo a duas casas recusado e barril longe aceito.
 	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
 	if not reach[target.position] then
-		Reject(player, "OUT_OF_RANGE")
+		Reject(player, "ATTACK_OUT_OF_RANGE")
 		return
 	end
 
@@ -3284,6 +3326,7 @@ end
 function MatchManager.PlaceHero(player, dataId, hexId)
 	local match = MatchOfPlayer(player)
 	if not match or match.phase ~= "placement" then return end
+	if match.suspendedAt then return end
 
 	local side = match.sides[match.placementSide]
 	if side.player ~= player then return end
@@ -3398,6 +3441,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 			index = 1,
 			id = playerOne and tostring(playerOne.UserId) or BOT_ONE_ID,
 			player = playerOne,
+			name = playerOne and playerOne.DisplayName or "Bot",
 			isBot = playerOne == nil,
 			zone = BuildDeployZone(DEPLOY_ZONES[1]),
 			placedCount = 0,
@@ -3407,6 +3451,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 			index = 2,
 			id = playerTwo and tostring(playerTwo.UserId) or BOT_ID,
 			player = playerTwo,
+			name = playerTwo and playerTwo.DisplayName or "Bot",
 			isBot = playerTwo == nil,
 			zone = BuildDeployZone(DEPLOY_ZONES[2]),
 			placedCount = 0,
@@ -3477,7 +3522,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		placementSide = 1, -- lado 1 escolhe primeiro: 1,2,1,2...
 		placementToken = 0,
 		placementStartedAt = nil,
-		starterId = sides[1].id,
+		starterId = sides[math.random(2)].id,
 		turn = nil,
 		turnToken = 0,
 		winner = nil,
@@ -3504,9 +3549,11 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 	-- a câmera do cliente se ancora na arena DESTA partida
 	local hexSize = HexGrid.GetHexSize()
 	if playerOne then
+		SetStandScale(playerOne, GameConfig.PLAYER_STAND_SCALE)
 		BoardReady:FireClient(playerOne, hexSize, origin, 1)
 	end
 	if playerTwo then
+		SetStandScale(playerTwo, GameConfig.PLAYER_STAND_SCALE)
 		BoardReady:FireClient(playerTwo, hexSize, origin, 2)
 	end
 
@@ -3536,6 +3583,7 @@ function EndMatch(match)
 
 	for _, side in ipairs(match.sides) do
 		if side.player then
+			SetStandScale(side.player, 1)
 			MatchUpdate:FireClient(side.player, { phase = "lobby" })
 		end
 	end
@@ -3646,6 +3694,7 @@ function MatchManager.LeaveMatch(player)
 		match.rematchOpen = false
 		side.player = nil
 
+		SetStandScale(player, 1)
 		MatchUpdate:FireClient(player, { phase = "lobby" })
 
 		for _, other in ipairs(match.sides) do
@@ -3661,8 +3710,88 @@ function MatchManager.LeaveMatch(player)
 	EndMatch(match)
 end
 
--- Um jogador caiu no meio da partida: encerra pra todo mundo em vez de deixar
--- o outro preso esperando um turno que nunca vem.
+local function SuspendForReconnect(match, side)
+	match.suspendedAt = os.clock()
+	match.suspendedId = side.id
+	match.suspendedName = side.name or "Adversário"
+	side.awaitingReconnect = true
+
+	if match.turn then
+		match.turn.pausedLeft = TurnSecondsLeft(match)
+	end
+	match.placementToken += 1
+
+	Broadcast(match)
+
+	local stamp = match.suspendedAt
+	task.delay(GameConfig.RECONNECT_WINDOW, function()
+		if not MatchIsLive(match) then return end
+		if match.suspendedAt ~= stamp then return end
+
+		MatchManager.ForfeitDisconnected(match)
+	end)
+end
+
+function MatchManager.ResumeFromReconnect(match, side, player)
+	match.suspendedAt = nil
+	match.suspendedId = nil
+	match.suspendedName = nil
+	side.awaitingReconnect = nil
+	side.player = player
+
+	SetStandScale(player, GameConfig.PLAYER_STAND_SCALE)
+
+	StreamArenaTo({ player }, match.origin)
+	BoardReady:FireClient(player, HexGrid.GetHexSize(), match.origin, side.index)
+
+	if match.phase == "placement" then
+		StartPlacementClock(match)
+	elseif match.turn then
+		match.turn.startedAt = os.clock()
+			- (GameConfig.TURN_TIME_LIMIT - (match.turn.pausedLeft or GameConfig.TURN_TIME_LIMIT))
+		match.turn.pausedLeft = nil
+		ArmTurnClock(match, match.turn.token)
+	end
+
+	Broadcast(match, ("%s voltou para a partida."):format(side.name or "O adversário"))
+end
+
+function MatchManager.ForfeitDisconnected(match)
+	if match.phase == "finished" then return end
+
+	local losingSide, winningSide
+	for _, side in ipairs(match.sides) do
+		if side.id == match.suspendedId then losingSide = side else winningSide = side end
+	end
+	if not (losingSide and winningSide) then return end
+
+	local ranked, why = IsRankedPvp(match)
+
+	match.suspendedAt = nil
+	match.suspendedId = nil
+	match.suspendedName = nil
+	losingSide.awaitingReconnect = nil
+
+	match.phase = "finished"
+	match.winner = winningSide.id
+
+	if not match.rankingDone then
+		match.rankingDone = true
+
+		if ranked and winningSide.player then
+			print(("[Ranking] vitoria por desconexao registrada para %s"):format(winningSide.player.Name))
+			LeaderboardService.RecordWin(tonumber(winningSide.id))
+		else
+			print(("[Ranking] desconexao ignorada — %s"):format(why or "sem vencedor humano"))
+		end
+	end
+
+	AwardXp(match, winningSide, "win", math.max(#LivingHeroesOf(match, winningSide.id), 1))
+	losingSide.player = nil
+
+	Broadcast(match, "Adversário não voltou a tempo.")
+end
+
 function MatchManager.HandlePlayerLeft(player)
 	local match = MatchOfPlayer(player)
 	if not match then return end
@@ -3670,9 +3799,40 @@ function MatchManager.HandlePlayerLeft(player)
 	local side = SideOfPlayer(match, player)
 	if not side then return end
 
+	local other = match.sides[side.index == 1 and 2 or 1]
+	local canWait = GameConfig.RECONNECT_WINDOW > 0
+		and match.phase ~= "finished"
+		and not match.vsBot
+		and not match.fight
+		and other.player ~= nil
+		and not match.suspendedAt
+
+	if canWait then
+		side.player = nil
+		SuspendForReconnect(match, side)
+		return
+	end
+
 	AwardAbandon(match, side)
 	side.player = nil
 	EndMatch(match)
+end
+
+function MatchManager.HandlePlayerRejoined(player)
+	local wanted = tostring(player.UserId)
+
+	for _, match in pairs(matches) do
+		if match.suspendedAt and match.suspendedId == wanted then
+			for _, side in ipairs(match.sides) do
+				if side.id == wanted and side.awaitingReconnect then
+					MatchManager.ResumeFromReconnect(match, side, player)
+					return true
+				end
+			end
+		end
+	end
+
+	return false
 end
 
 function MatchManager.GetLog(player)
