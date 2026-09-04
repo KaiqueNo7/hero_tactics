@@ -15,10 +15,6 @@ local GameConfig = require(script.Parent.GameConfig)
 
 local Progression = {}
 
--- ===== RECOMPENSA POR PARTIDA =====
--- A vitória paga pela margem: quanto mais herói sobrou vivo, mais XP. A derrota
--- paga um consolo fixo pra quem perdeu ainda sentir que avançou.
--- A tabela é indexada por sobreviventes e cobre de 1 até HEROES_PER_PLAYER.
 Progression.WIN_XP_BY_SURVIVORS = {
 	[1] = 30,
 	[2] = 40,
@@ -26,45 +22,23 @@ Progression.WIN_XP_BY_SURVIVORS = {
 }
 
 Progression.LOSS_XP = 20
-Progression.DRAW_XP = 20 -- empate é os dois lados zerados: paga igual à derrota
-
--- Vitória contra o bot paga fixo, independente da margem: o bot é treino, não
--- fonte de XP. (Derrota continua pagando LOSS_XP em qualquer modo.)
+Progression.DRAW_XP = 20
 Progression.BOT_WIN_XP = 10
-
--- ===== CURVA DE NÍVEL =====
--- Cada nível pede um pouco mais que o anterior: nível 2 com 100 de XP, nível 3
--- com +150, nível 4 com +200... Assim as primeiras partidas sobem rápido e o
--- ritmo desacelera sozinho, sem precisar de tabela escrita à mão.
-Progression.BASE_XP = 100 -- XP pra sair do nível 1
-Progression.XP_STEP = 50 -- quanto cada nível seguinte cobra a mais
+Progression.BASE_XP = 100
+Progression.XP_STEP = 50
 Progression.MAX_LEVEL = 100
-
--- ===== MOEDAS =====
--- Duas torneiras: a vitória pinga pouco e toda hora, o nível jorra de vez em
--- quando.
---
--- Moeda NÃO compra mais herói. O elenco inteiro sai da escada de confrontos
--- contra bot (ReplicatedStorage.Modules.Campaign), e o HERO_COST que morava
--- aqui saiu junto com a vitrine de compra. Saldo e nível continuam de pé pro
--- moedas (Monetization) e pro que vier depois.
 Progression.WIN_COINS = 50
 Progression.LEVEL_UP_COINS = 500
 
--- Quanto uma partida paga em moedas. Só a vitória paga: o consolo da derrota e
--- do empate é o XP, que sempre pinga.
 function Progression.MatchCoins(result)
 	return result == "win" and Progression.WIN_COINS or 0
 end
 
--- XP necessário pra sair deste nível e ir pro seguinte
 function Progression.XpToAdvance(level)
 	level = math.max(1, math.floor(tonumber(level) or 1))
 	return Progression.BASE_XP + (level - 1) * Progression.XP_STEP
 end
 
--- Traduz o XP acumulado da vida inteira em { level, xpIntoLevel, xpForNext }.
--- xpForNext = 0 significa nível máximo (a barra fica cheia).
 function Progression.FromTotalXp(totalXp)
 	totalXp = math.max(0, math.floor(tonumber(totalXp) or 0))
 
@@ -85,8 +59,6 @@ function Progression.FromTotalXp(totalXp)
 	return { level = level, xpIntoLevel = remaining, xpForNext = needed, totalXp = totalXp }
 end
 
--- result: "win" | "loss" | "draw". survivors só importa na vitória.
--- vsBot marca partida contra o bot.
 function Progression.MatchReward(result, survivors, vsBot)
 	if result == "win" then
 		if vsBot then return Progression.BOT_WIN_XP end
@@ -96,8 +68,7 @@ function Progression.MatchReward(result, survivors, vsBot)
 			1,
 			GameConfig.HEROES_PER_PLAYER
 		)
-		-- se HEROES_PER_PLAYER crescer sem a tabela acompanhar, paga o mínimo em
-		-- vez de dar nil e derrubar o fim de partida
+
 		return Progression.WIN_XP_BY_SURVIVORS[alive] or Progression.LOSS_XP
 	elseif result == "draw" then
 		return Progression.DRAW_XP

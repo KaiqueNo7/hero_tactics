@@ -5,29 +5,13 @@ local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 
 local ArenaBuilder = {}
 
--- Margens medidas EM RELAÇÃO À CÂMERA, não aos eixos do mundo: ela orbita em
--- azimute 91 graus (ver CameraController), ou seja, olha o tabuleiro de +X pra
--- -X. Então +X é a frente aberta (precisa de chão sobrando pra câmera não ver o
--- vazio embaixo dela), -X é o fundo que aparece no topo da tela, e as duas
--- bordas de Z são as laterais — que é onde os dois competidores ficam de pé.
--- Estas margens têm que CONTER A CÂMERA, não só emoldurar o tabuleiro. Ela
--- orbita a boardCenter num raio que chega a DEFAULT_DISTANCE * ZOOM_MAX_FACTOR
--- (ver CameraController): no azimute 91° com elevação 44°, o afastamento em X é
--- 0.72 * raio. Com o zoom máximo atual isso põe a câmera ~57 studs além da
--- borda do tabuleiro — se MARGIN_CAMERA for menor que isso, no zoom aberto a
--- câmera fica FORA do diorama e enxerga o vazio por baixo e pelos lados.
--- Era exatamente esse o "vão preto": 60 aqui contra uma câmera que ia a 73.
 local MARGIN_CAMERA = 80
 local MARGIN_BACK = 48
 local MARGIN_SIDE = 62
-
--- Piso 48 x 62 (tabuleiro) + margens = ~176 x ~186. Tem que caber dentro de
--- GameConfig.ARENA_SPACING, senão o piso de uma arena invade a vizinha.
 local FLOOR_THICKNESS = 2
 local TRIM_OUTSET = 6
 local TRIM_DROP = 3
 
--- Altura MÍNIMA de qualquer parede/penhasco, independente do que o tema pede.
 local function MakePart(props, parent)
 	local part = Instance.new("Part")
 	part.Anchored = true
@@ -83,8 +67,6 @@ function ArenaBuilder.Build(theme, origin, folderName)
 	bounds.centerX = (bounds.minX + bounds.maxX) / 2
 	bounds.centerZ = (bounds.minZ + bounds.maxZ) / 2
 
-	-- A luz segue o TABULEIRO, não o meio do piso: com a folga da câmera o piso
-	-- é assimétrico, e centrar nele puxaria o poço de luz pra fora do jogo.
 	bounds.boardCenterX = (boardMin.X + boardMax.X) / 2
 	bounds.boardCenterZ = (boardMin.Z + boardMax.Z) / 2
 

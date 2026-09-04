@@ -36,8 +36,6 @@ local RewardQueueService = require(ServerScriptService.Modules.RewardQueueServic
 local HERO_STORE_NAME = "HeroTactics_Heroes_v1"
 local heroStore = DataStoreService:GetDataStore(HERO_STORE_NAME)
 
--- Mesmo padrão do ProfileUpdate e do WalletUpdate: criados aqui se faltarem, pra
--- quem clonar o repo não precisar montar os remotes na mão dentro do place.
 local remotes = ReplicatedStorage:WaitForChild("Remotes")
 
 local function EnsureRemote(className, name)
@@ -54,19 +52,12 @@ local rosterUpdate = EnsureRemote("RemoteEvent", "RosterUpdate")
 
 local HeroUnlockService = {}
 
--- [userId] = { [dataId] = true } — só os CONQUISTADOS. Os `starter` não entram
--- aqui: eles saem do catálogo, e gravar o óbvio só faria a chave crescer à toa.
 local owned = {}
 
--- ===================== LEITURA =====================
 local function WonSet(userId)
 	return owned[userId] or {}
 end
 
--- O que o jogador pode levar pra partida: os iniciais + os conquistados. É
--- também o conjunto que o Campaign lê pra dizer o que está aberto, o que está
--- concluído e se o PvP já abriu. `player` (e não userId) porque o DevAccess
--- decide pela pessoa, não pelo número.
 function HeroUnlockService.GetPlayableIds(player)
 	local userId = player and player.UserId or nil
 	local fullCatalog = DevAccess.HasFullCatalog(player)
@@ -85,17 +76,6 @@ function HeroUnlockService.OwnsHero(player, dataId)
 	return HeroUnlockService.GetPlayableIds(player)[dataId] == true
 end
 
-
--- ===================== ESTADO PRO CLIENTE =====================
--- Manda a lista de ids conquistados. O lobby junta isso com o catálogo (que ele
--- já tem) e com o Campaign pra desenhar o elenco E os quadrados de confronto.
--- `unlocked` é o id recém-conquistado, pra UI poder comemorar; nil no estado
--- inicial.
--- Manda o conjunto EFETIVO (GetPlayableIds), e não só os conquistados: é o
--- mesmo que o servidor usa pra decidir se o confronto está trancado. Enquanto
--- eram listas diferentes, o testador/dono via cadeado na tela e entrava assim
--- mesmo — porque pro servidor o DevAccess já tinha liberado tudo, e o cliente
--- não sabia disso. Uma lista só, os dois lados enxergam a mesma coisa.
 local function Push(player, unlocked)
 	if not player or not player.Parent then return end
 
@@ -113,11 +93,8 @@ local function Load(player)
 		("leitura de heróis de %s"):format(player.Name))
 	if not ok then value = nil end
 
-	-- saiu enquanto o GetAsync rodava: não deixa lixo no cache
 	if not player.Parent then return end
 
-	-- guardado como lista de ids (compacto e legível no painel do DataStore);
-	-- em memória vira conjunto, que é como todo o resto do código pergunta
 	local set = {}
 	if type(value) == "table" then
 		for _, dataId in ipairs(value) do
@@ -130,14 +107,6 @@ local function Load(player)
 	Push(player)
 end
 
--- ===================== CONQUISTA =====================
--- Chamada pelo MatchManager quando o jogador vence um confronto da campanha.
--- Devolve (ok, motivo); o motivo é pro log do servidor.
---
--- IDEMPOTENTE de propósito: "já possui" sai como recusa silenciosa e sem erro.
--- É o que faz o estado "concluído" do quadrado valer — repetir um confronto já
--- vencido (revanche, ou o mesmo evento de fim de partida chegando duas vezes)
--- não regrava nada nem dispara comemoração de novo.
 function HeroUnlockService.Unlock(player, dataId)
 	if not player then return false, "sem jogador" end
 
@@ -158,17 +127,6 @@ function HeroUnlockService.Unlock(player, dataId)
 	for id in pairs(set) do table.insert(ids, id) end
 	table.sort(ids)
 
-	-- O CACHE RECEBE O HERÓI ANTES DA GRAVAÇÃO, e é desfeito se ela falhar.
-	--
-	-- Antes só entrava depois, e o SafeStore.Update CEDE (grava, tenta de novo,
-	-- espera orçamento) — havia uma janela de segundos entre vencer o confronto e
-	-- a sessão saber disso. Quem clicasse "Próximo herói" dentro dela era mandado
-	-- de volta pro MESMO adversário: o confronto recém-vencido ainda constava
-	-- como "open" pro Campaign.StateOf. A mesma janela deixava o pad do lobby
-	-- aceso e o menu desatualizado logo depois da vitória.
-	--
-	-- A vitória é fato da SESSÃO no instante em que acontece; o disco é onde ela
-	-- é lembrada depois. Inverter a ordem é o que alinha os dois.
 	local hadBefore = owned[userId]
 	owned[userId] = set
 
@@ -177,9 +135,6 @@ function HeroUnlockService.Unlock(player, dataId)
 	end, ("gravação de heróis de %s"):format(player.Name))
 
 	if not stored then
-		-- Desfaz: sessão e disco não podem divergir. O jogador vence de novo e
-		-- conquista de novo — melhor do que ele achar que tem um herói que some
-		-- no próximo login.
 		set[dataId] = nil
 		owned[userId] = hadBefore
 		warn(("HeroUnlockService: %s venceu %s e o desbloqueio não gravou.")
@@ -201,7 +156,6 @@ Players.PlayerRemoving:Connect(function(player)
 	owned[player.UserId] = nil
 end)
 
--- o módulo pode ser exigido depois de alguém já ter entrado (Studio, hot reload)
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(Load, player)
 end

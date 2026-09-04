@@ -220,19 +220,62 @@ Skills.aloneIsBetter = {
 	end,
 }
 
--- Elaria — cura 2 dos aliados adjacentes feridos no fim do turno
+-- ClearNegativeEffects, e não ClearStatusEffects: o texto da skill sempre
+-- disse "remove os efeitos NEGATIVOS", mas o código varria a lista
+-- inteira — a Elaria apagava o empréstimo de ataque do barril, o Embalo
+-- do Rush e o Sangue Fervendo do Spyke junto com o veneno, e passou a
+-- apagar também o escudo da Kira no próprio aliado que ela ia proteger.
+--
+-- É o sistema central de status quem decide o que é removível: nenhuma lista
+-- de efeitos mora aqui dentro.
+local function CleanseAlly(ctx, ally)
+	local removed = ctx.api.ClearNegativeEffects(ally)
+	if #removed == 0 then return 0 end
+
+	ctx.api.Effect(ally, "clean")
+	ctx.api.Tally(ctx.hero, "alliesCleansed")
+	ctx.api.Tally(ctx.hero, "negativeEffectsRemoved", #removed)
+	for _, effectType in ipairs(removed) do
+		ctx.api.Tally(ctx.hero, "removed_" .. effectType)
+	end
+
+	return #removed
+end
+
+-- Elaria — cura os aliados adjacentes, limpa os efeitos negativos deles e
+-- fecha os próprios ferimentos no fim do turno
 Skills.health = {
 	triggers = { "onTurnEnd" },
 	apply = function(ctx)
+		local token = ctx.api.TurnToken()
+		if ctx.hero.supportTurnToken == token then return end
+		ctx.hero.supportTurnToken = token
+
+		local healed, cleansed = 0, 0
+
 		for _, ally in ipairs(ctx.api.GetAlliesInRange(ctx.hero, 1)) do
-			if ally.isAlive and ally.currentHp < ally.maxHp then
-				-- terceiro parâmetro = quem curou. Única cura do jogo em outro
-				-- herói, e por isso a única que precisa dizer de quem é o crédito:
-				-- sem ele a telemetria daria a cura ao CURADO, e a coluna da
-				-- Elaria (a razão de ela existir) ficaria zerada.
-				ctx.api.Heal(ally, 2, ctx.hero)
+			if ally.isAlive then
+				if ally.currentHp < ally.maxHp then
+					-- terceiro parâmetro = quem curou. Única cura do jogo em outro
+					-- herói, e por isso a única que precisa dizer de quem é o crédito:
+					-- sem ele a telemetria daria a cura ao CURADO, e a coluna da
+					-- Elaria (a razão de ela existir) ficaria zerada.
+					local gained = ctx.api.Heal(ally, GameConfig.ELARIA_ALLY_HEAL, ctx.hero)
+					if gained > 0 then
+						healed += gained
+						ctx.api.Tally(ctx.hero, "allyHealing", gained)
+					end
+				end
+
+				cleansed += CleanseAlly(ctx, ally)
 			end
 		end
+
+		if healed == 0 and cleansed == 0 then return end
+		if cleansed > 0 then ctx.api.Tally(ctx.hero, "cleanses") end
+
+		local own = ctx.api.Heal(ctx.hero, GameConfig.ELARIA_SELF_HEAL)
+		if own > 0 then ctx.api.Tally(ctx.hero, "selfHealing", own) end
 	end,
 }
 
@@ -240,23 +283,10 @@ Skills.health = {
 Skills.clean = {
 	triggers = { "onAttack" },
 	apply = function(ctx)
-		local limpou = false
-
-		-- ClearNegativeEffects, e não ClearStatusEffects: o texto da skill sempre
-		-- disse "remove os efeitos NEGATIVOS", mas o código varria a lista
-		-- inteira — a Elaria apagava o empréstimo de ataque do barril, o Embalo
-		-- do Rush e o Sangue Fervendo do Spyke junto com o veneno, e passou a
-		-- apagar também o escudo da Kira no próprio aliado que ela ia proteger.
+		local cleansed = 0
 		for _, ally in ipairs(ctx.api.GetAlliesInRange(ctx.hero, 1)) do
-			local sujo = false
-			for _, effect in ipairs(ally.statusEffects) do
-				if GameConfig.IsNegativeEffect(effect.type) then sujo = true break end
-			end
-
-			if sujo then
-				ctx.api.ClearNegativeEffects(ally)
-				ctx.api.Effect(ally)
-				limpou = true
+			if ally.isAlive then
+				cleansed += CleanseAlly(ctx, ally)
 			end
 		end
 
@@ -269,7 +299,8 @@ Skills.clean = {
 		-- A guarda existe pelo mesmo motivo do goodLuck: a skill dispara em todo
 		-- ataque da Elaria, mas na maioria deles nao ha nada pra limpar — sem ela
 		-- o som viraria parte do som de ataque dela.
-		if limpou then
+		if cleansed > 0 then
+			ctx.api.Tally(ctx.hero, "cleanses")
 			ctx.api.PlaySkillSound("clean")
 		end
 	end,
@@ -419,6 +450,10 @@ local function SyncWolf(ctx)
 
 	if frenzy ~= hero.frenzyActive then
 		api.SetFrenzyAura(hero, frenzy)
+		if frenzy then
+			api.Tally(hero, "frenzyActivations")
+			api.Tally(hero, "turnsBeforeFrenzySum", api.TurnNumber())
+		end
 	end
 
 	hero.frenzyActive = frenzy
@@ -1125,23 +1160,47 @@ Skills.weakPoint = {
 		local target = ctx.target
 		if not target then return end
 
+		local api = ctx.api
+
 		if ctx.trigger == "onAttack" then
+			ctx.weakPointDirection = target.weakPoint
 			ctx.weakPointHit = target.weakPoint ~= nil
-				and target.weakPoint == ctx.api.WeakPointDirection(target.position, ctx.hero.position)
+				and target.weakPoint == api.WeakPointDirection(target.position, ctx.hero.position)
 			return
 		end
 
-		ctx.api.RecordChainHit(ctx.hero, target)
+		api.RecordChainHit(ctx.hero, target)
+		api.Tally(ctx.hero, "weakPointAttacks")
 
-		if not ctx.weakPointHit then return end
+		if not ctx.weakPointHit then
+			api.Tally(ctx.hero, "weakPointMisses")
+			return
+		end
 
-		ctx.api.Effect(target, "weakPoint")
-		ctx.api.PlaySkillSound("weakPoint")
-		ctx.api.Heal(ctx.hero, GameConfig.WEAK_POINT_HEAL, ctx.hero)
-		ctx.api.GrantExtraAction(ctx.hero, true)
+		api.Tally(ctx.hero, "weakPointsHit")
+		api.Tally(ctx.hero, "wpHit_" .. api.DirectionName(ctx.weakPointDirection))
+		if ctx.targetKilled then api.Tally(ctx.hero, "weakPointKills") end
+
+		local turn = api.TurnNumber()
+		if ctx.hero.lastWeakPointTurn then
+			api.Tally(ctx.hero, "weakPointHitGapSum", turn - ctx.hero.lastWeakPointTurn)
+			api.Tally(ctx.hero, "weakPointHitGaps")
+		end
+		ctx.hero.lastWeakPointTurn = turn
+
+		api.BreakWeakPoint(target)
+		api.PlaySkillSound("weakPoint")
+		api.Effect(target, "weakPoint")
+
+		local healed = api.Heal(ctx.hero, GameConfig.WEAK_POINT_HEAL, ctx.hero)
+		api.Tally(ctx.hero, "weakPointHealing", healed)
+
+		api.GrantExtraAction(ctx.hero, true)
+		api.Tally(ctx.hero, "extraAttacksFromWeakPoint")
 
 		if target.isAlive then
-			ctx.api.RerollWeakPoint(target)
+			api.RerollWeakPoint(target)
+			api.Tally(ctx.hero, "weakPointsGenerated")
 		end
 	end,
 }

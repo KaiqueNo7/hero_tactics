@@ -33,62 +33,22 @@ local Lighting = game:GetService("Lighting")
 
 local LightingSetup = {}
 
--- A tela de carregamento (ReplicatedFirst) espera por este atributo antes de
--- liberar a entrada. O nome vive aqui pra os dois lados lerem a mesma string.
 LightingSetup.READY_ATTRIBUTE = "HeroTacticsLightingReady"
 
--- ===== CÉU ABERTO / SOL =====
--- ATENÇÃO: ajustar o ClockTime pelo Explorer NÃO se sustenta. O Apply() abaixo
--- roda no servidor quando a partida começa e reescreve estas propriedades por
--- cima do que estiver salvo no place — era isso que apagava o horário calibrado
--- à mão em modo Edit assim que o jogo entrava em Play. Quem manda no sol é este
--- arquivo; o Explorer serve só pra pré-visualizar antes de trazer o número pra cá.
---
--- 11.6 = 11:36. Sol quase a pino: a parede da taverna para de projetar sombra
--- dentro da arena. Era 14.2 (meio da tarde), que dá sombra longa e bonita no
--- lobby aberto, mas atravessa o tabuleiro inteiro — no diorama fechado a beleza
--- custava legibilidade.
 local CLOCK_TIME = 11.6
--- Anda junto com o horário: a latitude inclina o sol pro lado, então mexer em um
--- sem olhar o outro devolve a sombra por um caminho diferente.
 local GEOGRAPHIC_LATITUDE = 24
 local BRIGHTNESS = 2.4
-
--- ===== LUZ INDIRETA =====
--- Ambient vale pro mundo todo (inclusive dentro da taverna); OutdoorAmbient só
--- pro que enxerga o céu.
---
--- O Ambient era azulado, imitando céu quicando na parede — fazia sentido quando
--- a taverna era um diorama de três paredes com a frente aberta pro sol. A
--- taverna atual é uma SALA FECHADA (quatro paredes e teto): nenhum fóton do sol
--- entra, o azul não tinha de onde vir, e o que sobrava era um cinza morto.
--- Agora é âmbar escuro: é a luz do fogo e das tochas quicando na madeira, que é
--- a única luz indireta que existe lá dentro.
---
--- Este é o valor que mais pesa na cena. Ele sozinho decide o quão preto fica o
--- que nenhuma luz alcança — e "preto puro" é o que faz o ambiente parecer um
--- modelo sem acabamento em vez de uma taverna à noite.
 local AMBIENT = Color3.fromRGB(46, 38, 33)
 local OUTDOOR_AMBIENT = Color3.fromRGB(124, 132, 148)
 
--- Sol quente por cima, sombra fria por baixo: o contraste de temperatura é o
--- que faz o olho ler a cena como luz de verdade.
 local COLOR_SHIFT_TOP = Color3.fromRGB(26, 19, 8)
 local COLOR_SHIFT_BOTTOM = Color3.fromRGB(8, 11, 20)
 
--- O padrão (1) deixa tudo espelhado e lavado; baixar o specular devolve a
--- madeira fosca da taverna sem tirar o brilho do metal.
 local ENVIRONMENT_DIFFUSE = 0.85
 local ENVIRONMENT_SPECULAR = 0.35
-
--- Subiu pra 0.18 quando a taverna estava escura demais; agora que a sala tem
--- luz própria a compensação vira brilho em cima de brilho. 0.08 tira o excesso
--- sem devolver o ambiente pro escuro.
 local EXPOSURE_COMPENSATION = 0.08
-local SHADOW_SOFTNESS = 0.42 -- borda de sombra difusa = "suave"
+local SHADOW_SOFTNESS = 0.42 
 
--- ===== ATMOSFERA =====
--- Dá profundidade de graça (é pós-processamento, não custa luz nenhuma).
 local ATMOSPHERE = {
 	Density = 0.28,
 	Offset = 0.1,
@@ -98,25 +58,9 @@ local ATMOSPHERE = {
 	Haze = 1.1,
 }
 
--- ===== PÓS-PROCESSAMENTO =====
--- Bloom discreto: o suficiente pra tocha e o Neon do anel de time "acenderem",
--- longe do borrão branco que come o contraste do tabuleiro.
---
--- O Threshold foi a 1.05 pra fazer a lareira brilhar, e passou do ponto: as
--- velas do lustre (Neon) e o fogo viravam uma bolha branca chapada, sem forma
--- nenhuma, bem no topo do enquadramento. 1.45 devolve o desenho da chama e das
--- velas e ainda deixa halo nelas — o halo tem que sugerir a fonte, não apagá-la.
---
--- Este é o número que controla "está muito brilhoso", e não o Ambient: o que
--- estourava eram as FONTES, não a luz do ambiente.
 local BLOOM = { Enabled = true, Intensity = 0.45, Size = 20, Threshold = 1.45 }
 local SUN_RAYS = { Enabled = true, Intensity = 0.03, Spread = 0.2 }
 
--- Sala fechada iluminada só por fogo e janela vira uma mancha laranja uniforme:
--- tudo na mesma família de cor, e o olho lê "textura de madeira", não "ambiente".
--- Contraste separa de novo o que a luz alcança do que não alcança, e a saturação
--- devolve a cor que a exposição alta lava. Valores baixos de propósito — isto
--- vale pro LOBBY também, que é céu aberto e não aguenta correção pesada.
 local COLOR_CORRECTION = {
 	Enabled = true,
 	Contrast = 0.12,
@@ -125,24 +69,8 @@ local COLOR_CORRECTION = {
 	TintColor = Color3.fromRGB(255, 249, 242),
 }
 
--- Desfoque de profundidade fica DESLIGADO: a câmera olha o tabuleiro de longe e
--- de cima, então qualquer DepthOfField borra exatamente as casas que o jogador
--- precisa ler. Fica registrado aqui pra ninguém religar sem querer.
 local DEPTH_OF_FIELD_ENABLED = false
 
--- ===== LUZ DE DENTRO DA TAVERNA =====
--- A taverna é uma sala fechada: o sol da Lighting não entra em nenhum ponto
--- dela, então TODA a luz de lá vem daqui.
---
--- Os emissores são achados pelo NOME do que você montou no Studio, e não por
--- uma lista de posições: decore à vontade, mova a janela, duplique o lustre —
--- no próximo start o construtor reposiciona a luz sozinho. É o mesmo padrão do
--- LobbyZoneBuilder (construtor idempotente), então mexer na luz à mão pelo
--- Explorer NÃO gruda: mude os números aqui.
---
--- Cada emissor mora numa peça invisível própria (AUTO_LIGHT_NAME) em vez de ir
--- pendurada na decoração: assim dá pra apagar e reconstruir tudo sem risco de
--- levar junto uma luz que você tenha posto à mão.
 local AUTO_LIGHT_NAME = "AutoLight"
 
 local ARENA_EMITTERS = {
@@ -189,8 +117,6 @@ local function BoundsOf(instance)
 	return cframe.Position, size
 end
 
--- Reconstrói a luz da arena. Chamado pelo BoardSpawner, e seguro de rodar
--- quantas vezes for: apaga o que ele mesmo criou antes de recriar.
 function LightingSetup.LightArena(folder)
 	if not folder then return end
 
@@ -328,7 +254,6 @@ function LightingSetup.Apply()
 	Lighting.ExposureCompensation = EXPOSURE_COMPENSATION
 	Lighting.ShadowSoftness = SHADOW_SOFTNESS
 
-	-- névoa legada desligada: quem faz o ar aqui é o Atmosphere
 	Lighting.FogStart = 0
 	Lighting.FogEnd = 100000
 
@@ -342,10 +267,6 @@ function LightingSetup.Apply()
 		depthOfField.Enabled = DEPTH_OF_FIELD_ENABLED
 	end
 
-	-- Bandeira pra tela de carregamento: atributo replica junto com o resto, então
-	-- o cliente sabe que a luz que ele está vendo já é a definitiva e não a
-	-- Lighting padrão do place. Sem isso o jogador entraria a tempo de ver a cena
-	-- "acender" na frente dele.
 	Lighting:SetAttribute(LightingSetup.READY_ATTRIBUTE, true)
 
 	print("LightingSetup: paleta aplicada (ajuste Lighting.Technology na mão).")

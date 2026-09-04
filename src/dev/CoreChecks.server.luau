@@ -86,7 +86,8 @@ end
 local missingApi = {}
 
 local function FakeApi()
-	local log = { damage = {}, heals = {}, flames = {}, status = {}, summons = {}, board = {}, missing = {} }
+	local log = { damage = {}, heals = {}, flames = {}, status = {}, summons = {}, board = {},
+		missing = {}, tally = {}, broken = {}, turnToken = 1 }
 	local api = {
 		ApplyDamage = function(hero, amount, attacker)
 			table.insert(log.damage, { hero = hero, amount = amount, attacker = attacker })
@@ -95,6 +96,30 @@ local function FakeApi()
 		end,
 		Heal = function(hero, amount)
 			table.insert(log.heals, { hero = hero, amount = amount })
+			local before = hero.currentHp
+			hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp)
+			return hero.currentHp - before
+		end,
+		Tally = function(_hero, key, value)
+			log.tally[key] = (log.tally[key] or 0) + (value or 1)
+		end,
+		TurnToken = function() return log.turnToken end,
+		TurnNumber = function() return log.turnToken end,
+		DirectionName = HexGrid.DirectionName,
+		BreakWeakPoint = function(hero)
+			table.insert(log.broken, hero)
+		end,
+		ClearNegativeEffects = function(hero)
+			local remaining, removed = {}, {}
+			for _, effect in ipairs(hero.statusEffects) do
+				if GameConfig.IsNegativeEffect(effect.type) then
+					table.insert(removed, effect.type)
+				else
+					table.insert(remaining, effect)
+				end
+			end
+			hero.statusEffects = remaining
+			return removed
 		end,
 		IncreaseAttack = function(hero, amount) hero.attack += amount end,
 		Effect = function() end,
@@ -408,8 +433,8 @@ if lineA then
 	check("Morn ergue a leva inteira", #log.summons == skullCap, #log.summons)
 	check("caveira nasce 1/1",
 		log.summons[1] ~= nil and log.summons[1].attack == 1 and log.summons[1].maxHp == 1)
-	check("caveira anda so uma casa",
-		HeroData.GetMoveRange(HeroData.GetById(GameConfig.MORN_SUMMON_IDS[1])) == 1)
+	check("caveira anda duas casas",
+		HeroData.GetMoveRange(HeroData.GetById(GameConfig.MORN_SUMMON_IDS[1])) == 2)
 
 	Skills.raiseSkulls.apply(ctx)
 	check("nao ergue de novo com a leva de pe", #log.summons == skullCap, #log.summons)
@@ -1087,11 +1112,62 @@ do
 		put(rush, core)
 		put(bully, corner)
 
-		local escape = MatchQuery.DodgeHexFor(board, rush, corner)
-		check("Rush esquiva com espaco aberto", escape ~= nil)
+		local escape, livres, foraDoAlcance = MatchQuery.DodgeHexFor(board, rush, bully)
+		check("Rush esquiva de um melee com espaco aberto", escape ~= nil)
 		check("a esquiva termina longe do atacante",
 			escape ~= nil and HexGrid.Distance(escape, corner) >= GameConfig.DODGE_MIN_DISTANCE,
 			escape and HexGrid.Distance(escape, corner))
+		check("a esquiva sai do alcance do atacante",
+			escape ~= nil and HexGrid.Distance(escape, corner) > MatchQuery.AttackRangeOf(board, bully),
+			escape and HexGrid.Distance(escape, corner))
+		check("contra melee toda rota livre ja fica fora de alcance",
+			livres == foraDoAlcance, ("%d livres, %d fora"):format(livres, foraDoAlcance))
+
+		-- A Wren alcanca 4: nenhum vizinho do Rush sai do alcance dela, entao a
+		-- passiva falha por ALCANCE mesmo com o tabuleiro inteiro vazio.
+		local sniper = FakeHero(19, "B", corner)
+		board.occupied[corner] = sniper
+		board.heroes[bully.uid] = nil
+		board.heroes[sniper.uid] = sniper
+
+		local semSaida, livresWren, foraWren = MatchQuery.DodgeHexFor(board, rush, sniper)
+		check("Wren cobre todas as rotas de fuga do Rush", semSaida == nil)
+		check("as rotas existiam, mas nenhuma saiu do alcance da Wren",
+			livresWren > 0 and foraWren == 0, ("%d livres, %d fora"):format(livresWren, foraWren))
+
+		-- Kor alcanca 3 e esta longe: o alcance DELE nao pode invalidar nada,
+		-- porque quem esta atacando e o melee.
+		board.heroes[sniper.uid] = nil
+		board.occupied[corner] = bully
+		board.heroes[bully.uid] = bully
+
+		local vizinhoLonge
+		for _, neighbor in ipairs(HexGrid.GetNeighbors(core)) do
+			if HexGrid.Distance(neighbor.id, corner) >= GameConfig.DODGE_MIN_DISTANCE then
+				vizinhoLonge = neighbor.id
+				break
+			end
+		end
+
+		if vizinhoLonge then
+			local korHex
+			for _, hex in ipairs(HexGrid.GetNeighbors(vizinhoLonge)) do
+				if board.occupied[hex.id] == nil and hex.id ~= core then
+					korHex = hex.id
+					break
+				end
+			end
+
+			if korHex then
+				local kor = FakeHero(10, "B", korHex)
+				put(kor, korHex)
+				local comKor = MatchQuery.DodgeHexFor(board, rush, bully)
+				check("casa coberta por outro inimigo continua sendo rota valida",
+					comKor ~= nil)
+				board.occupied[korHex] = nil
+				board.heroes[kor.uid] = nil
+			end
+		end
 
 		local blocked = 0
 		for _, neighbor in ipairs(HexGrid.GetNeighbors(core)) do
@@ -1101,8 +1177,10 @@ do
 			end
 		end
 		check("o cerco tem casas pra fechar", blocked > 0, blocked)
-		check("sem saida a 2 casas o Rush leva o golpe",
-			MatchQuery.DodgeHexFor(board, rush, corner) == nil)
+
+		local cercado, livresCercado = MatchQuery.DodgeHexFor(board, rush, bully)
+		check("sem saida a 2 casas o Rush leva o golpe", cercado == nil)
+		check("cerco fisico nao deixa rota livre nenhuma", livresCercado == 0, livresCercado)
 
 		check("vizinho colado no atacante nao serve de fuga",
 			HexGrid.Distance(corner, core) < GameConfig.DODGE_MIN_DISTANCE)
@@ -1263,11 +1341,11 @@ do
 	board.heroes[bully.uid] = bully
 
 	check("caso 1: Rush normal tem rota de fuga",
-		MatchQuery.DodgeHexFor(board, rush, lineA) ~= nil)
+		MatchQuery.DodgeHexFor(board, rush, bully) ~= nil)
 
 	table.insert(rush.statusEffects, { type = "paralysis", duration = 1 })
 	check("caso 2: paralisia nao remove a rota, quem barra e o PerformAttack",
-		MatchQuery.DodgeHexFor(board, rush, lineA) ~= nil)
+		MatchQuery.DodgeHexFor(board, rush, bully) ~= nil)
 	check("caso 2: paralisado e reconhecido como incapacitado",
 		MatchQuery.FindStatusEffect(rush, "paralysis") ~= nil)
 end
@@ -1653,6 +1731,56 @@ do
 end
 
 do
+	local api, log = FakeApi()
+	local elaria = FakeHero(8, "A", lineA)
+	local ally = FakeHero(1, "A", lineB)
+
+	api.GetAlliesInRange = function() return { ally } end
+
+	local function suporte()
+		Skills.health.apply({ hero = elaria, api = api, trigger = "onTurnEnd" })
+	end
+
+	elaria.currentHp = elaria.maxHp - 5
+	ally.currentHp = ally.maxHp - 5
+	table.insert(ally.statusEffects, { type = "poison", duration = 3 })
+	table.insert(ally.statusEffects, { type = "freeze", duration = 2 })
+	table.insert(ally.statusEffects, { type = "momentum", duration = 1, attackBonus = 2 })
+
+	suporte()
+	check("Elaria) o aliado recebe a cura de ficha",
+		ally.currentHp == ally.maxHp - 5 + GameConfig.ELARIA_ALLY_HEAL, ally.currentHp)
+	check("Elaria) ela se cura junto",
+		elaria.currentHp == elaria.maxHp - 5 + GameConfig.ELARIA_SELF_HEAL, elaria.currentHp)
+	check("Elaria) o cleanse leva os dois efeitos negativos",
+		log.tally.negativeEffectsRemoved == 2, log.tally.negativeEffectsRemoved)
+	check("Elaria) o cleanse nao encosta no que e positivo",
+		#ally.statusEffects == 1 and ally.statusEffects[1].type == "momentum")
+
+	suporte()
+	check("Elaria) a mesma acao nao dispara duas vezes",
+		log.tally.allyHealing == GameConfig.ELARIA_ALLY_HEAL
+			and log.tally.selfHealing == GameConfig.ELARIA_SELF_HEAL,
+		("%s cura aliada / %s autocura"):format(
+			tostring(log.tally.allyHealing), tostring(log.tally.selfHealing)))
+
+	log.turnToken = 2
+	elaria.currentHp = elaria.maxHp
+	ally.currentHp = ally.maxHp
+	local antes = elaria.currentHp
+	suporte()
+	check("Elaria) aliado inteiro e sem debuff nao gasta o ciclo",
+		log.tally.cleanses == 1 and elaria.currentHp == antes)
+
+	log.turnToken = 3
+	ally.currentHp = ally.maxHp - 1
+	suporte()
+	check("Elaria) sem overheal no aliado", ally.currentHp == ally.maxHp)
+	check("Elaria) com HP cheio ela simplesmente nao recebe cura",
+		elaria.currentHp == elaria.maxHp and log.tally.selfHealing == GameConfig.ELARIA_SELF_HEAL)
+end
+
+do
 	local KARO_ID, LUCY_ID = 12, 17
 
 	local beyond = lineC and HexGrid.GetLineBeyond(lineB, lineC, 2) or nil
@@ -1778,10 +1906,16 @@ do
 			local turn = { moved = {}, attacked = {}, bonusMove = {}, weakChain = {} }
 			turn.attacked[zaro.uid] = true
 
-			local api = FakeApi()
-			api.Heal = function(hero, amount) hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp) end
+			local api, log = FakeApi()
+			api.Heal = function(hero, amount)
+				local before = hero.currentHp
+				hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp)
+				return hero.currentHp - before
+			end
 			api.WeakPointDirection = HexGrid.DirectionBetween
-			api.RerollWeakPoint = function(hero) hero.weakPoint = 4 end
+			api.RerollWeakPoint = function(hero)
+				hero.weakPoint = HexGrid.RandomDirection(hero.weakPoint)
+			end
 			api.RecordChainHit = function(hero, target)
 				local hits = turn.weakChain[hero.uid] or {}
 				hits[target.uid] = true
@@ -1798,19 +1932,48 @@ do
 			ctx.trigger = "onAttackResolved"
 			Skills.weakPoint.apply(ctx)
 
-			return zaro, alvo, turn, ctx
+			return zaro, alvo, turn, ctx, log
 		end
 
-		local zaro, alvo, turn, ctx = Cenario(ladoCerto)
+		local zaro, alvo, turn, ctx, log = Cenario(ladoCerto)
 		check("Zaro) atacar pelo lado certo ativa o Ponto Fraco", ctx.weakPointHit == true)
 		check("Zaro) a ativacao cura", zaro.currentHp == zaro.maxHp - 5 + GameConfig.WEAK_POINT_HEAL,
 			zaro.currentHp)
 		check("Zaro) a ativacao devolve o ataque", turn.attacked[zaro.uid] == nil)
 		check("Zaro) a ativacao devolve o movimento", turn.bonusMove[zaro.uid] == true)
-		check("Zaro) o alvo ganha um Ponto Fraco novo", alvo.weakPoint == 4, alvo.weakPoint)
+		check("Zaro) o alvo ganha um Ponto Fraco novo", alvo.weakPoint ~= nil, alvo.weakPoint)
+		check("Zaro) o Ponto Fraco novo nunca repete o lado quebrado", alvo.weakPoint ~= 1,
+			alvo.weakPoint)
 		check("Zaro) o alvo entra na cadeia", turn.weakChain[zaro.uid][alvo.uid] == true)
+		check("Zaro) a marca quebra no alvo antes de nascer a nova",
+			log.broken[1] == alvo and #log.broken == 1)
+		check("Zaro) o acerto conta na telemetria",
+			log.tally.weakPointsHit == 1 and log.tally.weakPointMisses == nil
+				and log.tally.weakPointAttacks == 1)
+		check("Zaro) a telemetria registra a direcao acertada",
+			log.tally["wpHit_" .. HexGrid.DirectionName(1)] == 1)
+		check("Zaro) a telemetria soma a cura do ponto fraco",
+			log.tally.weakPointHealing == GameConfig.WEAK_POINT_HEAL, log.tally.weakPointHealing)
+		check("Zaro) a telemetria conta o ataque extra",
+			log.tally.extraAttacksFromWeakPoint == 1)
 
-		local zaroErrado, alvoErrado, turnErrado, ctxErrado = Cenario(ladoErrado)
+		local semRepeticao = true
+		for _ = 1, 200 do
+			if HexGrid.RandomDirection(3) == 3 then semRepeticao = false break end
+		end
+		check("Zaro) o sorteio nunca devolve o lado excluido", semRepeticao)
+
+		local sorteados = {}
+		for _ = 1, 400 do sorteados[HexGrid.RandomDirection(3)] = true end
+		local distintos = 0
+		for _ in pairs(sorteados) do distintos += 1 end
+		check("Zaro) o sorteio alcanca as outras cinco direcoes",
+			distintos == HexGrid.DIRECTION_COUNT - 1, distintos)
+
+		local zaroErrado, alvoErrado, turnErrado, ctxErrado, logErrado = Cenario(ladoErrado)
+		check("Zaro) lado errado nao quebra marca nenhuma", #logErrado.broken == 0)
+		check("Zaro) lado errado conta como erro na telemetria",
+			logErrado.tally.weakPointMisses == 1 and logErrado.tally.weakPointsHit == nil)
 		check("Zaro) lado errado nao ativa", ctxErrado.weakPointHit == false)
 		check("Zaro) lado errado nao cura", zaroErrado.currentHp == zaroErrado.maxHp - 5)
 		check("Zaro) lado errado nao devolve acao", turnErrado.attacked[zaroErrado.uid] == true)
@@ -1821,7 +1984,11 @@ do
 		local zaroCheio = FakeHero(ZARO_ID, "A", ladoCerto)
 		local antes = zaroCheio.currentHp
 		local apiCheio = FakeApi()
-		apiCheio.Heal = function(hero, amount) hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp) end
+		apiCheio.Heal = function(hero, amount)
+			local before = hero.currentHp
+			hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp)
+			return hero.currentHp - before
+		end
 		apiCheio.WeakPointDirection = HexGrid.DirectionBetween
 		local alvoCheio = FakeHero(6, "B", alvoHex)
 		alvoCheio.weakPoint = 1
@@ -1832,6 +1999,50 @@ do
 		Skills.weakPoint.apply(ctxCheio)
 		check("Zaro) a cura respeita o HP maximo", zaroCheio.currentHp == antes, zaroCheio.currentHp)
 	end
+end
+
+do
+	local KIRA_ID = HeroData.GetByName("Kira").id
+
+	local kira = FakeHero(KIRA_ID, "A", lineA)
+	local outraKira = FakeHero(KIRA_ID, "A", lineC)
+	local wren = FakeHero(19, "A", lineB)
+	local ceos = FakeHero(6, "A", lineC)
+	local board = FakeMatch({ kira, wren, ceos })
+	board.heroes[outraKira.uid] = outraKira
+
+	check("Kira) sem escudo em campo ela esta livre",
+		MatchQuery.ActiveShieldOf(board, kira) == nil)
+
+	local escudo = { type = "shield", permanent = true, duration = 0, source = kira, grantedTurn = 3 }
+	table.insert(wren.statusEffects, escudo)
+
+	check("Kira) com um escudo ativo ela nao pode conceder outro",
+		MatchQuery.ActiveShieldOf(board, kira) == wren)
+	check("Kira) o escudo dela nao trava outra fonte",
+		MatchQuery.ActiveShieldOf(board, outraKira) == nil)
+	check("Kira) o aliado sem escudo nao e confundido com o protegido",
+		MatchQuery.FindStatusEffect(ceos, "shield") == nil)
+
+	wren.isAlive = false
+	check("Kira) o protegido morrer libera a Egide na hora",
+		MatchQuery.ActiveShieldOf(board, kira) == nil)
+
+	wren.isAlive = true
+	kira.isAlive = false
+	check("Kira) o escudo sobrevive a morte dela sem referencia quebrada",
+		MatchQuery.ActiveShieldOf(board, kira) == wren)
+
+	kira.isAlive = true
+	for index = #wren.statusEffects, 1, -1 do
+		if wren.statusEffects[index].type == "shield" then table.remove(wren.statusEffects, index) end
+	end
+	check("Kira) gastar o escudo devolve a escolha",
+		MatchQuery.ActiveShieldOf(board, kira) == nil)
+
+	local revivida = FakeHero(KIRA_ID, "A", lineA)
+	check("Kira) revivida volta sem escudo pendurado",
+		MatchQuery.ActiveShieldOf(board, revivida) == nil and #revivida.statusEffects == 0)
 end
 
 if #failures == 0 then

@@ -139,6 +139,18 @@ function MatchQuery.HasSkill(hero, key)
 end
 
 -- ===================== EFEITOS =====================
+function MatchQuery.ActiveShieldOf(match, source)
+	if not source then return nil end
+
+	for _, other in pairs(match.heroes) do
+		if other.isAlive then
+			local effect = MatchQuery.FindStatusEffect(other, "shield")
+			if effect and effect.source == source then return other end
+		end
+	end
+	return nil
+end
+
 function MatchQuery.FindStatusEffect(hero, effectType)
 	for _, effect in ipairs(hero.statusEffects) do
 		if effect.type == effectType then return effect end
@@ -185,28 +197,61 @@ function MatchQuery.CanMove(match, hero)
 	return not match.turn.attacked[hero.uid]
 end
 
-function MatchQuery.DodgeHexFor(match, hero, attackerPos)
+function MatchQuery.AttackRangeOf(_match, hero)
+	return hero.attackRange
+end
+
+function MatchQuery.AttackReachFrom(match, hero, fromPos, ignore)
+	local isFree = MatchQuery.FreeChecker(match)
+	local checker = isFree
+
+	if ignore then
+		checker = function(hexId)
+			return ignore[hexId] == true or isFree(hexId)
+		end
+	end
+
+	return HexGrid.ComputeReach(fromPos or hero.position,
+		MatchQuery.AttackRangeOf(match, hero), checker)
+end
+
+function MatchQuery.DodgeHexFor(match, hero, attacker, fromPos)
+	fromPos = fromPos or attacker.position
+
+	local reach = MatchQuery.AttackReachFrom(match, attacker, fromPos, {
+		[hero.position] = true,
+		[attacker.position] = true,
+		[fromPos] = true,
+	})
 	local best, bestAway, bestExposure = nil, -1, math.huge
+	local reachable, outOfRange = 0, 0
 
 	for _, neighbor in ipairs(HexGrid.GetNeighbors(hero.position)) do
-		local away = HexGrid.Distance(neighbor.id, attackerPos)
+		local away = HexGrid.Distance(neighbor.id, fromPos)
 
 		if away >= GameConfig.DODGE_MIN_DISTANCE and MatchQuery.IsFree(match, neighbor.id) then
-			local exposure = 0
-			for _, other in pairs(match.heroes) do
-				if other.isAlive and other ~= hero and other.ownerId ~= hero.ownerId
-					and HexGrid.Distance(neighbor.id, other.position) <= other.attackRange then
-					exposure += 1
-				end
-			end
+			reachable += 1
 
-			if away > bestAway or (away == bestAway and exposure < bestExposure) then
-				best, bestAway, bestExposure = neighbor.id, away, exposure
+			if not reach[neighbor.id] then
+				outOfRange += 1
+
+				local exposure = 0
+				for _, other in pairs(match.heroes) do
+					if other.isAlive and other ~= hero and other.ownerId ~= hero.ownerId
+						and HexGrid.Distance(neighbor.id, other.position)
+							<= MatchQuery.AttackRangeOf(match, other) then
+						exposure += 1
+					end
+				end
+
+				if away > bestAway or (away == bestAway and exposure < bestExposure) then
+					best, bestAway, bestExposure = neighbor.id, away, exposure
+				end
 			end
 		end
 	end
 
-	return best
+	return best, reachable, outOfRange
 end
 
 function MatchQuery.TauntBlocks(match, attacker, target, fromPos)

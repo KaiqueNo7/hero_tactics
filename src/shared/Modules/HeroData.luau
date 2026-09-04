@@ -88,7 +88,7 @@ HeroData.CATALOG = {
 		sprite = "127914513925837", spriteSize = Vector2.new(299, 358), scale = 0.98
 	},
 
-	{ id = 11, name = "Merlin", attack = 2, hp = 22, ability = nil,
+	{ id = 11, name = "Merlin", attack = 2, hp = 20, ability = nil,
 		abilities = { "bloodScent", "frenzy" },
 		color = Color3.fromRGB(150, 70, 60),
 		sprite = "85377589727040", spriteSize = Vector2.new(259, 348), scale = 0.87 
@@ -109,49 +109,17 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(140, 140, 140),
 		sprite = "95596148134035", spriteSize = Vector2.new(447, 361), scale = 1.62 },
 
-	-- Lucy — irmã do Karo. `flamePath` é literalmente a MESMA skill dele, não uma
-	-- cópia: o rastro de fogo já é por lado (match.flames[hexId].ownerId), não por
-	-- herói, então ela acende e cruza o mesmo fogo sem código extra nenhum. O
-	-- payoff é que muda: ele pisa em chama e ganha ataque (flameFury), ela pisa e
-	-- se cura (flameHeal). Sem Sprint/Ranged/Taunt de propósito — ela protege de
-	-- perto, não de longe.
 	{ id = 17, name = "Lucy", attack = 1, hp = 22, ability = nil,
 		abilities = { "flamePath", "flameHeal", "emberShield" },
 		color = Color3.fromRGB(240, 150, 120),
 		sprite = "108465334355138", spriteSize = Vector2.new(312, 416), scale = 0.88 },
 
-	-- Zeff — controle de posicionamento, não dano. Empurra os aliados do ALVO
-	-- pra longe dele (não os do próprio Zeff) e o alvo pra longe do Zeff,
-	-- abrindo a formação inteira em vez de recuar uma peça só.
-	--
-	-- `attackRange` aqui é override, não a ability `Ranged` — ele mantém
-	-- `Sprint` (move 3, ficha e texto de UI continuam sendo os do Sprint) e
-	-- ganha o alcance de ataque padrão do Ranged por fora, igual o Kor fazia
-	-- quando atirava mais longe que o resto (ver HeroData.GetAttackRange).
-	-- Escreve `GameConfig.RANGED_ATTACK_RANGE` em vez de número solto porque,
-	-- ao contrário do Kor, este não é um valor PRÓPRIO — é o padrão do jogo,
-	-- e deve acompanhar se ele mudar.
-	--
-	-- O preço que ele pagava por controlar formação era o contra-ataque (o
-	-- revide só exige `Distance <= attackRange do alvo`, não adjacência) —
-	-- com alcance 2 ele empurra sem entrar no alcance de ninguém que não seja
-	-- Ranged também. Se sair forte demais nos testes, é aqui que se mexe
-	-- primeiro, antes de tocar em ataque/vida.
 	{ id = 18, name = "Zeff", attack = 2, hp = 17, ability = "Sprint",
 		attackRange = GameConfig.RANGED_ATTACK_RANGE,
 		abilities = { "gustPush", "tailwind" },
 		color = Color3.fromRGB(150, 230, 220),
 		sprite = "86076939045382", spriteSize = Vector2.new(412, 405), scale = 1.19 },
 
-	-- Wren — atiradora. `ability = "Ranged"` com `attackRange` próprio é o
-	-- mesmo arranjo que o Kor usava quando atirava mais longe que os outros
-	-- Ranged: a passiva diz O QUE ela é (e a ficha na UI lê o alcance real
-	-- dela, não o padrão), o campo diz QUANTO.
-	--
-	-- `attack = 3` é DECORATIVO: o longShot sempre substitui o dano pelo valor
-	-- da distância (damageApplied), então este número nunca é o dano de fato.
-	-- Fica em 3 por ser o meio da faixa que ela causa (1 a 4) — é o palpite
-	-- menos mentiroso pro crachá, que não tem como prever o alvo.
 	{ id = 19, name = "Wren", attack = 3, hp = 12, ability = "Ranged",
 		attackRange = GameConfig.WREN_RANGE,
 		abilities = { "longShot" },
@@ -180,54 +148,21 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(120, 200, 255),
 		sprite = "78746546330925", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 
-	-- Spyke — o primeiro Agility do elenco. `ability = "Agility"` é tudo o que
-	-- separa ele dos outros: o segundo passo depois do golpe sai da ability, não
-	-- de nada escrito com o nome dele (ver GameConfig.HasAgility).
-	--
-	-- 1 de ataque na ficha é de propósito: o que ele soma ao time não é o golpe
-	-- dele, é o +1 que ele empresta a QUEM ESTÁ DO LADO — e o Agility é o que
-	-- deixa ele bater e ainda escolher, no mesmo turno, de quem vai ficar perto.
-	-- Move 2 e alcança 1 como qualquer ficha comum: a mobilidade dele vem do
-	-- SEGUNDO passo, não de um passo maior.
 	{ id = 26, name = "Spyke", attack = 1, hp = 22, ability = "Agility",
 		abilities = { "rallyAura", "vengeance" },
 		color = Color3.fromRGB(255, 190, 90),
 		sprite = "111811180757505", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 
-	-- Kira — tanque de SUPORTE. O Taunt puxa o foco pra ela, e a Égide escolhe
-	-- quem sobrevive ao golpe que ela NÃO conseguiu puxar. 1 de ataque é o preço:
-	-- ela não converte turno em dano, converte em turno de outro.
-	--
-	-- Taunt de ficha, sem uma linha de Taunt própria: ela entra inteira na regra
-	-- que já existe (ver MatchQuery.TauntBlocks), inclusive na de vários
-	-- provocadores em campo ao mesmo tempo.
 	{ id = 27, name = "Kira", attack = 1, hp = 33, ability = "Taunt",
 		abilities = { "aegis" },
 		color = Color3.fromRGB(240, 205, 120),
 		sprite = "86628005150597", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 
-	{ id = 28, name = "Zaro", attack = 3, hp = 15, ability = nil,
+	{ id = 28, name = "Zaro", attack = 3, hp = 15, ability = nil, attackSound = "SwordSwing",
 		abilities = { "weakPoint" },
 		color = Color3.fromRGB(190, 200, 225),
 		sprite = "73708047829791", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 }
-
--- ===== TAMANHO APARENTE =====
--- `scale` multiplica a moldura do sprite no tabuleiro. 1 = normal, e a maioria
--- do elenco não precisa do campo.
---
--- POR QUE ALGUNS PRECISAM. A moldura tem proporção fixa (5.8 x 8.12 studs) e o
--- ScaleType.Fit encaixa a arte dentro dela sem distorcer — logo, quem tem arte
--- LARGA é limitado pela largura e sobra vazio em cima e embaixo. Medindo a arte
--- de cada asset, a altura desenhada ia de 4.5 (Golem) a 7.8 studs (Ralph): 74%
--- de diferença que ninguém escolheu, que saiu só da proporção do PNG. É por
--- isso que o ajuste é por ficha, e não uma constante global.
---
--- Isto é IRMÃO do spriteSize, não substituto: `scale` decide o tamanho, o
--- spriteSize decide onde ficam os pés. Ampliar um sprite largo sem o segundo
--- amplia junto a faixa vazia embaixo dele — foi o que deixou o Golem no ar.
---
--- Ao trocar a arte de um herói, vale remedir os dois números.
 
 local MINI_GOLEM_SPRITE = "125545602412754"
 local MINI_GOLEM_SIZE = Vector2.new(251, 202)
@@ -238,7 +173,7 @@ local SKULL_SIZE = Vector2.new(418, 504)
 local SKULL_SCALE = MINI_GOLEM_SCALE
 local SKULL_ATTACK = 1
 local SKULL_HP = 1
-local SKULL_MOVE = 1
+local SKULL_MOVE = 2
 local SKULL_DEATH_SOUND = "SkullBreak"
 
 HeroData.SUMMONS = {
@@ -283,7 +218,7 @@ HeroData.SKILL_INFO = {
 		:format(GameConfig.VOLT_CHAIN_DAMAGE, GameConfig.VOLT_CHARGE_DURATION, GameConfig.VOLT_CHARGES_TO_PARALYZE) },
 	momentum      = { name = "Embalo",         desc = ("Cada casa andada no próprio turno vale +%d de ataque no próximo golpe daquele turno. O bônus é gasto no ataque e não passa para o turno seguinte.")
 		:format(GameConfig.MOMENTUM_PER_HEX) },
-	dodge         = { name = "Reflexo Supersônico", desc = ("Ao ser alvo de um ataque, escapa 1 casa e evita o golpe por completo — mas só para um vizinho livre que o deixe a %d casas ou mais do atacante. Sem essa saída, leva o ataque normalmente.")
+	dodge         = { name = "Reflexo Supersônico", desc = ("Ao ser alvo de um ataque, escapa 1 casa e evita o golpe por completo — mas só para um vizinho livre que o deixe a %d casas ou mais do atacante E fora do alcance de ataque dele. Só o alcance de quem está atacando conta: outro inimigo cobrir a casa não a invalida. Sem essa saída, leva o ataque normalmente.")
 		:format(GameConfig.DODGE_MIN_DISTANCE) },
 	poisonAttack  = { name = "Poison Attack",  desc = "Envenena o inimigo por 3 turnos." },
 	poisonFlask   = { name = "Frasco de Veneno", desc = ("Golpe simples que envenena por %d turnos. Não causa dano extra em quem já está envenenado.")
@@ -295,7 +230,8 @@ HeroData.SKILL_INFO = {
 	trustInTeam   = { name = "Trust in Team",  desc = "Recebe +1 de ataque ao ter aliados em casas adjacentes." },
 	absorbRoots   = { name = "Absorb Roots",   desc = "Recupera vida equivalente ao dano causado." },
 	aloneIsBetter = { name = "Alone is Better",desc = "Causa o dobro de dano ao atacar um inimigo isolado." },
-	health        = { name = "Health",         desc = "Cura aliados próximos em +2 no fim do turno." },
+	health        = { name = "Health",         desc = ("Cura os aliados adjacentes em +%d no fim do turno, limpa os efeitos negativos deles e recupera +%d de vida para si mesma quando alguém foi atendido.")
+		:format(GameConfig.ELARIA_ALLY_HEAL, GameConfig.ELARIA_SELF_HEAL) },
 	clean         = { name = "Clean",          desc = "Remove os efeitos negativos de aliados próximos." },
 	rage          = { name = "Rage",           desc = ("Move o inimigo uma casa para trás. Se bloqueado, causa +%d de dano.")
 		:format(GameConfig.RAGE_BLOCKED_BONUS) },
@@ -338,7 +274,7 @@ HeroData.SKILL_INFO = {
 	tailwind = { name = "Vento a Favor", desc = ("Aliados colados em Zeff andam +%d casa. Vale enquanto estiverem ao lado dele — basta o Zeff chegar perto no meio do turno.")
 		:format(GameConfig.WIND_BOOST_MOVE_BONUS) },
 
-	-- Wren (nome de trabalho)
+	-- Wren 
 	longShot = { name = "Tiro Longo", desc = ("Causa dano igual à distância até o alvo (mínimo 1, máximo %d) em vez do ataque de ficha. Quanto mais perto o alvo, mais fraco o tiro.")
 		:format(GameConfig.WREN_RANGE) },
 
@@ -385,9 +321,6 @@ function HeroData.GetAbilityDescription(data)
 
 	local base = HeroData.ABILITY_INFO[data.ability]
 
-	-- Alcance por FORA da ability (Zeff: Sprint + `attackRange` avulso, ver
-	-- HeroData.CATALOG) não aparece em lugar nenhum se não somar aqui — a
-	-- frase de cima só fala de alcance quando a ability É Ranged.
 	local range = HeroData.GetAttackRange(data)
 	if range > GameConfig.BASE_ATTACK_RANGE then
 		local rangedText = ("Ataca a até %d casas de distância."):format(range)

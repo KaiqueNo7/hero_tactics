@@ -24,7 +24,6 @@ local GameConfig = require(script.Parent.GameConfig)
 
 local HexGrid = {}
 
--- ===== CONFIGURAÇÃO =====
 local COLUMN_LETTERS = { "A", "B", "C", "D", "E" }
 local COLUMN_COUNTS = { 6, 7, 6, 7, 6 }
 
@@ -50,7 +49,6 @@ end
 
 HexGrid.HEX_SIZE = HEX_SIZE
 
--- ===== ESTADO INTERNO =====
 local hexes = {}
 local hexList = {}
 local axialToId = {}
@@ -61,7 +59,6 @@ local function offsetToAxial(col, row0)
 	return q, r
 end
 
--- ===== GERAÇÃO =====
 function HexGrid.Generate()
 	hexes = {}
 	hexList = {}
@@ -91,25 +88,12 @@ function HexGrid.Generate()
 		end
 	end
 
-	-- ===== CASAS DE PROMOÇÃO =====
-	-- Duas casas a mais, na ponta da coluna central (C, que tem 6 linhas contra 7
-	-- de B/D — por isso ela é o "meio" de verdade do tabuleiro). C0 estende antes
-	-- de C1, C7 estende depois de C6.
-	--
-	-- Entram como hexágonos NORMAIS, não um sistema à parte: mesma tabela, mesmo
-	-- axial, mesma fórmula de vizinho. Isso é o que faz Distance/GetNeighbors/
-	-- ComputeReach/FindPath tratá-las como qualquer casa sem precisar de nenhuma
-	-- linha extra de código — C1 ganha C0 como vizinha, C6 ganha C7, automático.
-	-- GetBoardBounds também passa a incluir as duas sozinho, o que é o efeito
-	-- desejado: câmera e posição dos competidores (GetStandPosition) se ajustam
-	-- pra fora, dando espaço pras novas casas sem sobrepor nada — checado em jogo
-	-- antes desta implementação.
-	local CENTER_COLUMN = 2 -- índice de "C" em COLUMN_LETTERS (0-based)
+	local CENTER_COLUMN = 2
 	local CENTER_LETTER = COLUMN_LETTERS[CENTER_COLUMN + 1]
 	local CENTER_ROWS = COLUMN_COUNTS[CENTER_COLUMN + 1]
 
-	for _, row0 in ipairs({ -1, CENTER_ROWS }) do -- antes da linha 1, depois da última
-		local id = CENTER_LETTER .. tostring(row0 + 1) -- row0=-1 -> "C0", row0=6 -> "C7"
+	for _, row0 in ipairs({ -1, CENTER_ROWS }) do
+		local id = CENTER_LETTER .. tostring(row0 + 1) 
 		local q, r = offsetToAxial(CENTER_COLUMN, row0)
 
 		local hex = {
@@ -130,7 +114,6 @@ function HexGrid.Generate()
 	return hexList
 end
 
--- ===== CONSULTAS =====
 function HexGrid.GetHex(id)
 	return hexes[id]
 end
@@ -178,6 +161,22 @@ end
 
 HexGrid.DIRECTION_COUNT = #AXIAL_DIRECTIONS
 
+HexGrid.DIRECTION_NAMES = {
+	"bottom-left", "bottom-right", "right", "top-right", "top-left", "left",
+}
+
+function HexGrid.DirectionName(direction)
+	return HexGrid.DIRECTION_NAMES[direction] or "unknown"
+end
+
+function HexGrid.RandomDirection(exclude)
+	if not exclude then return math.random(HexGrid.DIRECTION_COUNT) end
+
+	local choice = math.random(HexGrid.DIRECTION_COUNT - 1)
+	if choice >= exclude then choice += 1 end
+	return choice
+end
+
 function HexGrid.NeighborInDirection(id, direction)
 	local hex = hexes[id]
 	local delta = AXIAL_DIRECTIONS[direction]
@@ -206,8 +205,6 @@ function HexGrid.DirectionAngle(direction)
 	return math.atan2(z, x)
 end
 
--- Casa existe e (na visão de quem perguntou) está vazia. Sem `isFree` assume
--- tabuleiro vazio: serve pro cliente, que já filtra pelo próprio snapshot.
 function HexGrid.Exists(id)
 	return hexes[id] ~= nil
 end
@@ -216,10 +213,6 @@ local function AlwaysFree(id)
 	return hexes[id] ~= nil
 end
 
--- ===== GEOMETRIA =====
--- `offset` desloca o tabuleiro inteiro. O servidor passa a arena da partida; o
--- cliente omite e cai no BOARD_OFFSET de módulo, que vale pra única partida
--- que ele está jogando.
 function HexGrid.GetWorldPosition(id, offset)
 	local hex = hexes[id]
 	if not hex then return nil end
@@ -232,8 +225,6 @@ function HexGrid.GetWorldPosition(id, offset)
 	return Vector3.new(x + offset.X, offset.Y, z + offset.Z)
 end
 
--- Cantos do tabuleiro (já incluindo a largura das peças da borda).
--- A câmera usa isso pra enquadrar o tabuleiro inteiro sem hardcodar hex nenhum.
 function HexGrid.GetBoardBounds(offset)
 	if #hexList == 0 then
 		HexGrid.Generate()
@@ -250,14 +241,9 @@ function HexGrid.GetBoardBounds(offset)
 		maxZ = math.max(maxZ, pos.Z)
 	end
 
-	-- meia-peça de margem: flat-top mede R na horizontal, sqrt(3)/2*R na vertical
 	local padX = HEX_SIZE
 	local padZ = HEX_SIZE * math.sqrt(3) / 2
 
-	-- O Y sai da própria arena, não é zero fixo. Enquanto ARENA_ORIGIN morou em
-	-- y=0 dava no mesmo, mas com a taverna lá em cima o zero fazia o
-	-- GetBoardCenter devolver um ponto no chão do mundo — e a câmera, que orbita
-	-- esse ponto, ia olhar o vazio centenas de studs abaixo do tabuleiro.
 	local y = (offset or BOARD_OFFSET).Y
 
 	return Vector3.new(minX - padX, y, minZ - padZ), Vector3.new(maxX + padX, y, maxZ + padZ)
@@ -268,20 +254,10 @@ function HexGrid.GetBoardCenter(offset)
 	return (minV + maxV) / 2
 end
 
--- Distância entre as LINHAS de hexágono no eixo Z. Um passo em `r` vale
--- sqrt(3)*HEX_SIZE (ver GetWorldPosition), então esta é a medida de "uma casa"
--- pra quem anda pra fora do tabuleiro.
 local function HexRowSpacing()
 	return HEX_SIZE * math.sqrt(3)
 end
 
--- Onde cada competidor fica de pé: lados opostos do tabuleiro, os dois no
--- MESMO X (o centro do campo) e separados só no Z. Slot 1 fica na borda de +Z,
--- slot 2 na de -Z. Client e server chamam esta mesma função pra não divergirem.
---
--- A folga sai da borda REAL (GetBoardBounds), não do centro de um hex-âncora:
--- como B e D têm 7 linhas contra 6 de A/C/E, a borda não é reta, e medir por
--- uma coluna só deixava o bonequim caindo meio em cima de uma casa.
 function HexGrid.GetStandPosition(slot, groundY, offset)
 	local minV, maxV = HexGrid.GetBoardBounds(offset)
 	local center = HexGrid.GetBoardCenter(offset)
@@ -291,18 +267,11 @@ function HexGrid.GetStandPosition(slot, groundY, offset)
 	return Vector3.new(center.X, groundY, z)
 end
 
--- Pra onde cada um olha. Como os dois estão no mesmo X e em bordas opostas do
--- Z, andar reto no eixo Z já mira exatamente o adversário — slot 1 olha pra -Z,
--- slot 2 pra +Z. Dois treinadores encarando um ao outro por cima do campo.
 function HexGrid.GetStandFacing(slot, standPos)
 	local forwardZ = (slot == 2) and 1 or -1
 	return standPos + Vector3.new(0, 0, forwardZ * 10)
 end
 
--- BFS de alcance. Atravessa apenas casas livres, mas REGISTRA as ocupadas
--- que encosta (são alvos válidos de ataque, mesmo bloqueando a passagem).
--- Retorna { [hexId] = distância }. `isFree` é injetável porque o client
--- calcula ocupação a partir do snapshot, não do estado do servidor.
 function HexGrid.ComputeReach(originId, maxSteps, isFree)
 	isFree = isFree or AlwaysFree
 
@@ -331,18 +300,6 @@ function HexGrid.ComputeReach(originId, maxSteps, isFree)
 	return dist
 end
 
--- Mesmo FORMATO da ComputeReach ({ [hexId] = distância }), regra oposta: conta
--- em LINHA DE VISADA, pela distância axial pura, sem se importar com o que está
--- no caminho.
---
--- Existe porque a ComputeReach é uma BFS que só atravessa casa livre — ela
--- mede quantos PASSOS a pé, e contorna obstáculo. Pra quem anda isso é certo;
--- pra quem atira, não: a bala não dá a volta no barril. E a diferença não é só
--- estética, ela mente no número — com um obstáculo no meio, um alvo a 4 casas
--- de distância real entra como "5 passos", e uma habilidade que cobra pela
--- distância (ver Skills.longShot) cobra 4 num tiro que o alcance tratou como 5.
--- Arredonda um ponto cúbico fracionário pra casa mais próxima. O eixo que mais
--- errou é recalculado a partir dos outros dois, que é o que mantém q+r+s = 0.
 local function CubeRound(q, r, s)
 	local rq, rr, rs = math.round(q), math.round(r), math.round(s)
 	local dq, dr, ds = math.abs(rq - q), math.abs(rr - r), math.abs(rs - s)
@@ -357,21 +314,8 @@ local function CubeRound(q, r, s)
 	return rq, rr
 end
 
--- O empurrãozinho no traçado não é frescura: uma reta que passa EXATAMENTE na
--- aresta entre duas casas fica em cima do empate no arredondamento, e sem ele o
--- desempate cai pro lado que a conta escolher.
 local LINE_NUDGE = 1e-6
 
--- Continua em linha reta ALÉM de toId, mantendo a direção from->to, UMA casa
--- por passo. Usada por beyondFront (dano em sequência), rage e gustPush
--- (empurrão).
---
--- A direção é o delta DIVIDIDO pela distância, e não o delta cru. Com o delta
--- cru, quem ataca de longe empurrava o alvo pela distância inteira do golpe: o
--- Bramm (alcance 1) funcionava por coincidência, porque ali o delta já é um
--- passo, e o Zeff (alcance 2) jogava o alvo DUAS casas adiante — quase sempre
--- fora do tabuleiro ou em cima de alguém, e por isso o empurrão dele nunca
--- acontecia e virava só o dano de bloqueado.
 function HexGrid.GetLineBeyond(fromId, toId, maxSteps)
 	local from, to = hexes[fromId], hexes[toId]
 	if not from or not to then return {} end
@@ -395,9 +339,6 @@ function HexGrid.GetLineBeyond(fromId, toId, maxSteps)
 	return result
 end
 
--- Caminho mais curto atravessando só casas livres, respeitando maxSteps.
--- Retorna a lista de hexes do primeiro passo até o destino (sem a origem),
--- ou nil se não houver caminho. Usado pra animar o herói casa por casa.
 function HexGrid.FindPath(fromId, toId, maxSteps, isFree, bias)
 	isFree = isFree or AlwaysFree
 

@@ -19,16 +19,8 @@
 local GuiService = game:GetService("GuiService")
 
 local SafeArea = {}
-
--- Respiro entre a barra do Roblox e o nosso primeiro elemento. Não é firula:
--- colado, o dedo que mira no nosso botão acerta o do Roblox.
 SafeArea.MARGIN = 10
 
--- Altura da faixa do topo, em pixels.
---
--- Duas fontes porque elas discordam: o GetGuiInset é o deslocamento clássico
--- (existe em todo lugar) e o TopbarInset é a barra unificada nova, que pode ser
--- mais alta. Fica a maior — errar pra baixo é o que produz o toque roubado.
 function SafeArea.TopInset()
 	local topLeft = GuiService:GetGuiInset()
 	local top = topLeft.Y
@@ -41,7 +33,6 @@ function SafeArea.TopInset()
 	return top
 end
 
--- Primeiro Y livre pra uma GUI que ignora o inset.
 function SafeArea.Top()
 	return SafeArea.TopInset() + SafeArea.MARGIN
 end

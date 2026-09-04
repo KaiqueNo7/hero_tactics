@@ -22,7 +22,6 @@ local winsStore = DataStoreService:GetOrderedDataStore(WINS_STORE_NAME)
 local updatedEvent = Instance.new("BindableEvent")
 LeaderboardService.Updated = updatedEvent.Event
 
--- userId numérico do vencedor. Nunca chamar pro lado bot.
 function LeaderboardService.RecordWin(userId)
 	if type(userId) ~= "number" then return end
 
@@ -40,7 +39,6 @@ function LeaderboardService.RecordWin(userId)
 	end
 end
 
--- Retorna { {userId, name, wins}, ... } ordenado do maior pro menor
 function LeaderboardService.GetTop(count)
 	local ok, pages = pcall(function()
 		return winsStore:GetSortedAsync(false, count)

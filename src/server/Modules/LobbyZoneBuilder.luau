@@ -43,19 +43,10 @@ local LobbyZoneBuilder = {}
 
 local FOLDER_NAME = "LobbyTrail"
 
--- Lembrado entre as duas metades da entrada: BuildTerrain e PlacePads são
--- chamadas separadas (ver ENTRADA), e quem decide se pode mexer nos quadrados é
--- o que aconteceu com o terreno lá atrás. Trilha adotada do place = a montagem à
--- mão manda em tudo, quadrado incluído.
 local adopted = false
 
--- Zonas levantadas NESTA chamada. Numa trilha adotada, é o que separa "esta ilha
--- é sua, não encosto" de "esta ilha eu acabei de criar, então os quadrados dela
--- também são meus". Sem isso, um grupo novo na campanha nasce com a ilha no
--- lugar certo e o quadrado largado no chão do lobby.
 local built = {}
 
--- ===== PEÇAS =====
 local function NewPart(name, size, cframe, color, material, parent)
 	local part = Instance.new("Part")
 	part.Name = name
@@ -65,22 +56,15 @@ local function NewPart(name, size, cframe, color, material, parent)
 	part.Material = material
 	part.Anchored = true
 	part.CanCollide = true
-	-- O lustre ensinou a lição: peça decorativa que projeta sombra come
-	-- legibilidade. Aqui quem faz o clima é a Atmosphere da zona, não a sombra
-	-- de cada arbusto — e são dezenas deles.
 	part.CastShadow = false
 	part.Parent = parent
 	return part
 end
--- ===== ILHA =====
--- A borda é uma peça a mais, mais larga e mais baixa: dá o "penhasco" de graça,
--- no mesmo estilo achatado do lobby, sem mesh nova.
+
 local function BuildIsland(zone, parent)
 	local span = LobbyZones.ISLAND_SPAN
 	local thickness = LobbyZones.ISLAND_THICKNESS
 	local center = Vector3.new(zone.center.X, LobbyZones.GROUND_Y, zone.center.Y)
-	-- de esquadro com a ponte, que sai na diagonal: ilha quadrada sem girar
-	-- encontra a ponte torta (ver `rotation` no LobbyZones)
 	local spin = CFrame.Angles(0, math.rad(zone.rotation or 0), 0)
 
 	NewPart(zone.id .. "_Rim",
@@ -92,11 +76,6 @@ local function BuildIsland(zone, parent)
 		Vector3.new(span, thickness, span),
 		CFrame.new(center - Vector3.new(0, thickness / 2, 0)) * spin,
 		zone.ground.color, zone.ground.material, parent)
-
-	-- placa com o nome: é o que transforma "mais uma ilha" em "cheguei na
-	-- Geleira". MaxDistance recortado na distância entre duas zonas — sem ele as
-	-- quatro placas aparecem juntas e se sobrepõem numa sopa de letra, que foi
-	-- exatamente o que a primeira montagem mostrou.
 	local sign = Instance.new("BillboardGui")
 	sign.Name = "ZoneSign"
 	sign.Size = UDim2.new(0, 200, 0, 44)
@@ -116,15 +95,6 @@ local function BuildIsland(zone, parent)
 	title.Parent = sign
 end
 
--- ===== PONTE =====
--- Uma por zona, sempre do LOBBY até a ilha — o traçado é uma estrela, não uma
--- fila (ver o cabeçalho do LobbyZones).
---
--- Começa na BORDA do lobby, calculada pelo LobbyEdgeToward: o lobby é
--- retangular, então a saída pro norte e a saída pro leste ficam a distâncias
--- diferentes do centro. Antes isto era um `startInset` fixo que valia zero na
--- primeira ponte, e ela nascia no meio da grama e atravessava o lobby inteiro
--- por baixo.
 local function BuildBridge(zone, index, parent)
 	local from = LobbyZones.LobbyEdgeToward(zone.center)
 	local a = Vector3.new(from.X, LobbyZones.GROUND_Y, from.Y)
@@ -159,20 +129,10 @@ local function BuildBridge(zone, index, parent)
 	end
 end
 
--- ===== A REDE =====
--- Entre as ilhas existe um buraco, e criança vai cair nele. Sem esta peça,
--- cair significa despencar até o fim do mundo e esperar o respawn — num jogo
--- pra criança isso é castigo por ter explorado. Encostou, volta pra entrada da
--- trilha e segue andando.
---
--- A mesma peça é a água do vão: translúcida, sem colisão, logo abaixo da borda
--- das ilhas. Pra desligar, é só não chamar BuildFallNet no BuildTerrain.
 local function TrailBounds(margin)
 	local min, max = Vector2.new(1e9, 1e9), Vector2.new(-1e9, -1e9)
 	local half = LobbyZones.ISLAND_SPAN / 2 + margin
 
-	-- o lobby entra na conta junto das ilhas: a rede precisa cobrir o miolo da
-	-- cruz também, senão quem cai de uma ponte perto de casa passa por dentro
 	local pontos = { LobbyZones.LOBBY_CENTER }
 	for _, zone in ipairs(LobbyZones.ZONES) do
 		table.insert(pontos, zone.center)
@@ -192,8 +152,6 @@ local function BuildFallNet(folder)
 	local old = folder:FindFirstChild("FallCatcher", true)
 	if old then old:Destroy() end
 
-	-- Margem larga: a rede precisa cobrir bem mais que as ilhas, senão quem
-	-- pula com impulso passa POR FORA dela e cai assim mesmo.
 	local min, max = TrailBounds(180)
 	local span = max - min
 	local center = (min + max) / 2
@@ -206,8 +164,6 @@ local function BuildFallNet(folder)
 	net.Transparency = 0.35
 	net.Reflectance = 0.15
 
-	-- Devolve pro CENTRO do lobby, que agora é o eixo da cruz: de lá toda ilha
-	-- fica a uma ponte, então quem caiu volta pertinho de onde estava indo.
 	local casa = LobbyZones.LOBBY_CENTER
 	local landing = CFrame.new(casa.X, LobbyZones.GROUND_Y + 4, casa.Y)
 
@@ -222,9 +178,6 @@ local function BuildFallNet(folder)
 	end)
 end
 
--- O TOPO da ilha montada à mão, pelo nome dela dentro do LobbyTrail. Topo e não
--- centro: o pad assenta EM CIMA da ilha, e uma ilha de 8 studs de espessura
--- enterraria o quadrado se ele fosse pro meio dela.
 function LobbyZoneBuilder.IslandTop(name)
 	if not name then return nil end
 
@@ -244,16 +197,7 @@ function LobbyZoneBuilder.IslandTop(name)
 	return nil
 end
 
--- ===== QUADRADOS DA CAMPANHA =====
--- Coloca no encaixe da planta SÓ o pad que ainda não tem lugar no place. Pad
--- que já existe salvo fica onde o Studio deixou, inclusive fora do lobby —
--- quem manda na coordenada de um quadrado montado à mão é o Explorer.
 function LobbyZoneBuilder.PlacePads()
-	-- A FILEIRA é por ilha, não por grupo. Quase sempre dá no mesmo (uma ilha por
-	-- grupo), mas quem tem `island` próprio se separa: dois confrontos do mesmo
-	-- grupo podem morar em ilhas diferentes, e cada fileira precisa contar só os
-	-- quadrados que vão ficar lado a lado — senão o espaçamento abre buracos
-	-- reservando lugar pra quem foi pra outro lugar.
 	local rows, order = {}, {}
 	for _, fight in ipairs(Campaign.FIGHTS) do
 		local key = fight.island or fight.group
@@ -270,17 +214,10 @@ function LobbyZoneBuilder.PlacePads()
 		local row = rows[key]
 		local fights = row.fights
 		local zone = not row.island and LobbyZones.ForGroup(row.group) or nil
-		-- O grupo pode não ter zona na planta e mesmo assim ter ilha no place —
-		-- é o caso da Boske, montada à mão pros heróis novos. `Campaign.island`
-		-- é o nome da Part/Model dentro do LobbyTrail, e a coordenada sai DELA:
-		-- inventar um `center` na planta pra ilha que já existe seria escrever um
-		-- número que ninguém mediu, e o ZoneAt passaria a mentir a ambiência.
 		local anchor = LobbyZoneBuilder.IslandTop(row.island)
 
 		if zone or anchor then
 			local slots = LobbyZones.PadSlots(zone, #fights, anchor)
-			-- Sem zona na planta não existe "ilha recém-construída": só quadrado
-			-- novo (TrailPending) se encaixa, o resto fica onde o Studio deixou.
 			local zoneIsNew = zone ~= nil and (not adopted or built[zone.id])
 
 			for index, fight in ipairs(fights) do
@@ -310,11 +247,6 @@ function LobbyZoneBuilder.PlacePads()
 		:format(moved, kept))
 end
 
--- ===== ENTRADA =====
--- Terreno e quadrados são DUAS chamadas de propósito, e a ordem importa: quem
--- cria os pads que faltam é o GameStartTrigger, então ele levanta o terreno,
--- deixa os pads nascerem e só depois manda posicionar. Numa chamada só, o
--- PlacePads correria antes de o primeiro pad existir e não acharia nada.
 function LobbyZoneBuilder.BuildTerrain(force)
 	local existing = Workspace:FindFirstChild(FOLDER_NAME)
 
@@ -354,8 +286,6 @@ function LobbyZoneBuilder.BuildTerrain(force)
 	folder.Name = FOLDER_NAME
 	folder.Parent = Workspace
 
-	-- uma ilha e uma ponte por zona: a ponte de cada uma sai do lobby, então as
-	-- duas coisas saem do mesmo laço em vez de uma cadeia de pares
 	for index, zone in ipairs(LobbyZones.ZONES) do
 		BuildIsland(zone, folder)
 		BuildBridge(zone, index, folder)
@@ -368,8 +298,6 @@ function LobbyZoneBuilder.BuildTerrain(force)
 		:format(#LobbyZones.ZONES, #LobbyZones.ZONES, #folder:GetDescendants()))
 end
 
--- Atalho pro modo Edit, onde não existe GameStartTrigger rodando pra ordenar as
--- duas metades.
 function LobbyZoneBuilder.Build(force)
 	LobbyZoneBuilder.BuildTerrain(force)
 	LobbyZoneBuilder.PlacePads()

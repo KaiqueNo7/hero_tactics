@@ -5,11 +5,6 @@ local Arenas = {}
 local SMOKE = "rbxasset://textures/particles/smoke_main.dds"
 local SPARK = "rbxasset://textures/particles/sparkles_main.dds"
 
--- Objeto quebrável de reserva, usado por qualquer tema que não resolva um
--- objeto próprio. Cada tema tenta, nesta ordem: `instance` (caminho de um
--- modelo montado à mão no place, a partir do Workspace — ex. "Objects.MeshPart"),
--- `asset` (id do catálogo), esta reserva, e por fim o `part` dele. Sem `asset`
--- aqui, a reserva some da fila e cada tema cai direto no `part`.
 Arenas.DEFAULT_OBJECT = {
 	asset = 8605652118,
 	height = 5.6,

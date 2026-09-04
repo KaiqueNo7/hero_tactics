@@ -21,21 +21,7 @@
 
 local PixelIcons = {}
 
--- '#' = pixel aceso, '.' = vazio. Todas as linhas de um ícone têm que ter o
--- mesmo comprimento — a largura sai da primeira.
 PixelIcons.PATTERNS = {
-	-- Espada na diagonal, ponta no canto superior direito.
-	--
-	-- Em pé ela virava uma cruz: a guarda horizontal no meio de uma lâmina
-	-- vertical é literalmente o desenho de uma cruz, e nenhum ajuste de altura
-	-- resolvia. Na diagonal o problema some — a lâmina inclinada não tem como
-	-- ser confundida com outra coisa, e a guarda vira uma diagonal na direção
-	-- contrária, cruzando a lâmina num X curto.
-	--
-	--   lâmina:  (1,6)(1,7) até (5,2)(5,3)
-	--   guarda:  (4,1) (5,2) (6,3)   — perpendicular à lâmina
-	--   punho:   (6,1)                — segue o eixo pra baixo-esquerda
-	--   pomo:    (7,1)(7,2)
 	sword = {
 		".....##",
 		"....##.",
@@ -56,13 +42,6 @@ PixelIcons.PATTERNS = {
 		"...#...",
 	},
 
-	-- TAUNT: três fiadas separadas por linhas de argamassa vazias, com as juntas
-	-- verticais alternando entre elas.
-	--
-	-- A primeira versão só tinha as juntas verticais, sem as linhas horizontais:
-	-- o tijolo tomava quase o ícone inteiro e as juntas viravam furos soltos —
-	-- de longe lia como a face de um dado. São as faixas vazias horizontais que
-	-- fazem o olho enxergar fiadas empilhadas.
 	taunt = {
 		"###.###",
 		"###.###",
@@ -73,13 +52,6 @@ PixelIcons.PATTERNS = {
 		"###.###",
 	},
 
-	-- SPRINT: bota (cano nas colunas 4-5, pé abrindo pra direita) com uma asa
-	-- triangular no tornozelo, à esquerda.
-	--
-	-- As duas primeiras tentativas usaram traços soltos de velocidade à
-	-- esquerda: no tamanho real eles viravam pontinhos avulsos e sobrava um "L".
-	-- A asa como triângulo cheio, colada na altura do tornozelo e separada da
-	-- bota por uma coluna vazia, é o que faz ler "bota alada" e não "letra".
 	sprint = {
     "...##..",
     "..####.",
@@ -90,9 +62,6 @@ PixelIcons.PATTERNS = {
     "######.",
   },
 
-	-- Bandeira de rendição: mastro na coluna 1 descendo inteiro, e o pano
-	-- ondulado à direita. A borda irregular é o que separa de um retângulo
-	-- qualquer no tamanho real.
 	flag = {
 		"######.",
 		"#####..",
@@ -103,10 +72,6 @@ PixelIcons.PATTERNS = {
 		"#......",
 	},
 
-	-- GELO: floco de neve — os três eixos (vertical, horizontal e as duas
-	-- diagonais) cruzando no centro. É o desenho que mais aguenta o tamanho do
-	-- crachá: mesmo virando uma estrelinha de longe, ninguém confunde com espada
-	-- ou coração.
 	freeze = {
 		"#..#..#",
 		".#.#.#.",
@@ -127,9 +92,6 @@ PixelIcons.PATTERNS = {
 		"#######",
 	},
 
-	-- AGILITY: duas setas apontando pra frente, uma atrás da outra — o segundo
-	-- passo do turno desenhado. Duas pontas em vez de uma é o que separa do
-	-- sprint (bota), que já ocupa a ideia de "anda mais".
 	agility = {
 		"#..#...",
 		"##.##..",
@@ -140,7 +102,6 @@ PixelIcons.PATTERNS = {
 		"#..#...",
 	},
 
-	-- RANGED: círculo com os quatro traços e o ponto no centro
 	ranged = {
 		"...#...",
 		".##.##.",
@@ -152,7 +113,6 @@ PixelIcons.PATTERNS = {
 	},
 }
 
--- [nome] = "rbxassetid://..." para trocar o desenho por uma imagem
 PixelIcons.ASSETS = {}
 
 local function BuildImage(holder, assetId, color)
@@ -168,7 +128,6 @@ local function BuildImage(holder, assetId, color)
 	image.Parent = holder
 end
 
--- Monta o ícone dentro de `parent`, preenchendo o espaço todo dele.
 function PixelIcons.Build(name, parent, color, zIndex)
 	local holder = Instance.new("Frame")
 	holder.Name = "Icon"
@@ -192,10 +151,6 @@ function PixelIcons.Build(name, parent, color, zIndex)
 	local rows = #pattern
 	local cols = #pattern[1]
 
-	-- Sequências horizontais viram UM Frame em vez de um por pixel. O coração
-	-- sozinho tem 30 pixels acesos; com seis heróis em campo seriam 180 Frames
-	-- só de coração. Agrupando, cai para 7 por ícone — e o desenho na tela é
-	-- exatamente o mesmo.
 	for y = 1, rows do
 		local line = pattern[y]
 		local x = 1
@@ -224,7 +179,6 @@ function PixelIcons.Build(name, parent, color, zIndex)
 	return holder
 end
 
--- Recolore sem remontar: o buff de ataque troca a cor a cada turno.
 function PixelIcons.SetColor(holder, color)
 	if not holder then return end
 

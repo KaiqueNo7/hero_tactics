@@ -19,7 +19,7 @@ local LeaderboardBoardView = {}
 
 local BOARD_NAME = "LeaderboardBoard"
 local BOARD_SIZE = Vector3.new(11, 7.5, 0.6)
-local BOARD_HEIGHT = 10 -- studs acima do chão dos pads
+local BOARD_HEIGHT = 10
 
 local ROW_COUNT = 8
 local ROW_HEIGHT = 32
@@ -30,12 +30,7 @@ local ROW_COLORS = {
 	Color3.fromRGB(198, 140, 90),  -- bronze
 }
 
--- Posição derivada dos pads: fica entre os dois, virado pra quem chega.
--- CFrame.new(pos, lookAt) precisa de um alvo em altura diferente de zero no
--- plano horizontal, senão o vetor fica vertical e a peça deita.
 local function BoardCFrame()
-	-- busca recursiva: os pads podem estar dentro de qualquer pasta do cenário
-	-- (o lobby foi agrupado em Workspace.Base), e o caminho raso achava nada
 	local botPad = Workspace:FindFirstChild("StartBotMatch", true)
 	local pvpPad = Workspace:FindFirstChild("StartPvpMatch", true)
 	if not (botPad and pvpPad) then return nil end
@@ -128,8 +123,6 @@ function LeaderboardBoardView.EnsureBoard()
 	empty.Font = Enum.Font.GothamBold
 	empty.Parent = list
 
-	-- linhas de exemplo pra dar pra enxergar o template no Edit; somem no
-	-- primeiro Render, que roda assim que o servidor sobe
 	for index = 1, 3 do
 		local preview = Instance.new("TextLabel")
 		preview.Name = "PreviewRow" .. index
@@ -148,7 +141,6 @@ function LeaderboardBoardView.EnsureBoard()
 	return board
 end
 
--- entries: { { name = string, wins = number }, ... }
 function LeaderboardBoardView.Render(entries)
 	local board = Workspace:FindFirstChild(BOARD_NAME, true)
 	local sign = board and board:FindFirstChild("Sign")

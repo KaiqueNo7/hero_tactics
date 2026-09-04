@@ -23,6 +23,7 @@ local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
 local SoundService = game:GetService("SoundService")
 local InsertService = game:GetService("InsertService")
+local CollectionService = game:GetService("CollectionService")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
@@ -347,9 +348,19 @@ local SKILL_SOUNDS = {
 	weakPoint = "SkillWeakPoint",
 }
 
+local SKILL_SOUND_FALLBACK = {
+	weakPoint = "IceBreak",
+}
+
 function HeroView.PlaySkillSound(key, view)
 	local name = SKILL_SOUNDS[key]
-	if name then PlaySound(name, view) end
+	if name and Sounds:FindFirstChild(name) then
+		PlaySound(name, view)
+		return
+	end
+
+	local fallback = SKILL_SOUND_FALLBACK[key]
+	if fallback then PlaySound(fallback, view) end
 end
 
 -- ===== EFEITOS VISUAIS DE HABILIDADE =====
@@ -2411,21 +2422,16 @@ end
 local MERLIN_EYE_HOME = { "VFX", "Merlin", "Red Eye" }
 local FRENZY_AURA = "FrenzyAura"
 
-local EYE_SPACING = SPRITE_WIDTH * 0.085
-local EYE_FORWARD = SPRITE_WIDTH * 0.16
-local EYE_HEIGHT = SPRITE_HEIGHT * 0.80 - ANCHOR_LIFT
-local EYE_SCALE = 0.35
+local EYE_UP_FRACTION = 0.723
+local EYE_SIDE_FRACTION = 0.0755
+local EYE_CENTER_FRACTION = 0.153
+local EYE_SCALE = 0.15
+local FRENZY_EYE_TAG = "FrenzyEye"
 
-local function CameraAxes()
-	local az = math.rad(GameConfig.CAMERA_AZIMUTH)
-	return Vector3.new(math.sin(az), 0, math.cos(az)),
-		Vector3.new(math.cos(az), 0, -math.sin(az))
-end
-
-local function AttachEye(hero, host, template, side, toCamera, screenRight)
+local function AttachEye(hero, host, template, side)
+	local data = HeroData.GetById(hero.dataId)
 	local eye = template:Clone()
 	eye.Name = "Eye" .. tostring(side)
-	eye.Parent = host
 
 	if eye:IsA("BasePart") then
 		eye.Size *= EYE_SCALE
@@ -2433,36 +2439,33 @@ local function AttachEye(hero, host, template, side, toCamera, screenRight)
 		eye:ScaleTo(EYE_SCALE)
 	end
 
-	local target = hero.part.Position
-		+ Vector3.new(0, EYE_HEIGHT, 0)
-		+ screenRight * (EYE_SPACING * side)
-		+ toCamera * EYE_FORWARD
-
-	if eye:IsA("BasePart") then
-		eye.CFrame = CFrame.new(target) * eye.CFrame.Rotation
-	else
-		local box = eye:GetBoundingBox()
-		eye:PivotTo((CFrame.new(target) * box.Rotation * box:Inverse()) * eye:GetPivot())
-	end
-
 	local parts = eye:GetDescendants()
 	if eye:IsA("BasePart") then table.insert(parts, eye) end
 
 	for _, part in ipairs(parts) do
 		if part:IsA("BasePart") then
-			part.Anchored = false
+			part.Anchored = true
 			part.Massless = true
 			part.CanQuery = false
 			part.CanTouch = false
 			part.CanCollide = false
 			part:SetAttribute("BaseTransparency", part.Transparency)
-
-			local weld = Instance.new("WeldConstraint")
-			weld.Part0 = hero.part
-			weld.Part1 = part
-			weld.Parent = part
 		end
 	end
+
+	local artAspect = HeroData.GetArtAspect(data)
+	local drawnHeight = math.min(1, FRAME_ASPECT / artAspect)
+	local drawnWidth = math.min(1, artAspect / FRAME_ASPECT)
+
+	eye:SetAttribute("EyeOffsetUp", EYE_UP_FRACTION * drawnHeight)
+	eye:SetAttribute("EyeOffsetSide",
+		(EYE_CENTER_FRACTION + side * EYE_SIDE_FRACTION) * drawnWidth)
+
+	local seed = CFrame.new(hero.part.Position)
+	if eye:IsA("BasePart") then eye.CFrame = seed else eye:PivotTo(seed) end
+
+	eye.Parent = host
+	CollectionService:AddTag(eye, FRENZY_EYE_TAG)
 
 	return eye
 end
@@ -2538,9 +2541,8 @@ function HeroView.SetFrenzyAura(hero, on)
 
 	local template = VfxTemplate(MERLIN_EYE_HOME, "o Frenesi do Merlin sai sem os olhos vermelhos")
 	if template then
-		local toCamera, screenRight = CameraAxes()
-		AttachEye(hero, host, template, -1, toCamera, screenRight)
-		AttachEye(hero, host, template, 1, toCamera, screenRight)
+		AttachEye(hero, host, template, -1)
+		AttachEye(hero, host, template, 1)
 	end
 
 	SetEmitters(host, true)
@@ -2550,26 +2552,58 @@ local WEAK_POINT_EDGE = "WeakPointEdge"
 local WEAK_POINT_ATTRIBUTE = "WeakPointDirection"
 local WEAK_POINT_COLOR = Color3.fromRGB(255, 255, 255)
 local WEAK_POINT_DIM = Color3.fromRGB(150, 160, 185)
-local WEAK_POINT_THICKNESS = RING_THICKNESS * 1.15
-local WEAK_POINT_LIFT = 0.06
+local WEAK_POINT_OUTLINE = Color3.fromRGB(20, 30, 55)
 local WEAK_POINT_PULSE = 0.75
 
-local function WeakPointCFrame(hero, direction)
+local WEAK_POINT_TILE_SCALE = 0.94
+local WEAK_POINT_THICKNESS = 0.5
+local WEAK_POINT_HEIGHT = 0.7
+local WEAK_POINT_ARM = 1.5
+local WEAK_POINT_ARM_ANGLE = 38
+local WEAK_POINT_ARM_INSET = 1.15
+local WEAK_POINT_GHOST_FILL = 0.6
+local WEAK_POINT_GHOST_OUTLINE = 0.1
+local WEAK_POINT_BACKING = Vector3.new(0.5, -0.08, 0.5)
+
+local function WeakPointFrame(hero, direction)
 	local view = hero.view
 	local angle = HexGrid.DirectionAngle(direction)
 	if not (view and angle) then return nil end
 
 	local center = HexGrid.GetWorldPosition(hero.position, view.origin)
-		+ Vector3.new(0, TILE_TOP_Y + RING_HEIGHT + WEAK_POINT_LIFT, 0)
-
-	local circumradius = HexGrid.GetHexSize() * RING_SCALE
+	local circumradius = HexGrid.GetHexSize() * WEAK_POINT_TILE_SCALE
 	local apothem = circumradius * math.sqrt(3) / 2
 
 	local outward = Vector3.new(math.cos(angle), 0, math.sin(angle))
 	local tangent = Vector3.new(-math.sin(angle), 0, math.cos(angle))
-	local position = center + outward * apothem
+	local lift = Vector3.new(0, TILE_TOP_Y + WEAK_POINT_HEIGHT / 2, 0)
 
-	return CFrame.new(position, position + tangent), circumradius
+	return center + outward * apothem + lift, tangent, circumradius,
+		center + outward * (apothem - WEAK_POINT_ARM_INSET) + lift
+end
+
+local function WeakPointPiece(parent, anchor, size, cframe, name, dark)
+	local piece = Instance.new("Part")
+	piece.Name = name
+	piece.Size = size
+	piece.CFrame = cframe
+	piece.Color = dark and WEAK_POINT_OUTLINE or WEAK_POINT_COLOR
+	piece.Material = dark and Enum.Material.SmoothPlastic or Enum.Material.Neon
+	piece.CastShadow = false
+	piece.Anchored = false
+	piece.CanCollide = false
+	piece.CanQuery = false
+	piece.CanTouch = false
+	piece.Massless = true
+	piece:SetAttribute("BaseTransparency", 0)
+	piece.Parent = parent
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = anchor
+	weld.Part1 = piece
+	weld.Parent = piece
+
+	return piece
 end
 
 function HeroView.SetWeakPoint(hero, direction)
@@ -2584,36 +2618,143 @@ function HeroView.SetWeakPoint(hero, direction)
 
 	if existing and existing:GetAttribute(WEAK_POINT_ATTRIBUTE) == direction then return end
 
-	local cframe, circumradius = WeakPointCFrame(hero, direction)
-	if not cframe then return end
+	local edge, tangent, circumradius, tip = WeakPointFrame(hero, direction)
+	if not edge then return end
 
 	if existing then existing:Destroy() end
 
-	local edge = Instance.new("Part")
-	edge.Name = WEAK_POINT_EDGE
-	edge.Size = Vector3.new(WEAK_POINT_THICKNESS, WEAK_POINT_THICKNESS, circumradius + WEAK_POINT_THICKNESS)
-	edge.CFrame = cframe
-	edge.Color = WEAK_POINT_COLOR
-	edge.Material = Enum.Material.Neon
-	edge.CastShadow = false
-	edge:SetAttribute(WEAK_POINT_ATTRIBUTE, direction)
-	edge:SetAttribute("BaseTransparency", 0)
-	AttachTo(hero.part, edge)
+	local model = Instance.new("Model")
+	model.Name = WEAK_POINT_EDGE
+	model:SetAttribute(WEAK_POINT_ATTRIBUTE, direction)
+	model.Parent = hero.part
 
-	local glow = Instance.new("PointLight")
-	glow.Name = "WeakPointGlow"
-	glow.Color = WEAK_POINT_COLOR
-	glow.Brightness = 1.4
-	glow.Range = 7
-	glow.Parent = edge
+	local glow = Instance.new("Model")
+	glow.Name = "Glow"
+	glow.Parent = model
 
-	TweenService:Create(edge,
-		TweenInfo.new(WEAK_POINT_PULSE, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-		{ Color = WEAK_POINT_DIM }):Play()
+	local barSize = Vector3.new(WEAK_POINT_THICKNESS, WEAK_POINT_HEIGHT, circumradius)
+	local armSize = Vector3.new(WEAK_POINT_THICKNESS, WEAK_POINT_HEIGHT, WEAK_POINT_ARM)
+	local pivot = CFrame.new(tip, tip + tangent)
 
-	TweenService:Create(glow,
-		TweenInfo.new(WEAK_POINT_PULSE, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-		{ Brightness = 0.35 }):Play()
+	local shapes = {
+		{ "Edge", barSize, CFrame.new(edge, edge + tangent) },
+		{ "ArmA", armSize, pivot * CFrame.Angles(0, math.rad(WEAK_POINT_ARM_ANGLE), 0)
+			* CFrame.new(0, 0, WEAK_POINT_ARM / 2) },
+		{ "ArmB", armSize, pivot * CFrame.Angles(0, math.rad(-WEAK_POINT_ARM_ANGLE), 0)
+			* CFrame.new(0, 0, -WEAK_POINT_ARM / 2) },
+	}
+
+	local bar
+	for _, shape in ipairs(shapes) do
+		local name, size, cframe = shape[1], shape[2], shape[3]
+		WeakPointPiece(model, hero.part, size + WEAK_POINT_BACKING, cframe, name .. "Base", true)
+		local piece = WeakPointPiece(glow, hero.part, size, cframe, name, false)
+		bar = bar or piece
+	end
+	glow.PrimaryPart = bar
+
+	local ghost = Instance.new("Highlight")
+	ghost.Name = "WeakPointGhost"
+	ghost.Adornee = glow
+	ghost.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	ghost.FillColor = WEAK_POINT_COLOR
+	ghost.FillTransparency = WEAK_POINT_GHOST_FILL
+	ghost.OutlineColor = WEAK_POINT_OUTLINE
+	ghost.OutlineTransparency = WEAK_POINT_GHOST_OUTLINE
+	ghost.Parent = glow
+
+	local light = Instance.new("PointLight")
+	light.Name = "WeakPointGlow"
+	light.Color = WEAK_POINT_COLOR
+	light.Brightness = 3
+	light.Range = 12
+	light.Parent = bar
+
+	local pulse = TweenInfo.new(WEAK_POINT_PULSE, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+	TweenService:Create(light, pulse, { Brightness = 0.6 }):Play()
+	for _, piece in ipairs(glow:GetChildren()) do
+		if piece:IsA("BasePart") then
+			TweenService:Create(piece, pulse, { Color = WEAK_POINT_DIM }):Play()
+		end
+	end
+end
+
+local WEAK_POINT_BREAK_TIME = 0.18
+
+function HeroView.BreakWeakPoint(hero)
+	if not (hero.part and hero.part.Parent) then return end
+
+	local model = hero.part:FindFirstChild(WEAK_POINT_EDGE)
+	local glow = model and model:FindFirstChild("Glow")
+	local bar = glow and glow.PrimaryPart
+	if not bar then return end
+
+	local breakCFrame = bar.CFrame
+	model:Destroy()
+
+	local host = Instance.new("Part")
+	host.Name = "WeakPointBreakFx"
+	host.Size = Vector3.new(0.2, 0.2, 0.2)
+	host.CFrame = breakCFrame
+	host.Transparency = 1
+	host.Anchored = true
+	host.CanCollide = false
+	host.CanQuery = false
+	host.CanTouch = false
+	host.CastShadow = false
+	host.Parent = hero.part.Parent
+
+	local attachment = Instance.new("Attachment")
+	attachment.Parent = host
+
+	local slash = Instance.new("ParticleEmitter")
+	slash.Texture = FLIPBOOK_EFFECTS.beyondFront.texture
+	slash.FlipbookLayout = FLIPBOOK_EFFECTS.beyondFront.layout
+	slash.FlipbookFramerate = NumberRange.new(24, 24)
+	slash.Lifetime = NumberRange.new(0.22, 0.22)
+	slash.Size = NumberSequence.new(7)
+	slash.Rate = 0
+	slash.Enabled = false
+	slash.LightEmission = 1
+	slash.LightInfluence = 0
+	slash.Speed = NumberRange.new(0)
+	slash.Parent = attachment
+
+	local shards = Instance.new("ParticleEmitter")
+	shards.Texture = FX_SPARK
+	shards.Color = ColorSequence.new(WEAK_POINT_COLOR)
+	shards.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.05),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	shards.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1.9),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	shards.Lifetime = NumberRange.new(0.25, 0.45)
+	shards.Speed = NumberRange.new(9, 20)
+	shards.SpreadAngle = Vector2.new(180, 180)
+	shards.Acceleration = Vector3.new(0, -22, 0)
+	shards.Rotation = NumberRange.new(0, 360)
+	shards.RotSpeed = NumberRange.new(-260, 260)
+	shards.Drag = 3
+	shards.Rate = 0
+	shards.Enabled = false
+	shards.LightEmission = 0.9
+	shards.LightInfluence = 0
+	shards.Parent = attachment
+
+	local flash = Instance.new("PointLight")
+	flash.Color = WEAK_POINT_COLOR
+	flash.Brightness = 6
+	flash.Range = 14
+	flash.Parent = host
+
+	slash:Emit(1)
+	shards:Emit(24)
+	TweenService:Create(flash, TweenInfo.new(WEAK_POINT_BREAK_TIME), { Brightness = 0 }):Play()
+
+	Debris:AddItem(host, 1.2)
 end
 
 function HeroView.UpdateStats(hero)

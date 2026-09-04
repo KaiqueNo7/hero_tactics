@@ -6,6 +6,10 @@ if not RunService:IsStudio() then
 	return
 end
 
+if RunService:IsStudio() then
+	return
+end
+
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
@@ -23,6 +27,37 @@ local TOP_ROWS = 12
 local ACC_KEYS = {
 	"matches", "wins", "damageDealt", "damageTaken", "healed",
 	"kills", "deaths", "survived", "attacks", "turnsAlive", "ccApplied",
+}
+
+local DEVELOPMENT = { Zaro = true }
+
+local SUM_ONLY = {
+	escapeDistanceSum = true,
+	escapeTilesBeforeRange = true,
+	escapeTilesAfterRange = true,
+	turnsBeforeFrenzySum = true,
+	summonFirstAttackTurnSum = true,
+	summonDistanceSum = true,
+	summonsThatAttacked = true,
+	shieldLifetimeTurnSum = true,
+	shieldsEnded = true,
+	weakPointHitGapSum = true,
+	weakPointHitGaps = true,
+	weakPointAttacks = true,
+}
+
+local DERIVED = {
+	{ "escapeSuccessRate",            "successfulEscapes",        "escapeAttempts",       true },
+	{ "avgFreeEscapeTiles",           "escapeTilesBeforeRange",   "escapeAttempts" },
+	{ "avgValidEscapeTiles",          "escapeTilesAfterRange",    "escapeAttempts" },
+	{ "avgEscapeDistance",            "escapeDistanceSum",        "successfulEscapes" },
+	{ "avgTurnsBeforeFrenzy",         "turnsBeforeFrenzySum",     "frenzyActivations" },
+	{ "avgFirstAttackTurnPerSummon",  "summonFirstAttackTurnSum", "summonsThatAttacked" },
+	{ "avgSummonTravelDistance",      "summonDistanceSum",        "summonMoves" },
+	{ "avgShieldLifetime",            "shieldLifetimeTurnSum",    "shieldsEnded" },
+	{ "avgDamagePerShieldBlock",      "damageBlockedByShield",    "shieldBlocks" },
+	{ "weakPointHitRate",             "weakPointsHit",            "weakPointAttacks",     true },
+	{ "avgTurnsBetweenWeakPointHits", "weakPointHitGapSum",       "weakPointHitGaps" },
 }
 
 local seed = BALANCE_SIM_SEED or (os.time() % 2147483647)
@@ -269,10 +304,12 @@ local function Report()
 
 	for _, row in ipairs(rows) do
 		table.insert(lines, ("%-12s %5d %5.1f%% %7.1f %8.1f %6.1f %6.2f %7.2f %6.1f %7.2f %8.1f %5.2f %6.1f%%"):format(
-			row.name, row.matches, row.winRate * 100, row.damage, row.taken, row.healed,
+			row.name .. (DEVELOPMENT[row.name] and " *" or ""),
+			row.matches, row.winRate * 100, row.damage, row.taken, row.healed,
 			row.kills, row.deaths, row.attacks, row.perAttack, row.turns, row.cc,
 			row.survival * 100))
 	end
+	table.insert(lines, "* EM TESTE — dados coletados, mas fora de toda conclusao de meta abaixo.")
 
 	table.insert(lines, "")
 	table.insert(lines, "ARENAS")
@@ -287,17 +324,39 @@ local function Report()
 	local specials = {}
 	for _, row in ipairs(rows) do
 		if next(row.special) then
-			local parts = {}
+			local games = math.max(row.matches, 1)
+			local block = {}
+
+			local perMatch = {}
 			for key, value in pairs(row.special) do
-				table.insert(parts, ("%s/J: %.2f"):format(key, value / math.max(row.matches, 1)))
+				if not SUM_ONLY[key] then
+					table.insert(perMatch, ("      %-30s %8.2f"):format(key .. "/J", value / games))
+				end
 			end
-			table.sort(parts)
-			table.insert(specials, ("  %s — %s"):format(row.name, table.concat(parts, "   ")))
+			table.sort(perMatch)
+
+			local averages = {}
+			for _, spec in ipairs(DERIVED) do
+				local name, over, under, isRate = spec[1], spec[2], spec[3], spec[4]
+				local base = row.special[under]
+				if base and base > 0 and row.special[over] then
+					local value = row.special[over] / base
+					table.insert(averages, ("      %-30s %8s"):format(name,
+						isRate and ("%.1f%%"):format(value * 100) or ("%.2f"):format(value)))
+				end
+			end
+
+			table.insert(block, ("  %s%s"):format(row.name,
+				DEVELOPMENT[row.name] and "   [EM TESTE — fora da leitura de meta]" or ""))
+			for _, line in ipairs(perMatch) do table.insert(block, line) end
+			for _, line in ipairs(averages) do table.insert(block, line) end
+
+			table.insert(specials, table.concat(block, "\n"))
 		end
 	end
 	if #specials > 0 then
 		table.insert(lines, "")
-		table.insert(lines, "HABILIDADES")
+		table.insert(lines, "HABILIDADES   (/J = por partida do heroi; avg/rate = media real, nao soma)")
 		for _, line in ipairs(specials) do
 			table.insert(lines, line)
 		end
@@ -376,11 +435,31 @@ local function Report()
 		end
 	end
 
-	if #rows > 0 then
+	local meta = {}
+	for _, row in ipairs(rows) do
+		if not DEVELOPMENT[row.name] then table.insert(meta, row) end
+	end
+
+	local function InDevelopment(key)
+		for name in pairs(DEVELOPMENT) do
+			if key:find(name, 1, true) then return true end
+		end
+		return false
+	end
+
+	local function MetaOnly(lista)
+		local out = {}
+		for _, row in ipairs(lista) do
+			if not InDevelopment(row.key) then table.insert(out, row) end
+		end
+		return out
+	end
+
+	if #meta > 0 then
 		local best = {
-			damage = rows[1], healed = rows[1], kills = rows[1], survival = rows[1],
+			damage = meta[1], healed = meta[1], kills = meta[1], survival = meta[1],
 		}
-		for _, row in ipairs(rows) do
+		for _, row in ipairs(meta) do
 			if row.damage > best.damage.damage then best.damage = row end
 			if row.healed > best.healed.healed then best.healed = row end
 			if row.kills > best.kills.kills then best.kills = row end
@@ -397,8 +476,8 @@ local function Report()
 			sideOneWins / math.max(finished, 1) * 100,
 			sideTwoWins / math.max(finished, 1) * 100, draws))
 		table.insert(lines, ("  Maior win rate: %s (%.1f%%)   Menor: %s (%.1f%%)"):format(
-			rows[1].name, rows[1].winRate * 100,
-			rows[#rows].name, rows[#rows].winRate * 100))
+			meta[1].name, meta[1].winRate * 100,
+			meta[#meta].name, meta[#meta].winRate * 100))
 		table.insert(lines, ("  Maior dano/J: %s (%.1f)   Maior cura/J: %s (%.1f)"):format(
 			best.damage.name, best.damage.damage, best.healed.name, best.healed.healed))
 		table.insert(lines, ("  Maior kills/J: %s (%.2f)   Maior sobrev.: %s (%.1f%%)"):format(
@@ -418,12 +497,12 @@ local function Report()
 		local function ComoEsta(key) return key end
 		local function ComoMatchup(key) return (key:gsub("|", " vs ")) end
 
-		Extremos("Melhor sinergia", "Pior sinergia", duplas, ComoEsta)
-		Extremos("Melhor composicao", "Pior composicao", comps, ComoEsta)
-		Extremos("Matchup mais favoravel", "Matchup mais desfavoravel", matchups, ComoMatchup)
+		Extremos("Melhor sinergia", "Pior sinergia", MetaOnly(duplas), ComoEsta)
+		Extremos("Melhor composicao", "Pior composicao", MetaOnly(comps), ComoEsta)
+		Extremos("Matchup mais favoravel", "Matchup mais desfavoravel", MetaOnly(matchups), ComoMatchup)
 
 		local maiorDelta = nil
-		for _, row in ipairs(duplas) do
+		for _, row in ipairs(MetaOnly(duplas)) do
 			if row.extra and (not maiorDelta or row.extra > maiorDelta.extra) then
 				maiorDelta = row
 			end

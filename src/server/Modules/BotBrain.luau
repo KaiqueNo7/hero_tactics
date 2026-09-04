@@ -72,6 +72,7 @@ local LivingHeroesOf = MatchQuery.LivingHeroesOf
 local MoveRangeOf = MatchQuery.MoveRangeOf
 local SideOf = MatchQuery.SideOf
 local TauntBlocks = MatchQuery.TauntBlocks
+local AttackRangeOf = MatchQuery.AttackRangeOf
 
 local BotBrain = {}
 
@@ -147,7 +148,7 @@ end
 -- diz se vale a pena um Taunt se meter no caminho.
 local function Threatens(match, enemy, hero)
 	return HexGrid.Distance(enemy.position, hero.position)
-		<= MoveRangeOf(match, enemy) + enemy.attackRange
+		<= MoveRangeOf(match, enemy) + AttackRangeOf(match, enemy)
 end
 
 -- ===================== LEITURA DO TABULEIRO =====================
@@ -355,7 +356,7 @@ local function BuildLineBlocks(match, ctx)
 
 			for fromPos in pairs(positions) do
 				for _, enemy in ipairs(ctx.enemies) do
-					if HexGrid.Distance(fromPos, enemy.position) <= cutter.attackRange then
+					if HexGrid.Distance(fromPos, enemy.position) <= AttackRangeOf(match, cutter) then
 						-- procura UM aliado atravessado; o que vier DEPOIS dele é
 						-- exatamente o que se ganha tirando-o dali
 						local blockerHex, gain = nil, 0
@@ -426,7 +427,7 @@ local function PushValue(match, attacker, target, fromPos, ctx, damage)
 
 		if ally ~= attacker and HasSkill(ally, "aloneIsBetter")
 			and not match.turn.attacked[ally.uid]
-			and HexGrid.Distance(ally.position, behind) <= reach + ally.attackRange then
+			and HexGrid.Distance(ally.position, behind) <= reach + AttackRangeOf(match, ally) then
 			-- na mesma moeda do ScoreAttack (dano * 10): o combo vale o dano
 			-- EXTRA que o dobro rende, não o golpe inteiro
 			score += ally.attack * 10
@@ -445,9 +446,9 @@ local function PushValue(match, attacker, target, fromPos, ctx, damage)
 end
 
 -- Dano que voltaria em contra-ataque (0 se o alvo morre ou não alcança)
-local function CounterDamage(attacker, target, fromPos, damage)
+local function CounterDamage(match, attacker, target, fromPos, damage)
 	if damage >= target.currentHp then return 0 end
-	if HexGrid.Distance(target.position, fromPos) > target.attackRange then return 0 end
+	if HexGrid.Distance(target.position, fromPos) > AttackRangeOf(match, target) then return 0 end
 	-- golpe vindo da sombra não dá tempo de revidar (Skills.ambush marca
 	-- suppressCounter): pro Nash invisível, bater é de graça
 	if HasSkill(attacker, "ambush") and attacker.stealth then return 0 end
@@ -472,7 +473,7 @@ local function AlreadyChained(match, attacker, target)
 end
 
 local function ChainPotential(match, attacker, target, ctx)
-	local reach = MoveRangeOf(match, attacker) + attacker.attackRange
+	local reach = MoveRangeOf(match, attacker) + AttackRangeOf(match, attacker)
 	local count = 0
 
 	for _, enemy in ipairs(ctx.enemies) do
@@ -488,7 +489,7 @@ end
 
 local function ScoreAttack(match, attacker, target, fromPos, ctx)
 	if TauntBlocks(match, attacker, target, fromPos) then return nil end
-	if HasSkill(target, "dodge") and MatchQuery.DodgeHexFor(match, target, fromPos) then return nil end
+	if HasSkill(target, "dodge") and MatchQuery.DodgeHexFor(match, target, attacker, fromPos) then return nil end
 
 	local damage = EstimateDamage(match, attacker, target, fromPos)
 	local score = math.min(damage, target.currentHp) * 10
@@ -555,7 +556,7 @@ local function ScoreAttack(match, attacker, target, fromPos, ctx)
 		score += ChainPotential(match, attacker, target, ctx) * WEAK_POINT_CHAIN_VALUE
 	end
 
-	score -= CounterDamage(attacker, target, fromPos, damage) * 7
+	score -= CounterDamage(match, attacker, target, fromPos, damage) * 7
 
 	return score
 end
@@ -575,7 +576,7 @@ local function ScorePosition(match, hero, fromPos, ctx)
 	if nearest < math.huge then
 		if isRanged then
 			-- fica exatamente no alcance: bate sem ser contra-atacado
-			score -= math.abs(nearest - hero.attackRange) * 8
+			score -= math.abs(nearest - AttackRangeOf(match, hero)) * 8
 		else
 			score -= nearest * 5
 		end
@@ -618,7 +619,7 @@ local function ScorePosition(match, hero, fromPos, ctx)
 		local exposure = 0
 		for _, enemy in ipairs(enemies) do
 			if HexGrid.Distance(fromPos, enemy.position)
-				<= MoveRangeOf(match, enemy) + enemy.attackRange then
+				<= MoveRangeOf(match, enemy) + AttackRangeOf(match, enemy) then
 				exposure += enemy.attack
 			end
 		end
@@ -650,12 +651,17 @@ local function ScorePosition(match, hero, fromPos, ctx)
 		end
 	end
 
+	-- O Morn NÃO segue as caveiras. Elas é que avançam: colar nelas puxava o
+	-- invocador junto pra linha de frente, que é exatamente o que a fantasia
+	-- dele não quer. O que sobra é ficar longe de quem bate.
 	if HasSkill(hero, "raiseSkulls") then
 		for _, enemy in ipairs(enemies) do
-			if HexGrid.Distance(fromPos, enemy.position) <= 1 then score -= 14 end
-		end
-		for _, ally in ipairs(AlliesAdjacentTo(match, hero, fromPos)) do
-			if ally.summoner then score += 8 end
+			local gap = HexGrid.Distance(fromPos, enemy.position)
+			if gap <= 1 then
+				score -= 14
+			elseif gap <= AttackRangeOf(match, enemy) then
+				score -= 10
+			end
 		end
 	end
 
@@ -700,8 +706,19 @@ local function ScorePosition(match, hero, fromPos, ctx)
 	-- Elaria cura e limpa vizinhos: cola em quem precisa
 	if HasSkill(hero, "health") or HasSkill(hero, "clean") then
 		for _, ally in ipairs(AlliesAdjacentTo(match, hero, fromPos)) do
-			if ally.currentHp < ally.maxHp then score += 18 end
-			if FindStatusEffect(ally, "poison") then score += 14 end
+			local missing = ally.maxHp - ally.currentHp
+			local dirty = 0
+			for _, effect in ipairs(ally.statusEffects) do
+				if GameConfig.IsNegativeEffect(effect.type) then dirty += 1 end
+			end
+
+			if missing > 0 then
+				score += 18
+				if ally.currentHp <= GameConfig.ELARIA_ALLY_HEAL * 2 then score += 20 end
+			end
+
+			score += dirty * 14
+			if missing > 0 and dirty > 0 then score += 12 end
 		end
 	end
 
@@ -715,7 +732,7 @@ local function ScorePosition(match, hero, fromPos, ctx)
 	if HasSkill(hero, "aloneIsBetter") then
 		for _, enemy in ipairs(enemies) do
 			if #AlliesAdjacentTo(match, enemy, enemy.position) == 0
-				and HexGrid.Distance(fromPos, enemy.position) <= hero.attackRange then
+				and HexGrid.Distance(fromPos, enemy.position) <= AttackRangeOf(match, hero) then
 				score += 20
 			end
 		end
@@ -815,7 +832,7 @@ end
 local function BarrelInReach(match, hero)
 	if match.turn.attacked[hero.uid] then return nil end
 
-	local reach = HexGrid.ComputeReach(hero.position, hero.attackRange, FreeChecker(match))
+	local reach = MatchQuery.AttackReachFrom(match, hero)
 	local best = nil
 	for _, barrel in pairs(match.barrels) do
 		if reach[barrel.position] and (not best or barrel.hitsLeft < best.hitsLeft) then
@@ -838,7 +855,7 @@ end
 local function GraveInReach(match, hero, botId)
 	if match.turn.attacked[hero.uid] then return nil end
 
-	local reach = HexGrid.ComputeReach(hero.position, hero.attackRange, FreeChecker(match))
+	local reach = MatchQuery.AttackReachFrom(match, hero)
 	local best = nil
 
 	for _, other in pairs(match.heroes) do
@@ -887,7 +904,7 @@ local function PlanFor(match, hero, ctx)
 
 		local bestTarget, bestAttackScore = nil, nil
 		if canAttack then
-			local reach = ReachFrom(match, hero, fromPos, hero.attackRange)
+			local reach = ReachFrom(match, hero, fromPos, AttackRangeOf(match, hero))
 			for _, enemy in ipairs(ctx.enemies) do
 				if reach[enemy.position] then
 					local attackScore = ScoreAttack(match, hero, enemy, fromPos, ctx)

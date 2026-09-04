@@ -33,8 +33,8 @@ GameConfig.FREEZE_MOVE_RANGE = 1
 GameConfig.FREEZE_DAMAGE_MULTIPLIER = 2 -- dano do Kor contra alvo já congelado
 GameConfig.MERLIN_DEATH_ATTACK_MAX = 2 -- teto do Faro de Sangue (+1 por morte no tabuleiro)
 GameConfig.MERLIN_FRENZY_ATTACK = 2    -- ataque extra enquanto for o último vivo do time
-GameConfig.MERLIN_FRENZY_HEAL = 8      -- cura ao entrar em Frenesi, uma vez por partida
-GameConfig.MERLIN_FRENZY_KILL_HEAL = 2 -- cura por inimigo abatido durante o Frenesi
+GameConfig.MERLIN_FRENZY_HEAL = 6      -- cura ao entrar em Frenesi, uma vez por partida
+GameConfig.MERLIN_FRENZY_KILL_HEAL = 1 -- cura por inimigo abatido durante o Frenesi
 
 GameConfig.NEGATIVE_EFFECTS = {
 	poison = true,
@@ -83,7 +83,9 @@ GameConfig.RUSH_MOVE_RANGE = 4
 GameConfig.MOMENTUM_PER_HEX = 1
 GameConfig.DODGE_MIN_DISTANCE = 2
 
--- ===== FÚRIA (Bramm) =====
+GameConfig.ELARIA_ALLY_HEAL = 2
+GameConfig.ELARIA_SELF_HEAL = 1
+
 GameConfig.RAGE_BLOCKED_BONUS = 2
 GameConfig.STEALTH_RANGE = 1
 GameConfig.STEALTH_HEAL = 1
@@ -100,10 +102,10 @@ GameConfig.STEALTH_OWNER_TRANSPARENCY = 0.65
 
 GameConfig.WEAK_POINT_HEAL = 2
 GameConfig.GOLEM_SUMMON_IDS = { 15, 16 }
-GameConfig.BARREL_HITS = 2 -- golpes até quebrar, independente do dano
+GameConfig.BARREL_HITS = 2
 GameConfig.BARREL_HEXES = { "B4", "D4" }
 
-GameConfig.BARREL_HEAL_CHANCE = 0.5 -- o resto da chance vai pro bônus de ataque
+GameConfig.BARREL_HEAL_CHANCE = 0.5
 GameConfig.BARREL_HEAL = 2
 GameConfig.BARREL_ATTACK_BONUS = 1
 GameConfig.BARREL_BUFF_DURATION = 1
@@ -119,17 +121,17 @@ function GameConfig.HasAgility(hero)
 	return hero ~= nil and hero.ability == GameConfig.ABILITIES.AGILITY
 end
 
-GameConfig.TURN_TIME_LIMIT = 60 -- segundos por turno; 0 desliga o cronômetro
+GameConfig.TURN_TIME_LIMIT = 60
 GameConfig.PLACEMENT_TIME_LIMIT = 60
-GameConfig.BOT_PLACE_DELAY = 0.8 -- pausa antes do bot escolher, pra dar pra acompanhar
+GameConfig.BOT_PLACE_DELAY = 0.8
 GameConfig.RECONNECT_WINDOW = 90
 GameConfig.PROMOTION_UNLOCK_TURN = 10
 GameConfig.PROMOTION_HEX_FOR_SLOT = { [1] = "C0", [2] = "C7" }
 GameConfig.GRAVE_HITS = 3
 GameConfig.GRAVE_CURSE_DAMAGE = 1
 GameConfig.RESURRECT_HP = 5
-GameConfig.PLAYER_STAND_OUTSET_HEXES = 0.55 -- casas de folga entre a borda do tabuleiro e o competidor
-GameConfig.PLAYER_STAND_SCALE = 2.2 -- tamanho dos personagens nas posições de espera (1 = normal)
+GameConfig.PLAYER_STAND_OUTSET_HEXES = 0.55
+GameConfig.PLAYER_STAND_SCALE = 2.2 
 GameConfig.UI_FONT_BODY = Enum.Font.BuilderSansMedium
 
 GameConfig.MASTER_VOLUME = 0.55
@@ -164,20 +166,6 @@ function GameConfig.MatchCameraCFrame(center, distance)
 	), center)
 end
 
--- GRADE, não fileira. Enfileirar arenas só no X funcionava com 8 e virava um
--- muro com 80: a 200 studs cada, a fileira passa de 16.000 studs por volta do
--- slot 82, e é ali que a precisão de float do Roblox começa a tremer geometria e
--- física. A grade troca esse crescimento linear por raiz quadrada — 100 arenas
--- ocupam 13 colunas por 13 fileiras, uns 2.600 studs de lado, bem dentro da
--- região saudável.
---
--- Os 8 primeiros slots caem EXATAMENTE onde caíam antes (fileira 0 = a linha
--- original), então nada que já esteja montado à mão no place se move.
---
--- Fileira cresce pro Z NEGATIVO, afastando do lobby. Pro positivo, a nona arena
--- começaria a caminhar de volta pra debaixo das ilhas — que é justamente o que a
--- escolha do ARENA_ORIGIN evita (ver o comentário dele: sombra de ilha atravessada
--- no meio do tabuleiro).
 GameConfig.ARENA_GRID_COLUMNS = 8
 
 function GameConfig.ArenaOrigin(slot)
@@ -192,13 +180,7 @@ function GameConfig.ArenaOrigin(slot)
 	)
 end
 
--- ===== RAIO DE SPAWN DO LOBBY =====
--- Os 19 SpawnLocations do lobby se espalham até ~30 studs do centro, e o pad
--- de PvP está a ~33 studs — um respawn azarado caía praticamente em cima do
--- pad e disparava a fila sozinho. Só valem spawns dentro deste raio.
 GameConfig.LOBBY_SPAWN_RADIUS = 18
-
--- ===== ÍCONE DE CONEXÃO =====
 GameConfig.PING_WARN_MS = 150
 GameConfig.PING_BAD_MS = 400
 

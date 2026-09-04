@@ -47,6 +47,9 @@ local FindStatusEffect = MatchQuery.FindStatusEffect
 local MoveRangeOf = MatchQuery.MoveRangeOf
 local HasSkill = MatchQuery.HasSkill
 local CanMove = MatchQuery.CanMove
+local ActiveShieldOf = MatchQuery.ActiveShieldOf
+local AttackRangeOf = MatchQuery.AttackRangeOf
+local AttackReachFrom = MatchQuery.AttackReachFrom
 
 local MatchUpdate = ReplicatedStorage.Remotes.MatchUpdate
 local BoardReady = ReplicatedStorage.Remotes.BoardReady
@@ -207,8 +210,32 @@ local function LogEvent(match, kind, side, text)
 	end
 end
 
+local function RootOf(hero)
+	local root = hero
+	while root.summoner do root = root.summoner end
+	return root
+end
+
+local function Tally(hero, key, amount)
+	if not (hero and hero.stats) then return end
+	local root = RootOf(hero)
+	root.stats.special[key] = (root.stats.special[key] or 0) + (amount or 1)
+end
+
+local function CloseShield(match, effect, key)
+	local source = effect and effect.source
+	if not source then return end
+
+	Tally(source, key)
+	Tally(source, "shieldsEnded")
+	Tally(source, "shieldLifetimeTurnSum",
+		math.max(0, (match.turn and match.turn.number or 0) - (effect.grantedTurn or 0)))
+end
+
 function KillHero(match, hero, attacker)
 	hero.isAlive = false
+
+	CloseShield(match, FindStatusEffect(hero, "shield"), "shieldExpiredOrRemoved")
 
 	LogEvent(match, "death", hero.sideIndex, attacker and attacker ~= hero
 		and ("%s derrubou %s"):format(attacker.name, hero.name)
@@ -216,6 +243,14 @@ function KillHero(match, hero, attacker)
 
 	if attacker and attacker ~= hero and attacker.stats and not hero.summoner then
 		attacker.stats.kills += 1
+		if attacker.frenzyActive then Tally(attacker, "killsDuringFrenzy") end
+		if attacker.summoner then Tally(attacker, "summonKills") end
+	end
+
+	if hero.summoner then
+		Tally(hero, "summonDeaths")
+	elseif MatchQuery.HasSkill(hero, "frenzy") then
+		Tally(hero, hero.frenzyActive and "deathsAfterFrenzy" or "deathsBeforeFrenzy")
 	end
 
 	TriggerSkills(match, hero, "onDie")
@@ -308,9 +343,11 @@ local DAMAGE_SOURCES = {
 	summonerFell = "perder quem a invocou",
 }
 
-local function ConsumeShield(match, hero, attacker)
+local function ConsumeShield(match, hero, attacker, amount)
 	if not attacker then return false end
-	if not FindStatusEffect(hero, "shield") then return false end
+
+	local effect = FindStatusEffect(hero, "shield")
+	if not effect then return false end
 
 	RemoveStatusEffect(match, hero, "shield")
 	hero.shieldJustBroke = true
@@ -318,15 +355,18 @@ local function ConsumeShield(match, hero, attacker)
 	HeroView.PlaySkillEffect(hero, "aegisBreak")
 	HeroView.Say(hero, "BLOQUEADO", "absorb")
 
+	CloseShield(match, effect, "shieldBlocks")
+	Tally(effect.source, "damageBlockedByShield", amount or 0)
+
 	LogEvent(match, "status", hero.sideIndex,
-		("O escudo de %s bloqueou o golpe de %s"):format(hero.name, attacker.name))
+		("O escudo de %s bloqueou %d de dano de %s"):format(hero.name, amount or 0, attacker.name))
 	return true
 end
 
 function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sourceKey)
 	if not hero.isAlive then return end
 
-	if ConsumeShield(match, hero, attacker) then return end
+	if ConsumeShield(match, hero, attacker, amount) then return end
 
 	for _, key in ipairs(hero.abilities) do
 		local skill = Skills[key]
@@ -381,6 +421,8 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sou
 	if author and author.stats then
 		author.stats.dealt += landed
 		author.stats.biggestHit = math.max(author.stats.biggestHit, landed)
+		if author.frenzyActive then Tally(author, "frenzyDamage", landed) end
+		if author.summoner then Tally(author, "summonDamage", landed) end
 	end
 
 	hero.currentHp -= amount
@@ -405,7 +447,7 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sou
 end
 
 local function Heal(match, hero, amount, source)
-	if not hero.isAlive then return end
+	if not hero.isAlive then return 0 end
 
 	local before = hero.currentHp
 	hero.currentHp = math.min(hero.currentHp + amount, hero.maxHp)
@@ -413,6 +455,10 @@ local function Heal(match, hero, amount, source)
 	local healer = source or hero
 	if healer.stats then
 		healer.stats.healed += (hero.currentHp - before)
+	end
+
+	if hero.frenzyActive then
+		Tally(hero, "frenzyHealing", hero.currentHp - before)
 	end
 
 	HeroView.UpdateStats(hero)
@@ -425,6 +471,8 @@ local function Heal(match, hero, amount, source)
 			and ("%s recuperou %d de vida"):format(hero.name, gained)
 			or ("%s curou %d em %s"):format(healer.name, gained, hero.name))
 	end
+
+	return gained
 end
 
 function IncreaseAttack(match, hero, amount)
@@ -483,18 +531,6 @@ local function SetStandScale(player, scale)
 	pcall(function() character:ScaleTo(scale) end)
 end
 
-local function RootOf(hero)
-	local root = hero
-	while root.summoner do root = root.summoner end
-	return root
-end
-
-local function Tally(hero, key, amount)
-	if not (hero and hero.stats) then return end
-	local root = RootOf(hero)
-	root.stats.special[key] = (root.stats.special[key] or 0) + (amount or 1)
-end
-
 local EFFECT_NAMES = {
 	poison = "envenenado",
 	paralysis = "paralisado",
@@ -547,20 +583,21 @@ end
 
 local function ClearNegativeEffects(hero)
 	local remaining = {}
-	local removeu = false
+	local removed = {}
 
 	for _, effect in ipairs(hero.statusEffects) do
 		if GameConfig.IsNegativeEffect(effect.type) then
-			removeu = true
+			table.insert(removed, effect.type)
 		else
 			table.insert(remaining, effect)
 		end
 	end
 
-	if not removeu then return end
+	if #removed == 0 then return removed end
 
 	hero.statusEffects = remaining
 	HeroView.UpdateStats(hero)
+	return removed
 end
 
 local function ProcessStatusEffects(match, hero, ownTurnEnding)
@@ -708,6 +745,16 @@ local function OfferShield(match, hero)
 	if not match.turn or match.turn.ownerId ~= hero.ownerId then return end
 	if match.pendingShield then return end
 
+	local protected = ActiveShieldOf(match, hero)
+	if protected then
+		Tally(hero, "shieldUnavailableAttempts")
+		HeroView.Say(hero, "ESCUDO ATIVO", "absorb")
+		LogEvent(match, "skill", hero.sideIndex,
+			("%s ainda protege %s — a Égide só volta quando esse escudo cair"):format(
+				hero.name, protected.name))
+		return
+	end
+
 	match.pendingShield = {
 		ownerId = hero.ownerId,
 		sourceUid = hero.uid,
@@ -744,7 +791,7 @@ local function WeakPointOf(hero, hunters)
 end
 
 local function RerollWeakPoint(hero)
-	hero.weakPoint = math.random(HexGrid.DIRECTION_COUNT)
+	hero.weakPoint = HexGrid.RandomDirection(hero.weakPoint)
 end
 
 local function RefreshWeakPoints(match)
@@ -778,7 +825,10 @@ local function BuildSkillApi(match)
 		ApplyDamage = function(hero, amount, attacker, isCounterAttack, sourceKey)
 			ApplyDamage(match, hero, amount, attacker, isCounterAttack, nil, sourceKey)
 		end,
-		Heal = function(hero, amount, source) Heal(match, hero, amount, source) end,
+		Heal = function(hero, amount, source) return Heal(match, hero, amount, source) end,
+		Tally = Tally,
+		TurnToken = function() return match.turnToken end,
+		TurnNumber = function() return match.turn and match.turn.number or 0 end,
 		IncreaseAttack = function(hero, amount) IncreaseAttack(match, hero, amount) end,
 		GetHeroAt = function(hexId) return GetHeroAt(match, hexId) end,
 		GetAlliesInRange = function(hero, range) return GetAlliesInRange(match, hero, range) end,
@@ -960,6 +1010,8 @@ local function BuildSkillApi(match)
 		RecordChainHit = function(hero, target) RecordChainHit(match, hero, target) end,
 		RerollWeakPoint = RerollWeakPoint,
 		WeakPointDirection = HexGrid.DirectionBetween,
+		DirectionName = HexGrid.DirectionName,
+		BreakWeakPoint = function(hero) HeroView.BreakWeakPoint(hero) end,
 
 		GrantExtraAction = function(hero, includeAttack)
 			if not match.turn then return end
@@ -1405,7 +1457,7 @@ end
 
 
 local function AttackBarrel(match, attacker, barrel)
-	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	local reach = AttackReachFrom(match, attacker)
 	if not reach[barrel.position] then return end
 
 
@@ -1435,7 +1487,7 @@ local function AttackBarrel(match, attacker, barrel)
 end
 
 function AttackGrave(match, attacker, grave)
-	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	local reach = AttackReachFrom(match, attacker)
 	if not reach[grave.position] then return end
 
 	MarkAttacked(match, attacker)
@@ -1642,20 +1694,43 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 	end
 
 	if HasSkill(target, "dodge") and CanReact(target, attacker) then
-		local escape = MatchQuery.DodgeHexFor(match, target, attacker.position)
+		local escape, reachable, outOfRange = MatchQuery.DodgeHexFor(match, target, attacker)
+		local range = AttackRangeOf(match, attacker)
+
+		Tally(target, "escapeAttempts")
+		Tally(target, "escapeTilesBeforeRange", reachable)
+		Tally(target, "escapeTilesAfterRange", outOfRange)
+
 		if escape then
 			local from = target.position
 			ForceMove(match, target, escape)
 			HeroView.FlashAttackRange(match.view, { from }, DODGE_CORE, DODGE_EDGE)
 			HeroView.PlaySkillEffect(target, "dodge")
 			HeroView.PlaySkillSound("dodge", match.view)
+
+			local away = HexGrid.Distance(escape, attacker.position)
+			Tally(target, "successfulEscapes")
+			Tally(target, "escapeDistanceSum", away)
 			LogEvent(match, "skill", target.sideIndex,
-				("%s desviou do ataque de %s"):format(target.name, attacker.name))
+				("%s desviou do ataque de %s (alcance %d, %d de %d rotas livres, parou a %d)")
+					:format(target.name, attacker.name, range, outOfRange, reachable, away))
 
 			attacker.firstAttack = true
 			HeroView.UpdateStats(attacker)
 			return { damageApplied = true, dodged = true }
 		end
+
+		Tally(target, "failedEscapes")
+		if reachable > 0 then
+			Tally(target, "failedEscapesAttackerRange")
+			Tally(target, "blockedBy" .. attacker.name)
+		else
+			Tally(target, "failedEscapesNoValidTile")
+		end
+
+		LogEvent(match, "skill", target.sideIndex,
+			("%s nao achou rota de fuga contra %s (alcance %d, %d rotas livres, 0 fora do alcance)")
+				:format(target.name, attacker.name, range, reachable))
 	end
 
 	local ctx = {
@@ -1668,6 +1743,14 @@ local function PerformAttack(match, attacker, target, isCounterAttack)
 
 	if not ctx.damageApplied and target.isAlive then
 		ApplyDamage(match, target, attacker.attack, attacker, isCounterAttack)
+	end
+
+	if attacker.summoner then
+		Tally(attacker, "summonAttacks")
+		if not attacker.firstAttack then
+			Tally(attacker, "summonFirstAttackTurnSum", match.turn and match.turn.number or 0)
+			Tally(attacker, "summonsThatAttacked")
+		end
 	end
 
 	attacker.stats.attacks += 1
@@ -2052,6 +2135,22 @@ function MatchManager.MoveHero(player, heroUid, hexId, match)
 	local wasBonusMove = match.turn.bonusMove[heroUid] == true
 	match.turn.bonusMove[heroUid] = nil
 	match.turn.moved[heroUid] = true
+
+	if hero.summoner then
+		Tally(hero, "summonMoves")
+		Tally(hero, "summonDistanceSum", #path)
+	end
+
+	for _, ally in ipairs(MatchQuery.AlliesAdjacentTo(match, hero, hero.position)) do
+		if HasSkill(ally, "tailwind") then
+			Tally(ally, "windBoostApplications")
+			if #path > hero.moveRange then
+				Tally(ally, "movesEnabledByWindBoost")
+			end
+			break
+		end
+	end
+
 	LogEvent(match, "move", hero.sideIndex,
 		("%s andou de %s para %s"):format(hero.name, hero.position, hexId))
 	local enteredFlameCount = 0
@@ -2136,7 +2235,7 @@ function MatchManager.AttackHero(player, attackerUid, targetUid, match)
 
 	if target.stealth then return end
 
-	local reach = HexGrid.ComputeReach(attacker.position, attacker.attackRange, FreeChecker(match))
+	local reach = AttackReachFrom(match, attacker)
 	if not reach[target.position] then
 		Reject(player, "ATTACK_OUT_OF_RANGE")
 		return
@@ -2308,17 +2407,28 @@ function MatchManager.GrantShield(player, heroUid, match)
 	local target = match.heroes[heroUid]
 	if valid and target and target.isAlive
 		and target.ownerId == pending.ownerId
+		and not ActiveShieldOf(match, source)
 	then
 		ApplyStatusEffect(match, target, {
 			type = "shield",
 			permanent = true,
 			duration = 0,
+			source = source,
+			grantedTurn = match.turn.number,
 		})
 		HeroView.SetShieldAura(target, true)
 		HeroView.PlaySkillEffect(target, "aegis")
 		HeroView.PlaySkillSound("aegis", match.view)
 
-		local source = match.heroes[pending.sourceUid]
+		Tally(source, "shieldsGranted")
+		if source then
+			source.shieldedAllies = source.shieldedAllies or {}
+			if not source.shieldedAllies[target.uid] then
+				source.shieldedAllies[target.uid] = true
+				Tally(source, "uniqueAlliesShielded")
+			end
+		end
+
 		LogEvent(match, "skill", target.sideIndex,
 			("%s protegeu %s com um escudo"):format(source and source.name or "Kira", target.name))
 	end
