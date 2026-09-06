@@ -101,6 +101,7 @@ end
 GameConfig.STEALTH_OWNER_TRANSPARENCY = 0.65
 
 GameConfig.WEAK_POINT_HEAL = 2
+GameConfig.WEAK_POINT_BONUS_DAMAGE = 2
 GameConfig.GOLEM_SUMMON_IDS = { 15, 16 }
 GameConfig.BARREL_HITS = 2
 GameConfig.BARREL_HEXES = { "B4", "D4" }

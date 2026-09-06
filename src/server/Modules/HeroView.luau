@@ -1315,12 +1315,6 @@ function HeroView.CreateFlame(view, hexId, sideIndex)
 	emitter.LightInfluence = 0
 	emitter.Parent = attachment
 
-	local light = Instance.new("PointLight")
-	light.Color = FLAME_COLOR
-	light.Range = 10
-	light.Brightness = 1.6
-	light.Parent = part
-
 	return part
 end
 
@@ -1334,11 +1328,6 @@ function HeroView.DestroyFlame(view, hexId)
 	-- partículas ainda no ar, e a chama sumiria num corte seco.
 	local emitter = part:FindFirstChildWhichIsA("ParticleEmitter", true)
 	if emitter then emitter.Enabled = false end
-
-	local light = part:FindFirstChildWhichIsA("PointLight")
-	if light then
-		TweenService:Create(light, TweenInfo.new(0.6), { Brightness = 0 }):Play()
-	end
 
 	Debris:AddItem(part, 1.2)
 end
@@ -1598,6 +1587,13 @@ local function FadeVfx(root, opacity)
 	end
 end
 
+local function StripLights(instance)
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("Light") then descendant:Destroy() end
+	end
+	if instance:IsA("Light") then instance:Destroy() end
+end
+
 local function VfxTemplate(path, label)
 	local key = table.concat(path, "/")
 	if vfxTemplates[key] ~= nil then return vfxTemplates[key] or nil end
@@ -1630,6 +1626,7 @@ function HeroView.PlayFireCircle(view, hexId)
 	if not template then return end
 
 	local circle = template:Clone()
+	StripLights(circle)
 	local center = HexGrid.GetWorldPosition(hexId, view.origin)
 		+ Vector3.new(0, TILE_TOP_Y + 0.15, 0)
 
@@ -2663,23 +2660,13 @@ function HeroView.SetWeakPoint(hero, direction)
 	ghost.OutlineTransparency = WEAK_POINT_GHOST_OUTLINE
 	ghost.Parent = glow
 
-	local light = Instance.new("PointLight")
-	light.Name = "WeakPointGlow"
-	light.Color = WEAK_POINT_COLOR
-	light.Brightness = 3
-	light.Range = 12
-	light.Parent = bar
-
 	local pulse = TweenInfo.new(WEAK_POINT_PULSE, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
-	TweenService:Create(light, pulse, { Brightness = 0.6 }):Play()
 	for _, piece in ipairs(glow:GetChildren()) do
 		if piece:IsA("BasePart") then
 			TweenService:Create(piece, pulse, { Color = WEAK_POINT_DIM }):Play()
 		end
 	end
 end
-
-local WEAK_POINT_BREAK_TIME = 0.18
 
 function HeroView.BreakWeakPoint(hero)
 	if not (hero.part and hero.part.Parent) then return end
@@ -2744,15 +2731,8 @@ function HeroView.BreakWeakPoint(hero)
 	shards.LightInfluence = 0
 	shards.Parent = attachment
 
-	local flash = Instance.new("PointLight")
-	flash.Color = WEAK_POINT_COLOR
-	flash.Brightness = 6
-	flash.Range = 14
-	flash.Parent = host
-
 	slash:Emit(1)
 	shards:Emit(24)
-	TweenService:Create(flash, TweenInfo.new(WEAK_POINT_BREAK_TIME), { Brightness = 0 }):Play()
 
 	Debris:AddItem(host, 1.2)
 end

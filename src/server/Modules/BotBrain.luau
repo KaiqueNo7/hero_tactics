@@ -242,6 +242,11 @@ local function ReachFrom(match, hero, fromPos, range)
 	return HexGrid.ComputeReach(fromPos, range, isFree)
 end
 
+local function HitsWeakPoint(target, fromPos)
+	return target.weakPoint ~= nil
+		and HexGrid.DirectionBetween(target.position, fromPos) == target.weakPoint
+end
+
 -- Um Taunt inimigo adjacente trava o ataque em qualquer outro alvo
 local function EstimateDamage(match, attacker, target, fromPos)
 	if HasSkill(attacker, "longShot") then
@@ -249,6 +254,10 @@ local function EstimateDamage(match, attacker, target, fromPos)
 	end
 
 	local damage = attacker.attack
+
+	if HasSkill(attacker, "weakPoint") and HitsWeakPoint(target, fromPos) then
+		damage += GameConfig.WEAK_POINT_BONUS_DAMAGE
+	end
 
 	-- trustInTeam recalcula no onMove: prevê o ataque já pós-movimento. Lê a
 	-- marca da própria skill, não `attack > baseAttack`: o herói pode estar com
@@ -461,11 +470,6 @@ end
 local WEAK_POINT_ATTACK_VALUE = 55
 local WEAK_POINT_CHAIN_VALUE = 18
 local WEAK_POINT_POSITION_VALUE = 30
-
-local function HitsWeakPoint(target, fromPos)
-	return target.weakPoint ~= nil
-		and HexGrid.DirectionBetween(target.position, fromPos) == target.weakPoint
-end
 
 local function AlreadyChained(match, attacker, target)
 	local hits = match.turn and match.turn.weakChain and match.turn.weakChain[attacker.uid]

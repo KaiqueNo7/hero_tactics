@@ -139,6 +139,48 @@ function MatchQuery.HasSkill(hero, key)
 end
 
 -- ===================== EFEITOS =====================
+local function BeatsForMvp(challenger, holder)
+	if not holder then return true end
+
+	local a, b = challenger.stats, holder.stats
+	if a.dealt ~= b.dealt then return a.dealt > b.dealt end
+	if a.kills ~= b.kills then return a.kills > b.kills end
+	if a.taken ~= b.taken then return a.taken > b.taken end
+	if a.biggestHit ~= b.biggestHit then return a.biggestHit > b.biggestHit end
+	return challenger.uid < holder.uid
+end
+
+local function BeatsForProtector(challenger, holder)
+	if not holder then return true end
+
+	local a, b = challenger.stats, holder.stats
+	if a.taken ~= b.taken then return a.taken > b.taken end
+	if a.dealt ~= b.dealt then return a.dealt > b.dealt end
+	return challenger.uid < holder.uid
+end
+
+local function BeatsForBiggestHit(challenger, holder)
+	if not holder then return true end
+
+	local a, b = challenger.stats, holder.stats
+	if a.biggestHit ~= b.biggestHit then return a.biggestHit > b.biggestHit end
+	return challenger.uid < holder.uid
+end
+
+function MatchQuery.MatchHighlights(match, ownerId)
+	local mvp, protector, biggest = nil, nil, nil
+
+	for _, hero in pairs(match.heroes) do
+		if hero.ownerId == ownerId and hero.stats then
+			if BeatsForMvp(hero, mvp) then mvp = hero end
+			if BeatsForProtector(hero, protector) then protector = hero end
+			if BeatsForBiggestHit(hero, biggest) then biggest = hero end
+		end
+	end
+
+	return mvp, protector, biggest
+end
+
 function MatchQuery.ActiveShieldOf(match, source)
 	if not source then return nil end
 

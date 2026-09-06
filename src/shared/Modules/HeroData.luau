@@ -265,8 +265,8 @@ HeroData.SKILL_INFO = {
 		:format(GameConfig.LUCY_FLAME_HEAL) },
 	emberShield = { name = "Chama que Protege", desc = "Aliados adjacentes recebem 1 ponto a menos de dano ao serem atacados." },
 
-	weakPoint = { name = "Ponto Fraco", desc = ("Cada inimigo tem um lado aberto, marcado por uma borda branca no hexágono dele. Atacar por esse lado cura %d de vida, sorteia um lado novo pro alvo e devolve movimento E ataque — dá pra encadear em outro inimigo, mas nunca no mesmo duas vezes na sequência.")
-		:format(GameConfig.WEAK_POINT_HEAL) },
+	weakPoint = { name = "Ponto Fraco", desc = ("Cada inimigo tem um lado aberto, marcado na borda do hexágono dele. Atacar por esse lado causa +%d de dano, cura %d de vida, sorteia um lado novo pro alvo e devolve movimento E ataque — dá pra encadear em outro inimigo, mas nunca no mesmo duas vezes na sequência.")
+		:format(GameConfig.WEAK_POINT_BONUS_DAMAGE, GameConfig.WEAK_POINT_HEAL) },
 
 	-- Zeff
 	gustPush = { name = "Rajada", desc = ("Ao atacar, empurra 1 casa para longe do alvo todo aliado do alvo que estiver colado nele, e o próprio alvo 1 casa para trás. Colado sem para onde ir leva %d de dano; alvo sem para onde ir não se move e o golpe causa +%d.")

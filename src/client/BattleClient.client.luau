@@ -10,7 +10,6 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
 local Debris = game:GetService("Debris")
-local CollectionService = game:GetService("CollectionService")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
@@ -2248,67 +2247,70 @@ end
 -- Heartbeat ela ficaria um quadro atrás e daria a impressão de arrastar.
 RunService.RenderStepped:Connect(updateAim)
 
-local FRENZY_EYE_TAG = "FrenzyEye"
+do
+	local CollectionService = game:GetService("CollectionService")
+	local FRENZY_EYE_TAG = "FrenzyEye"
 
-local eyeAnchors = setmetatable({}, { __mode = "k" })
+	local eyeAnchors = setmetatable({}, { __mode = "k" })
 
-local function heroAnchorOf(eye)
-	local cached = eyeAnchors[eye]
-	if cached and cached.Parent then return cached end
+	local function heroAnchorOf(eye)
+		local cached = eyeAnchors[eye]
+		if cached and cached.Parent then return cached end
 
-	local node = eye.Parent
-	while node and node ~= Workspace do
-		if node:GetAttribute("HeroUid") then
-			eyeAnchors[eye] = node
-			return node
+		local node = eye.Parent
+		while node and node ~= Workspace do
+			if node:GetAttribute("HeroUid") then
+				eyeAnchors[eye] = node
+				return node
+			end
+			node = node.Parent
 		end
-		node = node.Parent
+		return nil
 	end
-	return nil
-end
 
-local function updateFrenzyEyes()
-	local eyes = CollectionService:GetTagged(FRENZY_EYE_TAG)
-	if #eyes == 0 then return end
+	local function updateFrenzyEyes()
+		local eyes = CollectionService:GetTagged(FRENZY_EYE_TAG)
+		if #eyes == 0 then return end
 
-	local camera = Workspace.CurrentCamera
-	local viewportY = camera and camera.ViewportSize.Y or 0
-	if viewportY <= 0 then return end
+		local camera = Workspace.CurrentCamera
+		local viewportY = camera and camera.ViewportSize.Y or 0
+		if viewportY <= 0 then return end
 
-	local cf = camera.CFrame
-	local tanHalf = math.tan(math.rad(camera.FieldOfView) / 2)
+		local cf = camera.CFrame
+		local tanHalf = math.tan(math.rad(camera.FieldOfView) / 2)
 
-	for _, eye in ipairs(eyes) do
-		local up = eye:GetAttribute("EyeOffsetUp")
-		local side = eye:GetAttribute("EyeOffsetSide")
-		local anchor = up and side and heroAnchorOf(eye)
-		local sprite = anchor and anchor:FindFirstChild("Sprite")
+		for _, eye in ipairs(eyes) do
+			local up = eye:GetAttribute("EyeOffsetUp")
+			local side = eye:GetAttribute("EyeOffsetSide")
+			local anchor = up and side and heroAnchorOf(eye)
+			local sprite = anchor and anchor:FindFirstChild("Sprite")
 
-		if sprite and sprite:IsA("BillboardGui") then
-			local base = anchor.Position + sprite.StudsOffsetWorldSpace
-			local depth = (base - cf.Position):Dot(cf.LookVector)
+			if sprite and sprite:IsA("BillboardGui") then
+				local base = anchor.Position + sprite.StudsOffsetWorldSpace
+				local depth = (base - cf.Position):Dot(cf.LookVector)
 
-			if depth > 0.1 then
-				local studsPerPixel = 2 * depth * tanHalf / viewportY
-				local height = sprite.Size.Y.Scale + sprite.Size.Y.Offset * studsPerPixel
-				local width = sprite.Size.X.Scale + sprite.Size.X.Offset * studsPerPixel
+				if depth > 0.1 then
+					local studsPerPixel = 2 * depth * tanHalf / viewportY
+					local height = sprite.Size.Y.Scale + sprite.Size.Y.Offset * studsPerPixel
+					local width = sprite.Size.X.Scale + sprite.Size.X.Offset * studsPerPixel
 
-				local position = base
-					- cf.LookVector * sprite.StudsOffset.Z
-					+ cf.UpVector * (height * up)
-					+ cf.RightVector * (width * side)
+					local position = base
+						- cf.LookVector * sprite.StudsOffset.Z
+						+ cf.UpVector * (height * up)
+						+ cf.RightVector * (width * side)
 
-				if eye:IsA("BasePart") then
-					eye.CFrame = CFrame.new(position)
-				else
-					eye:PivotTo(CFrame.new(position))
+					if eye:IsA("BasePart") then
+						eye.CFrame = CFrame.new(position)
+					else
+						eye:PivotTo(CFrame.new(position))
+					end
 				end
 			end
 		end
 	end
-end
 
-RunService.RenderStepped:Connect(updateFrenzyEyes)
+	RunService.RenderStepped:Connect(updateFrenzyEyes)
+end
 
 -- ===== DESTAQUES =====
 -- Declarado aqui, e não junto do renderShieldChoice lá embaixo, porque o

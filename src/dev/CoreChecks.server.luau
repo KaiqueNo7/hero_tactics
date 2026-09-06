@@ -1950,6 +1950,14 @@ do
 		check("Zaro) o acerto conta na telemetria",
 			log.tally.weakPointsHit == 1 and log.tally.weakPointMisses == nil
 				and log.tally.weakPointAttacks == 1)
+		check("Zaro) o acerto causa o dano de ficha mais o bonus",
+			#log.damage == 1
+				and log.damage[1].amount == zaro.attack + GameConfig.WEAK_POINT_BONUS_DAMAGE,
+			log.damage[1] and log.damage[1].amount)
+		check("Zaro) o acerto substitui o dano padrao do PerformAttack",
+			ctx.damageApplied == true)
+		check("Zaro) o bonus entra na telemetria",
+			log.tally.weakPointBonusDamage == GameConfig.WEAK_POINT_BONUS_DAMAGE)
 		check("Zaro) a telemetria registra a direcao acertada",
 			log.tally["wpHit_" .. HexGrid.DirectionName(1)] == 1)
 		check("Zaro) a telemetria soma a cura do ponto fraco",
@@ -1972,6 +1980,8 @@ do
 
 		local zaroErrado, alvoErrado, turnErrado, ctxErrado, logErrado = Cenario(ladoErrado)
 		check("Zaro) lado errado nao quebra marca nenhuma", #logErrado.broken == 0)
+		check("Zaro) lado errado nao causa dano extra nem toma o golpe padrao",
+			#logErrado.damage == 0 and not ctxErrado.damageApplied)
 		check("Zaro) lado errado conta como erro na telemetria",
 			logErrado.tally.weakPointMisses == 1 and logErrado.tally.weakPointsHit == nil)
 		check("Zaro) lado errado nao ativa", ctxErrado.weakPointHit == false)
@@ -1999,6 +2009,47 @@ do
 		Skills.weakPoint.apply(ctxCheio)
 		check("Zaro) a cura respeita o HP maximo", zaroCheio.currentHp == antes, zaroCheio.currentHp)
 	end
+end
+
+do
+	local function Placar(uid, dealt, taken, kills, biggestHit)
+		return { uid = uid, ownerId = "A", position = lineA, isAlive = true,
+			stats = { dealt = dealt, taken = taken, kills = kills or 0,
+				biggestHit = biggestHit or 0, healed = 0 } }
+	end
+
+	local function Selos(lista)
+		local board = { heroes = {} }
+		for _, hero in ipairs(lista) do board.heroes[hero.uid] = hero end
+		local mvp, protector, biggest = MatchQuery.MatchHighlights(board, "A")
+		return mvp and mvp.uid, protector and protector.uid, biggest and biggest.uid
+	end
+
+	-- o placar real que levantou a duvida: Volt e Zaro empatados em 11 de dano
+	local volt = Placar("Volt", 11, 18, 0, 4)
+	local spyke = Placar("Spyke", 8, 22, 1, 3)
+	local zaro = Placar("Zaro", 11, 15, 0, 5)
+
+	local mvp, escudo = Selos({ volt, spyke, zaro })
+	check("Selos) empate de dano vai pra quem absorveu mais", mvp == "Volt", mvp)
+	check("Selos) o escudo e de quem mais apanhou", escudo == "Spyke", escudo)
+
+	-- a ordem de insercao nao pode mudar o resultado (era o bug: ordem de hash)
+	local estavel = true
+	for _, ordem in ipairs({ { zaro, volt, spyke }, { spyke, zaro, volt },
+		{ volt, zaro, spyke }, { zaro, spyke, volt } }) do
+		local outroMvp, outroEscudo = Selos(ordem)
+		if outroMvp ~= "Volt" or outroEscudo ~= "Spyke" then estavel = false end
+	end
+	check("Selos) o resultado nao depende da ordem de varredura", estavel)
+
+	check("Selos) mais dano ganha do que mais apanhar",
+		(Selos({ Placar("Forte", 30, 1), Placar("Tanque", 5, 40) })) == "Forte")
+	check("Selos) com dano igual, mais abates ganha",
+		(Selos({ Placar("SemAbate", 10, 99), Placar("ComAbate", 10, 0, 2) })) == "ComAbate")
+
+	local _, _, maior = Selos({ Placar("Chuvisco", 20, 0, 0, 2), Placar("Canhao", 9, 0, 0, 9) })
+	check("Selos) o maior golpe e o maior golpe, nao o maior total", maior == "Canhao", maior)
 end
 
 do

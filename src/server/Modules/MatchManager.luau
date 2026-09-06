@@ -1223,24 +1223,7 @@ local function Snapshot(match, viewerId)
 
 	local summary = nil
 	if match.phase == "finished" then
-		local mvp, protector, biggest = nil, nil, nil
-
-		for _, hero in pairs(match.heroes) do
-			if hero.ownerId == viewerId then
-				local stats = hero.stats
-
-				if not mvp or stats.dealt > mvp.stats.dealt
-					or (stats.dealt == mvp.stats.dealt and stats.kills > mvp.stats.kills) then
-					mvp = hero
-				end
-				if not protector or stats.taken > protector.stats.taken then
-					protector = hero
-				end
-				if not biggest or stats.biggestHit > biggest.stats.biggestHit then
-					biggest = hero
-				end
-			end
-		end
+		local mvp, protector, biggest = MatchQuery.MatchHighlights(match, viewerId)
 
 		summary = {
 			turns = match.turn and match.turn.number or 0,

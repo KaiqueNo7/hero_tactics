@@ -1166,6 +1166,12 @@ Skills.weakPoint = {
 			ctx.weakPointDirection = target.weakPoint
 			ctx.weakPointHit = target.weakPoint ~= nil
 				and target.weakPoint == api.WeakPointDirection(target.position, ctx.hero.position)
+
+			if ctx.weakPointHit then
+				api.ApplyDamage(target, ctx.hero.attack + GameConfig.WEAK_POINT_BONUS_DAMAGE,
+					ctx.hero, ctx.isCounterAttack)
+				ctx.damageApplied = true
+			end
 			return
 		end
 
@@ -1179,6 +1185,7 @@ Skills.weakPoint = {
 
 		api.Tally(ctx.hero, "weakPointsHit")
 		api.Tally(ctx.hero, "wpHit_" .. api.DirectionName(ctx.weakPointDirection))
+		api.Tally(ctx.hero, "weakPointBonusDamage", GameConfig.WEAK_POINT_BONUS_DAMAGE)
 		if ctx.targetKilled then api.Tally(ctx.hero, "weakPointKills") end
 
 		local turn = api.TurnNumber()
