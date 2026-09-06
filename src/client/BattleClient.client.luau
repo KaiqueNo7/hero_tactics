@@ -10,6 +10,7 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
 local Debris = game:GetService("Debris")
+local Lighting = game:GetService("Lighting")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
@@ -1482,27 +1483,190 @@ local RESULT_CARD_GAP = 10
 local RESULT_PAGE_TOP = 76
 local RESULT_ROW_TOP = 98
 
+local resultFx = { introToken = 0, scene = { token = 0, mode = nil } }
+
+resultFx.tones = {
+	win = {
+		word = "VITÓRIA",
+		key = Color3.fromRGB(255, 206, 104),
+		glow = Color3.fromRGB(255, 240, 190),
+		wash = Color3.fromRGB(120, 92, 30),
+		saturation = 0.12,
+		dim = 0.40,
+	},
+	loss = {
+		word = "DERROTA",
+		key = Color3.fromRGB(228, 84, 84),
+		glow = Color3.fromRGB(255, 168, 168),
+		wash = Color3.fromRGB(70, 18, 22),
+		saturation = -0.32,
+		dim = 0.30,
+	},
+	draw = {
+		word = "EMPATE",
+		key = Color3.fromRGB(206, 214, 232),
+		glow = Color3.fromRGB(240, 246, 255),
+		wash = Color3.fromRGB(40, 46, 62),
+		saturation = -0.12,
+		dim = 0.35,
+	},
+}
+
+do
+	local scene = resultFx.scene
+
+	scene.gui = Instance.new("ScreenGui")
+	scene.gui.Name = "ResultSceneGui"
+	scene.gui.DisplayOrder = 4
+	scene.gui.IgnoreGuiInset = true
+	scene.gui.ResetOnSpawn = false
+	scene.gui.Enabled = false
+	scene.gui.Parent = player:WaitForChild("PlayerGui")
+
+	scene.dim = Instance.new("Frame")
+	scene.dim.Size = UDim2.fromScale(1, 1)
+	scene.dim.BackgroundColor3 = Color3.fromRGB(6, 7, 11)
+	scene.dim.BackgroundTransparency = 1
+	scene.dim.BorderSizePixel = 0
+	scene.dim.Parent = scene.gui
+
+	scene.wash = Instance.new("Frame")
+	scene.wash.Size = UDim2.fromScale(1, 1)
+	scene.wash.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+	scene.wash.BackgroundTransparency = 1
+	scene.wash.BorderSizePixel = 0
+	scene.wash.Parent = scene.gui
+
+	local washGradient = Instance.new("UIGradient")
+	washGradient.Rotation = 90
+	washGradient.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.35),
+		NumberSequenceKeypoint.new(0.55, 0.85),
+		NumberSequenceKeypoint.new(1, 0.45),
+	})
+	washGradient.Parent = scene.wash
+
+	local function buildVignette(rotation)
+		local frame = Instance.new("Frame")
+		frame.Size = UDim2.fromScale(1, 1)
+		frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		frame.BackgroundTransparency = 1
+		frame.BorderSizePixel = 0
+		frame.Parent = scene.gui
+
+		local gradient = Instance.new("UIGradient")
+		gradient.Rotation = rotation
+		gradient.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.15),
+			NumberSequenceKeypoint.new(0.32, 1),
+			NumberSequenceKeypoint.new(0.68, 1),
+			NumberSequenceKeypoint.new(1, 0.15),
+		})
+		gradient.Parent = frame
+
+		return frame
+	end
+
+	scene.vignetteX = buildVignette(0)
+	scene.vignetteY = buildVignette(90)
+
+	scene.blur = Instance.new("BlurEffect")
+	scene.blur.Name = "ResultBlur"
+	scene.blur.Size = 0
+	scene.blur.Enabled = false
+	scene.blur.Parent = Lighting
+
+	scene.grade = Instance.new("ColorCorrectionEffect")
+	scene.grade.Name = "ResultGrade"
+	scene.grade.Saturation = 0
+	scene.grade.Contrast = 0
+	scene.grade.Brightness = 0
+	scene.grade.Enabled = false
+	scene.grade.Parent = Lighting
+end
+
+resultFx.setScene = function(mode, tone)
+	local scene = resultFx.scene
+	if scene.mode == mode then return end
+	scene.mode = mode
+	scene.token += 1
+
+	local blurTo, satTo, contrastTo, dimTo, washTo = 0, 0, 0, 1, 1
+
+	if mode == "slowmo" then
+		blurTo, satTo, contrastTo, dimTo, washTo = 7, -0.18, 0.06, 0.86, 0.94
+	elseif mode == "result" then
+		tone = tone or resultFx.tones.draw
+		blurTo, satTo, contrastTo = 18, tone.saturation, 0.08
+		dimTo, washTo = tone.dim, 0.62
+		scene.wash.BackgroundColor3 = tone.wash
+	end
+
+	local on = mode ~= nil
+	local seconds = on and 0.55 or 0.35
+	local info = TweenInfo.new(seconds, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+	if on then
+		scene.gui.Enabled = true
+		scene.blur.Enabled = true
+		scene.grade.Enabled = true
+	end
+
+	TweenService:Create(scene.blur, info, { Size = blurTo }):Play()
+	TweenService:Create(scene.grade, info, { Saturation = satTo, Contrast = contrastTo }):Play()
+	TweenService:Create(scene.dim, info, { BackgroundTransparency = dimTo }):Play()
+	TweenService:Create(scene.wash, info, { BackgroundTransparency = washTo }):Play()
+	TweenService:Create(scene.vignetteX, info, { BackgroundTransparency = on and 0 or 1 }):Play()
+	TweenService:Create(scene.vignetteY, info, { BackgroundTransparency = on and 0 or 1 }):Play()
+
+	if on then return end
+
+	local token = scene.token
+	task.delay(seconds + 0.05, function()
+		if scene.token ~= token then return end
+		scene.gui.Enabled = false
+		scene.blur.Enabled = false
+		scene.grade.Enabled = false
+		scene.blur.Size = 0
+		scene.grade.Saturation = 0
+		scene.grade.Contrast = 0
+	end)
+end
+
 local resultPanel = Instance.new("Frame")
 resultPanel.Size = UDim2.new(0, 520, 0, 412)
 resultPanel.AnchorPoint = Vector2.new(0.5, 0.5)
 resultPanel.Position = UDim2.new(0.5, 0, 0.5, 0)
-resultPanel.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
-resultPanel.BackgroundTransparency = 0.06
+resultPanel.BackgroundTransparency = 1
 resultPanel.BorderSizePixel = 0
 resultPanel.Visible = false
 resultPanel.Parent = gui
 
-local resultCorner = Instance.new("UICorner")
-resultCorner.CornerRadius = UDim.new(0, 14)
-resultCorner.Parent = resultPanel
-
 local resultLabel = Instance.new("TextLabel")
-resultLabel.Size = UDim2.new(1, -20, 0, 46)
-resultLabel.Position = UDim2.new(0, 10, 0, 12)
+resultLabel.Size = UDim2.new(1, -20, 0, 54)
+resultLabel.Position = UDim2.new(0, 10, 0, 10)
 resultLabel.BackgroundTransparency = 1
 resultLabel.TextScaled = true
-resultLabel.Font = Enum.Font.GothamBold
+resultLabel.Font = GameConfig.UI_FONT_DISPLAY
 resultLabel.Parent = resultPanel
+
+do
+	resultFx.panelScale = Instance.new("UIScale")
+	resultFx.panelScale.Parent = resultPanel
+
+	resultFx.labelStroke = Instance.new("UIStroke")
+	resultFx.labelStroke.Color = Color3.fromRGB(10, 12, 18)
+	resultFx.labelStroke.Thickness = 2.5
+	resultFx.labelStroke.Transparency = 0.25
+	resultFx.labelStroke.Parent = resultLabel
+
+	resultFx.labelGradient = Instance.new("UIGradient")
+	resultFx.labelGradient.Rotation = 90
+	resultFx.labelGradient.Parent = resultLabel
+
+	resultFx.labelScale = Instance.new("UIScale")
+	resultFx.labelScale.Parent = resultLabel
+end
 
 -- Linha de contexto embaixo do título: quantos turnos e o maior golpe da
 -- partida. É o "resumo em uma frase" antes dos cards detalharem por herói.
@@ -1580,35 +1744,69 @@ end
 resultPrev.MouseButton1Click:Connect(flipResultPage)
 resultNext.MouseButton1Click:Connect(flipResultPage)
 
-local replayButton = Instance.new("TextButton")
-replayButton.Size = UDim2.new(1, -60, 0, 46)
-replayButton.Position = UDim2.new(0, 30, 1, -122)
-replayButton.BackgroundColor3 = Color3.fromRGB(70, 150, 90)
-replayButton.TextColor3 = Color3.new(1, 1, 1)
-replayButton.Font = Enum.Font.GothamBold
-replayButton.TextSize = 20
-replayButton.Text = "Jogar novamente"
-replayButton.BorderSizePixel = 0
-replayButton.Parent = resultPanel
+resultFx.buildButton = function(text, color, offsetY)
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(1, -60, 0, 46)
+	button.Position = UDim2.new(0, 30, 1, offsetY)
+	button.BackgroundColor3 = color
+	button.TextColor3 = Color3.fromRGB(228, 234, 244)
+	button.Font = GameConfig.UI_FONT_BODY
+	button.TextSize = 20
+	button.Text = text
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = false
+	button.Parent = resultPanel
 
-local replayCorner = Instance.new("UICorner")
-replayCorner.CornerRadius = UDim.new(0, 8)
-replayCorner.Parent = replayButton
+	local buttonCorner = Instance.new("UICorner")
+	buttonCorner.CornerRadius = UDim.new(0, 10)
+	buttonCorner.Parent = button
 
-local lobbyButton = Instance.new("TextButton")
-lobbyButton.Size = UDim2.new(1, -60, 0, 46)
-lobbyButton.Position = UDim2.new(0, 30, 1, -66)
-lobbyButton.BackgroundColor3 = Color3.fromRGB(60, 70, 90)
-lobbyButton.TextColor3 = Color3.new(1, 1, 1)
-lobbyButton.Font = Enum.Font.GothamBold
-lobbyButton.TextSize = 20
-lobbyButton.Text = "Voltar pro lobby"
-lobbyButton.BorderSizePixel = 0
-lobbyButton.Parent = resultPanel
+	local gradient = Instance.new("UIGradient")
+	gradient.Rotation = 90
+	gradient.Color = ColorSequence.new(
+		Color3.fromRGB(214, 216, 222), Color3.fromRGB(148, 150, 160))
+	gradient.Parent = button
 
-local lobbyCorner = Instance.new("UICorner")
-lobbyCorner.CornerRadius = UDim.new(0, 8)
-lobbyCorner.Parent = lobbyButton
+	local buttonStroke = Instance.new("UIStroke")
+	buttonStroke.Color = Color3.fromRGB(226, 232, 244)
+	buttonStroke.Thickness = 1.2
+	buttonStroke.Transparency = 0.86
+	buttonStroke.Parent = button
+
+	local scale = Instance.new("UIScale")
+	scale.Parent = button
+
+	local function ease(target, strokeTo, seconds)
+		TweenService:Create(scale, TweenInfo.new(seconds or 0.12), { Scale = target }):Play()
+		TweenService:Create(buttonStroke, TweenInfo.new(seconds or 0.12), {
+			Transparency = strokeTo,
+		}):Play()
+	end
+
+	button.MouseEnter:Connect(function()
+		if button.AutoButtonColor then ease(1.025, 0.35) end
+	end)
+	button.MouseLeave:Connect(function() ease(1, 0.75) end)
+	button.MouseButton1Down:Connect(function() ease(0.97, 0.2, 0.07) end)
+	button.MouseButton1Up:Connect(function() ease(1.025, 0.35) end)
+
+	return button, scale
+end
+
+local replayButton, lobbyButton
+
+do
+	local replayScale, lobbyScale
+	replayButton, replayScale = resultFx.buildButton(
+		"Jogar novamente", Color3.fromRGB(70, 150, 90), -122)
+	lobbyButton, lobbyScale = resultFx.buildButton(
+		"Voltar pro lobby", Color3.fromRGB(60, 70, 90), -66)
+
+	resultFx.buttons = {
+		{ button = replayButton, scale = replayScale },
+		{ button = lobbyButton, scale = lobbyScale },
+	}
+end
 
 -- O botão de cima muda de papel conforme a partida. Contra bot ele é decisão de
 -- um só; no PvP ele vira um convite que o adversário precisa aceitar, e some se
@@ -1675,6 +1873,113 @@ end)
 lobbyButton.MouseButton1Click:Connect(function()
 	GameAction:FireServer("leaveMatch")
 end)
+
+resultFx.playIntro = function(kind)
+	local tone = resultFx.tones[kind] or resultFx.tones.draw
+
+	resultFx.introToken += 1
+	local token = resultFx.introToken
+
+	local function sparkAtHeader()
+		for index = 1, 12 do
+			local dot = Instance.new("Frame")
+			dot.AnchorPoint = Vector2.new(0.5, 0.5)
+			dot.Position = UDim2.new(0.5, 0, 0, 37)
+			dot.Size = UDim2.fromOffset(5, 5)
+			dot.BackgroundColor3 = tone.key
+			dot.BorderSizePixel = 0
+			dot.Parent = resultPanel
+
+			local dotCorner = Instance.new("UICorner")
+			dotCorner.CornerRadius = UDim.new(1, 0)
+			dotCorner.Parent = dot
+
+			local angle = (index / 12) * math.pi * 2
+			local spread = 90 + math.random() * 70
+
+			TweenService:Create(dot,
+				TweenInfo.new(0.65, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+					Position = UDim2.new(0.5, math.cos(angle) * spread,
+						0, 37 + math.sin(angle) * spread * 0.4),
+					Size = UDim2.fromOffset(2, 2),
+					BackgroundTransparency = 1,
+				}):Play()
+
+			Debris:AddItem(dot, 0.8)
+		end
+	end
+
+	local function shakeHeader()
+		for step = 1, 6 do
+			if resultFx.introToken ~= token then return end
+			local sway = (7 - step) * 1.6
+			resultLabel.Position = UDim2.new(0, 10 + (step % 2 == 0 and sway or -sway), 0, 10)
+			task.wait(0.035)
+		end
+		resultLabel.Position = UDim2.new(0, 10, 0, 10)
+	end
+
+	resultLabel.Text = tone.word
+	resultLabel.TextColor3 = tone.glow
+	resultLabel.Position = UDim2.new(0, 10, 0, 10)
+	resultLabel.TextTransparency = 1
+	resultFx.labelGradient.Color = ColorSequence.new(tone.glow, tone.key)
+	resultFx.labelStroke.Transparency = 1
+	resultFx.labelScale.Scale = 1.65
+	resultFx.panelScale.Scale = 0.92
+
+	for _, entry in ipairs(resultFx.buttons) do
+		entry.button.TextTransparency = 1
+		entry.button.BackgroundTransparency = 1
+		entry.scale.Scale = 0.9
+	end
+
+	resultFx.setScene("result", tone)
+
+	TweenService:Create(resultFx.panelScale,
+		TweenInfo.new(0.34, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = 1 }):Play()
+
+	task.delay(0.16, function()
+		if resultFx.introToken ~= token then return end
+
+		TweenService:Create(resultLabel, TweenInfo.new(0.18), { TextTransparency = 0 }):Play()
+		TweenService:Create(resultFx.labelStroke, TweenInfo.new(0.18), { Transparency = 0.25 }):Play()
+
+		local drop = TweenService:Create(resultFx.labelScale,
+			TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+			{ Scale = 0.94 })
+		drop:Play()
+		drop.Completed:Once(function()
+			if resultFx.introToken ~= token then return end
+			TweenService:Create(resultFx.labelScale,
+				TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+				{ Scale = 1 }):Play()
+		end)
+
+		if kind == "win" then
+			sparkAtHeader()
+		elseif kind == "loss" then
+			task.spawn(shakeHeader)
+		end
+	end)
+
+	task.delay(0.62, function()
+		if resultFx.introToken ~= token then return end
+
+		for index, entry in ipairs(resultFx.buttons) do
+			task.delay((index - 1) * 0.08, function()
+				if resultFx.introToken ~= token then return end
+				TweenService:Create(entry.button, TweenInfo.new(0.2), {
+					TextTransparency = 0, BackgroundTransparency = 0,
+				}):Play()
+				TweenService:Create(entry.scale,
+					TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+					{ Scale = 1 }):Play()
+			end)
+		end
+	end)
+end
 
 -- ===== CARDS DO FIM DE PARTIDA =====
 -- Uma faixa colorida no topo do card marca o papel daquele herói na partida.
@@ -1749,17 +2054,38 @@ local function buildResultCard(hero, badgeKey, order)
 		if piece.isAlive and piece.sameBody then standing = true break end
 	end
 
-	local card = Instance.new("Frame")
+	local entryDelay = math.max(0, (order or 1) - 1) * 0.07
+
+	local card = Instance.new("CanvasGroup")
 	card.Name = hero.uid
 	card.Size = UDim2.new(0, RESULT_CARD_W, 0, RESULT_CARD_H)
 	card.BackgroundColor3 = standing and Color3.fromRGB(26, 30, 42) or DEAD_CARD
 	card.BorderSizePixel = 0
 	card.LayoutOrder = order
+	card.GroupTransparency = 1
 	card.Parent = resultTeam
 
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 10)
+	corner.CornerRadius = UDim.new(0, 12)
 	corner.Parent = card
+
+	local cardGradient = Instance.new("UIGradient")
+	cardGradient.Rotation = 90
+	cardGradient.Color = ColorSequence.new(
+		Color3.fromRGB(255, 255, 255), Color3.fromRGB(168, 172, 186))
+	cardGradient.Parent = card
+
+	local cardScale = Instance.new("UIScale")
+	cardScale.Scale = 0.9
+	cardScale.Parent = card
+
+	task.delay(entryDelay, function()
+		if not card.Parent then return end
+		TweenService:Create(card, TweenInfo.new(0.26), { GroupTransparency = 0 }):Play()
+		TweenService:Create(cardScale,
+			TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+			{ Scale = 1 }):Play()
+	end)
 
 	local badge = nil
 	for _, entry in ipairs(RESULT_BADGES) do
@@ -1860,7 +2186,7 @@ end
 -- revanche não herde os números da anterior.
 function renderResultTeam(state)
 	for _, child in ipairs(resultTeam:GetChildren()) do
-		if child:IsA("Frame") then child:Destroy() end
+		if child:IsA("GuiObject") then child:Destroy() end
 	end
 
 	local showingMine = resultPage == "mine"
@@ -2810,6 +3136,10 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	-- posição dele numa revanche.
 	applyStealthVisuals(state)
 
+	if state.finisher and state.finisher.final and state.phase ~= "finished" then
+		resultFx.setScene("slowmo")
+	end
+
 	if state.phase == "finished" then
 		gui.Enabled = true
 		turnPanel.Visible = false
@@ -2834,20 +3164,13 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		renderResultTeam(state)
 		renderReplayButton(state)
 
-		-- o servidor já manda o resultado do ponto de vista de quem recebe
-		if state.winner == "draw" then
-			resultLabel.Text = "Empate"
-			resultLabel.TextColor3 = Color3.fromRGB(215, 215, 225)
-		else
-			resultLabel.Text = state.winner == "win" and "Vitória!" or "Derrota"
-			resultLabel.TextColor3 = state.winner == "win"
-				and Color3.fromRGB(130, 230, 150) or Color3.fromRGB(230, 120, 120)
-		end
-
 		-- o servidor manda o estado final uma vez, mas guardamos mesmo assim
 		-- pra revanche não empilhar dois toques
 		if not resultPlayed then
 			resultPlayed = true
+			-- o servidor já manda o resultado do ponto de vista de quem recebe
+			resultFx.playIntro(state.winner == "draw" and "draw"
+				or (state.winner == "win" and "win" or "loss"))
 			PlayUiSound(state.winner == "win" and "Victory" or "Defeat")
 		end
 
@@ -2865,6 +3188,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 		timerLabel.Visible = false
 		endTurnButton.Visible = false
 		resultPanel.Visible = false
+		resultFx.setScene(nil)
 		counterBadge.Visible = false
 		surrenderButton.Visible = placing
 		if not placing then closeConfirm() end
@@ -2878,6 +3202,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 	gui.Enabled = true
 	turnPanel.Visible = true
 	resultPanel.Visible = false
+	if not (state.finisher and state.finisher.final) then resultFx.setScene(nil) end
 
 	-- Disponível o turno inteiro, inclusive na vez do adversário: quem quer sair
 	-- não deveria ter que esperar a própria vez pra conseguir.

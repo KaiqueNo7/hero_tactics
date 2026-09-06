@@ -140,6 +140,7 @@ LobbyZones.ZONES = {
 			Brightness = 2.3,
 		},
 	},
+	
 }
 
 function LobbyZones.ForGroup(group)

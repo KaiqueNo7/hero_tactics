@@ -232,7 +232,7 @@ local function CloseShield(match, effect, key)
 		math.max(0, (match.turn and match.turn.number or 0) - (effect.grantedTurn or 0)))
 end
 
-function KillHero(match, hero, attacker)
+function KillHero(match, hero, attacker, sourceKey)
 	hero.isAlive = false
 
 	CloseShield(match, FindStatusEffect(hero, "shield"), "shieldExpiredOrRemoved")
@@ -325,6 +325,16 @@ function KillHero(match, hero, attacker)
 	end
 
 	ResolvePendingGraves(match)
+
+	match.lastDeath = {
+		hex = hero.position,
+		name = hero.name,
+		dataId = hero.dataId,
+		ownerId = hero.ownerId,
+		sideIndex = hero.sideIndex,
+		sourceKey = sourceKey,
+		at = os.clock(),
+	}
 
 	if hero.deathHold then
 		local wasBusy = match.busy
@@ -439,7 +449,7 @@ function ApplyDamage(match, hero, amount, attacker, isCounterAttack, credit, sou
 		or ("%s sofreu %d de dano do cenário"):format(hero.name, amount))
 
 	if hero.currentHp <= 0 then
-		KillHero(match, hero, attacker)
+		KillHero(match, hero, attacker, sourceKey)
 	else
 		TriggerSkills(match, hero, "onDamage", attacker, isCounterAttack)
 	end
@@ -1616,6 +1626,18 @@ function CheckGameOver(match)
 
 	if aliveOne > 0 and aliveTwo > 0 then return false end
 
+	if not match.finisher and match.lastDeath and (os.clock() - match.lastDeath.at) < 5 then
+		local cause = match.lastDeath.sourceKey and DAMAGE_SOURCES[match.lastDeath.sourceKey]
+		match.finisher = {
+			dataId = match.lastDeath.dataId,
+			name = cause or match.lastDeath.name,
+			victim = match.lastDeath.name,
+			ownerId = match.lastDeath.ownerId,
+			sideIndex = match.lastDeath.sideIndex,
+			hex = match.lastDeath.hex,
+		}
+	end
+
 	if match.finisher then
 		match.finisher.final = true
 		Broadcast(match)
@@ -2750,6 +2772,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		turnToken = 0,
 		winner = nil,
 		finisher = nil,
+		lastDeath = nil,
 		lastSeen = {},
 		busy = false,
 		pendingPromotion = nil, -- ver TryTriggerPromotion/MatchManager.Resurrect

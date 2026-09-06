@@ -12,6 +12,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 
+local Progression = require(ReplicatedStorage.Modules.Progression)
+local RewardFx = require(ReplicatedStorage.Modules.RewardFx)
+
 local LobbyStatus = ReplicatedStorage.Remotes:WaitForChild("LobbyStatus")
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
@@ -252,66 +255,25 @@ local xpFillCorner = Instance.new("UICorner")
 xpFillCorner.CornerRadius = UDim.new(1, 0)
 xpFillCorner.Parent = xpFill
 
--- "+60 XP" ao LADO do crachá quando a partida termina. Ficava logo abaixo, mas
--- ali agora mora o saldo de moedas (LobbyMenu) — e um flash por cima do saldo
--- fazia parecer que o XP tinha virado moeda.
-local gainLabel = Instance.new("TextLabel")
-gainLabel.AnchorPoint = Vector2.new(1, 0)
-gainLabel.Position = UDim2.new(1, -156, 0, 14)
-gainLabel.Size = UDim2.new(0, 136, 0, 22)
-gainLabel.BackgroundTransparency = 1
-gainLabel.Text = ""
-gainLabel.TextColor3 = Color3.fromRGB(150, 240, 170)
-gainLabel.TextStrokeTransparency = 1
-gainLabel.TextXAlignment = Enum.TextXAlignment.Right
-gainLabel.TextScaled = true
-gainLabel.Font = Enum.Font.GothamBlack
-gainLabel.TextTransparency = 1
-gainLabel.Parent = profileGui
+local function drawProfile(totalXp)
+	local info = Progression.FromTotalXp(totalXp)
 
-local gainToken = 0
+	levelLabel.Text = ("Nível %d"):format(info.level)
 
-local function flashGain(amount)
-	if not amount or amount <= 0 then return end
-
-	gainToken += 1
-	local token = gainToken
-
-	gainLabel.Text = ("+%d XP"):format(amount)
-	gainLabel.TextTransparency = 1
-	TweenService:Create(gainLabel, TweenInfo.new(0.2), {
-		TextTransparency = 0, TextStrokeTransparency = 0.4,
-	}):Play()
-
-	task.delay(2.2, function()
-		if gainToken ~= token then return end
-		TweenService:Create(gainLabel, TweenInfo.new(0.5), {
-			TextTransparency = 1, TextStrokeTransparency = 1,
-		}):Play()
-	end)
-end
-
--- info vem pronto do servidor: { level, xpIntoLevel, xpForNext, totalXp, gained }
-local function renderProfile(info)
-	levelLabel.Text = ("Nível %d"):format(info.level or 1)
-
-	local intoLevel = info.xpIntoLevel or 0
-	local forNext = info.xpForNext or 0
-
-	if forNext > 0 then
-		xpLabel.Text = ("%d/%d"):format(intoLevel, forNext)
-		TweenService:Create(xpFill, TweenInfo.new(0.35), {
-			Size = UDim2.fromScale(math.clamp(intoLevel / forNext, 0, 1), 1),
-		}):Play()
+	if info.xpForNext > 0 then
+		xpLabel.Text = ("%d/%d"):format(info.xpIntoLevel, info.xpForNext)
+		xpFill.Size = UDim2.fromScale(math.clamp(info.xpIntoLevel / info.xpForNext, 0, 1), 1)
 	else
 		xpLabel.Text = "MAX"
 		xpFill.Size = UDim2.fromScale(1, 1)
 	end
-
-	flashGain(info.gained)
 end
 
-ProfileUpdate.OnClientEvent:Connect(renderProfile)
+RewardFx.BindXp(levelBadge, drawProfile)
+
+ProfileUpdate.OnClientEvent:Connect(function(info)
+	RewardFx.SetXp(info.totalXp or 0)
+end)
 
 -- ===== ANIMAÇÃO =====
 RunService.RenderStepped:Connect(function()

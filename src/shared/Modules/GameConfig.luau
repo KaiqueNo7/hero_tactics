@@ -134,6 +134,7 @@ GameConfig.RESURRECT_HP = 5
 GameConfig.PLAYER_STAND_OUTSET_HEXES = 0.55
 GameConfig.PLAYER_STAND_SCALE = 2.2 
 GameConfig.UI_FONT_BODY = Enum.Font.BuilderSansMedium
+GameConfig.UI_FONT_DISPLAY = Enum.Font.Sarpanch
 
 GameConfig.MASTER_VOLUME = 0.55
 GameConfig.HEX_COLOR_A = Color3.fromRGB(108, 90, 74)

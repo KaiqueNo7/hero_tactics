@@ -6,6 +6,7 @@ local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local MatchQuery = require(ServerScriptService.Modules.MatchQuery)
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
+local Progression = require(ReplicatedStorage.Modules.Progression)
 local Arenas = require(ReplicatedStorage.Modules.Arenas)
 local Skills = require(ServerScriptService.Modules.Skills)
 local BotBrain = require(ServerScriptService.Modules.BotBrain)
@@ -2094,6 +2095,53 @@ do
 	local revivida = FakeHero(KIRA_ID, "A", lineA)
 	check("Kira) revivida volta sem escudo pendurado",
 		MatchQuery.ActiveShieldOf(board, revivida) == nil and #revivida.statusEffects == 0)
+end
+
+do
+	local STEPS = 90
+
+	local function SweepReward(from, gained)
+		local to = from + gained
+		local level, last = Progression.FromTotalXp(from).level, nil
+		local monotonic, validBar = true, true
+
+		for step = 0, STEPS do
+			local alpha = step / STEPS
+			local eased = 1 - (1 - alpha) ^ 3
+			local value = math.floor(from + gained * eased + 0.5)
+			local info = Progression.FromTotalXp(value)
+
+			if info.level < level then monotonic = false end
+			level = info.level
+
+			if info.xpForNext > 0 and (info.xpIntoLevel < 0 or info.xpIntoLevel >= info.xpForNext) then
+				validBar = false
+			end
+
+			last = value
+		end
+
+		return monotonic, validBar, last == to, Progression.FromTotalXp(to).level
+	end
+
+	local cases = {
+		{ name = "sem subir de nivel", from = 10, gained = 40, levels = 0 },
+		{ name = "sobe um nivel", from = 50, gained = 120, levels = 1 },
+		{ name = "para exatamente na virada", from = 40, gained = 60, levels = 1 },
+		{ name = "sobe varios niveis de uma vez", from = 0, gained = 600, levels = 3 },
+	}
+
+	for _, case in ipairs(cases) do
+		local monotonic, validBar, landed, finalLevel = SweepReward(case.from, case.gained)
+		local levelBefore = Progression.FromTotalXp(case.from).level
+
+		check(("RewardFx) %s: nivel nunca volta"):format(case.name), monotonic)
+		check(("RewardFx) %s: barra sempre dentro do nivel"):format(case.name), validBar)
+		check(("RewardFx) %s: contagem termina no valor do servidor"):format(case.name), landed)
+		check(("RewardFx) %s: sobe %d nivel(is)"):format(case.name, case.levels),
+			finalLevel - levelBefore == case.levels,
+			("esperado %d, deu %d"):format(case.levels, finalLevel - levelBefore))
+	end
 end
 
 if #failures == 0 then

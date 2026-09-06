@@ -27,6 +27,8 @@ local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local LobbyZones = require(ReplicatedStorage.Modules.LobbyZones)
 local Tutorial = require(ReplicatedStorage.Modules.Tutorial)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
+local CoinService = require(ServerScriptService.Modules.CoinService)
+local ProgressionService = require(ServerScriptService.Modules.ProgressionService)
 local LobbyZoneBuilder = require(ServerScriptService.Modules.LobbyZoneBuilder)
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
@@ -473,6 +475,8 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 	elseif action == "claimRewards" then
 		local pending = RewardQueueService.Take(player)
 		if pending then
+			pending.xpTotal = ProgressionService.GetTotalXp(player.UserId)
+			pending.coinsTotal = CoinService.GetCoins(player.UserId)
 			GameAction:FireClient(player, "rewards", pending)
 		end
 	elseif action == "fight" then

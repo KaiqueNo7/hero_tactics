@@ -25,7 +25,7 @@ local ACC_KEYS = {
 	"kills", "deaths", "survived", "attacks", "turnsAlive", "ccApplied",
 }
 
-local DEVELOPMENT = { Zaro = true }
+local DEVELOPMENT = { Zaro = false }
 
 local SUM_ONLY = {
 	escapeDistanceSum = true,
@@ -569,6 +569,6 @@ GameConfig.MAX_LIVE_MATCHES = math.max(originalMaxMatches, CONCURRENT)
 print(("BalanceSim: %d partidas, %d por vez (%d slots de arena). Seed: %d"):format(
 	BALANCE_SIM_MATCHES, CONCURRENT, GameConfig.MAX_LIVE_MATCHES, seed))
 
--- for _ = 1, CONCURRENT do
--- 	StartOne()
--- end
+for _ = 1, CONCURRENT do
+	StartOne()
+end

@@ -75,11 +75,16 @@ local flyLooking = false
 local flyYaw, flyPitch = 0, 0
 
 local FINISH_IN = 0.42
+local FINISH_IN_FINAL = 1.05
 local FINISH_HOLD = 0.85
 local FINISH_OUT = 0.5
+local FINISH_OUT_FINAL = 0.9
 local FINISH_RADIUS_FACTOR = 0.34
+local FINISH_RADIUS_FACTOR_FINAL = 0.26
 local FINISH_DRIFT = 0.9
+local FINISH_DRIFT_FINAL = 2.2
 local FINISH_FOV = 38
+local FINISH_FOV_FINAL = 30
 local FINISH_EYE_HEIGHT = 4
 local FINISH_NAME_LIFT = 1.2
 
@@ -590,7 +595,14 @@ local function buildFinishNameplate(position, name, sideIndex)
 end
 
 local function playFinishCam(info)
-	local holdTime = info.final and GameConfig.FINISH_HOLD_FINAL or FINISH_HOLD
+	local final = info and info.final == true
+	local holdTime = final and GameConfig.FINISH_HOLD_FINAL or FINISH_HOLD
+	local inTime = final and FINISH_IN_FINAL or FINISH_IN
+	local outTime = final and FINISH_OUT_FINAL or FINISH_OUT
+	local driftBy = final and FINISH_DRIFT_FINAL or FINISH_DRIFT
+	local closeFov = final and FINISH_FOV_FINAL or FINISH_FOV
+	local radiusFactor = final and FINISH_RADIUS_FACTOR_FINAL or FINISH_RADIUS_FACTOR
+
 	if not (activated and boardCenter and info and info.hex) then return end
 	if freeFlying then return end
 
@@ -600,7 +612,7 @@ local function playFinishCam(info)
 	local focus = target + Vector3.new(0, FINISH_EYE_HEIGHT, 0)
 	local wide = camera.CFrame
 	local baseFov = camera.FieldOfView
-	local close = math.max(radius * FINISH_RADIUS_FACTOR, minRadius * 0.5)
+	local close = math.max(radius * radiusFactor, minRadius * 0.5)
 
 	finishToken += 1
 	local token = finishToken
@@ -629,14 +641,14 @@ local function playFinishCam(info)
 
 	task.spawn(function()
 		local elapsed = 0
-		while elapsed < FINISH_IN do
+		while elapsed < inTime do
 			elapsed += RunService.RenderStepped:Wait()
 			if finishToken ~= token then dropName() return end
 
-			local a = math.min(elapsed / FINISH_IN, 1)
-			a = a * a * (3 - 2 * a)
+			local a = math.min(elapsed / inTime, 1)
+			a = final and (1 - (1 - a) ^ 3) or (a * a * (3 - 2 * a))
 			camera.CFrame = wide:Lerp(orbitCFrame(focus, close), a)
-			camera.FieldOfView = baseFov + (FINISH_FOV - baseFov) * a
+			camera.FieldOfView = baseFov + (closeFov - baseFov) * a
 			fadeName(1 - a)
 		end
 
@@ -646,19 +658,19 @@ local function playFinishCam(info)
 			if finishToken ~= token then dropName() return end
 
 			local a = math.min(elapsed / holdTime, 1)
-			camera.CFrame = orbitCFrame(focus, close - FINISH_DRIFT * a)
+			camera.CFrame = orbitCFrame(focus, close - driftBy * (1 - (1 - a) ^ 2))
 		end
 
 		local from = camera.CFrame
 		elapsed = 0
-		while elapsed < FINISH_OUT do
+		while elapsed < outTime do
 			elapsed += RunService.RenderStepped:Wait()
 			if finishToken ~= token then dropName() return end
 
-			local a = math.min(elapsed / FINISH_OUT, 1)
+			local a = math.min(elapsed / outTime, 1)
 			a = a * a * (3 - 2 * a)
 			camera.CFrame = from:Lerp(wide, a)
-			camera.FieldOfView = FINISH_FOV + (baseFov - FINISH_FOV) * a
+			camera.FieldOfView = closeFov + (baseFov - closeFov) * a
 			fadeName(a)
 		end
 

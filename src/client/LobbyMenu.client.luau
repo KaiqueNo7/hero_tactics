@@ -33,6 +33,7 @@ local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local Monetization = require(ReplicatedStorage.Modules.Monetization)
 local Progression = require(ReplicatedStorage.Modules.Progression)
+local RewardFx = require(ReplicatedStorage.Modules.RewardFx)
 local SafeArea = require(ReplicatedStorage.Modules.SafeArea)
 
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
@@ -233,22 +234,11 @@ local coinValueLimit = Instance.new("UITextSizeConstraint")
 coinValueLimit.MaxTextSize = 15
 coinValueLimit.Parent = coinLabel
 
-local coinGain = Instance.new("TextLabel")
-coinGain.AnchorPoint = Vector2.new(1, 0)
-coinGain.Position = UDim2.new(1, -12, 0, 88)
-coinGain.Size = UDim2.new(0, 150, 0, 20)
-coinGain.BackgroundTransparency = 1
-coinGain.Text = ""
-coinGain.TextColor3 = GOLD
-coinGain.TextStrokeTransparency = 1
-coinGain.TextTransparency = 1
-coinGain.TextXAlignment = Enum.TextXAlignment.Right
-coinGain.TextScaled = true
-coinGain.Font = Enum.Font.GothamBlack
-coinGain.Parent = menuGui
+RewardFx.BindCoins(coinBadge, coinDot, function(value)
+	coinLabel.Text = Monetization.FormatCoins(value)
+end)
 
 local myCoins = 0
-local coinGainToken = 0
 
 -- Elenco comprado e a vitrine que o desenha. Declarados AQUI, antes da carteira,
 -- porque tanto o saldo quanto a lista de heróis mandam redesenhar as linhas — e
@@ -269,29 +259,11 @@ end
 
 local function renderWallet(payload)
 	myCoins = payload.coins or 0
-	coinLabel.Text = Monetization.FormatCoins(myCoins)
 
 	-- o preço não muda, mas o "Faltam X" e a cor do botão dependem do saldo
 	refreshAllHeroRows()
 
-	local gained = payload.gained
-	if not gained or gained <= 0 then return end
-
-	coinGainToken += 1
-	local token = coinGainToken
-
-	coinGain.Text = ("+%s"):format(Monetization.FormatCoins(gained))
-	coinGain.TextTransparency = 1
-	TweenService:Create(coinGain, TweenInfo.new(0.2), {
-		TextTransparency = 0, TextStrokeTransparency = 0.4,
-	}):Play()
-
-	task.delay(2.4, function()
-		if coinGainToken ~= token then return end
-		TweenService:Create(coinGain, TweenInfo.new(0.5), {
-			TextTransparency = 1, TextStrokeTransparency = 1,
-		}):Play()
-	end)
+	RewardFx.SetCoins(myCoins)
 end
 
 WalletUpdate.OnClientEvent:Connect(renderWallet)
@@ -591,14 +563,16 @@ backdrop.MouseButton1Click:Connect(closeModal)
 -- ===================== DESBLOQUEIO DE HERÓI (REVEAL) =====================
 -- A comemoração NUNCA sai do RosterUpdate, que chega em plena partida: quem
 -- guarda o que ainda não foi mostrado é o RewardQueueService, no servidor. O
--- cliente pede a fila ao chegar no lobby e desenrola um card por vez, herói
--- primeiro e o resumo de XP/moedas no fim. É o que faz a comemoração
--- sobreviver a uma sequência de campanha inteira — e a fechar o jogo.
+-- cliente pede a fila ao chegar no lobby e desenrola um card de herói por vez;
+-- quando não sobra herói, o XP e as moedas voam pros crachás (RewardFx) em vez
+-- de virar mais um painel. É o que faz a comemoração sobreviver a uma sequência
+-- de campanha inteira — e a fechar o jogo.
 local UNLOCK_GREEN = Color3.fromRGB(90, 235, 150)
 
 local inLobbyNow = true
 local pendingUnlockIds = {}
 local pendingXp, pendingCoins = 0, 0
+local pendingXpTotal, pendingCoinsTotal = 0, 0
 local showNextReward
 
 local function hasPendingReward()
@@ -731,44 +705,23 @@ local function openRewardPanel()
 	rewardStrokeTween:Play()
 end
 
--- Fecha a sequência: depois dos heróis, UMA tela com o XP e as moedas juntados
--- desde a última visita ao lobby. Sem herói novo, ela aparece sozinha.
-local function showProgressSummary()
-	local parts = {}
-	if pendingXp > 0 then
-		table.insert(parts, ("+%d XP"):format(pendingXp))
-	end
-	if pendingCoins > 0 then
-		table.insert(parts, ("+%s %s"):format(Monetization.FormatCoins(pendingCoins),
-			Monetization.COIN_NAME:lower()))
-	end
+-- Fecha a sequência: com os cards de herói fora do caminho, o que sobrou de XP e
+-- moedas desde a última visita ao lobby vai direto pros crachás. O total vem do
+-- servidor; o ponto de partida é ele menos o ganho, então a contagem termina
+-- exatamente no valor gravado.
+local function flushProgress()
+	local xp, coins = pendingXp, pendingCoins
 	pendingXp, pendingCoins = 0, 0
 
-	for _, child in ipairs(rewardPortraitHolder:GetChildren()) do
-		child:Destroy()
-	end
-
-	rewardPortraitHolder.Visible = false
-
-	rewardTitle.Position = UDim2.new(0.5, 0, 0, 74)
-	rewardTitle.TextStrokeTransparency = 1
-	rewardTitle.Font = Enum.Font.GothamBold
-	rewardTitle.Text = "SEU PROGRESSO"
-
-	rewardName.Position = UDim2.new(0.5, 0, 0, 112)
-	rewardName.Size = UDim2.new(1, -32, 0, 44)
-	rewardName.Font = GameConfig.UI_FONT_BODY
-	rewardName.TextColor3 = UNLOCK_GREEN
-	rewardName.Text = table.concat(parts, "\n")
-
-	openRewardPanel()
+	if xp > 0 then RewardFx.QueueXp(pendingXpTotal - xp, pendingXpTotal) end
+	if coins > 0 then RewardFx.QueueCoins(pendingCoinsTotal - coins, pendingCoinsTotal) end
 end
 
 function showNextReward()
 	local dataId = table.remove(pendingUnlockIds, 1)
 
 	if not dataId then
-		if pendingXp > 0 or pendingCoins > 0 then showProgressSummary() end
+		flushProgress()
 		return
 	end
 
@@ -1234,6 +1187,8 @@ GameAction.OnClientEvent:Connect(function(action, payload)
 
 	pendingXp += payload.xp or 0
 	pendingCoins += payload.coins or 0
+	pendingXpTotal = payload.xpTotal or pendingXpTotal
+	pendingCoinsTotal = payload.coinsTotal or pendingCoinsTotal
 
 	if inLobbyNow and not rewardGui.Enabled then
 		showNextReward()
