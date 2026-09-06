@@ -269,9 +269,9 @@ local function buildPortrait(parent)
 end
 
 local STATUS_BADGES = {
-	{ key = "frozen", glyph = "❄", color = Color3.fromRGB(150, 225, 255) },
-	{ key = "poison", glyph = "☠", color = Color3.fromRGB(150, 245, 110) },
-	{ key = "shock", glyph = "⚡", color = Color3.fromRGB(255, 226, 90) },
+	{ key = "frozen", icon = "freeze", color = Color3.fromRGB(150, 225, 255) },
+	{ key = "poison", icon = "poison", color = Color3.fromRGB(150, 245, 110) },
+	{ key = "shock", icon = "bolt", color = Color3.fromRGB(255, 226, 90) },
 }
 
 local function statusOf(hero)
@@ -522,7 +522,7 @@ local function buildTeamColumn(alignLeft)
 		statusStrip.Name = "StatusStrip"
 		statusStrip.AnchorPoint = Vector2.new(1, 0)
 		statusStrip.Position = UDim2.new(1, -3, 0, 17)
-		statusStrip.Size = UDim2.new(0, 44, 0, 12)
+		statusStrip.Size = UDim2.new(0, 52, 0, 15)
 		statusStrip.BackgroundTransparency = 1
 		statusStrip.ZIndex = 7
 		statusStrip.Parent = card
@@ -537,16 +537,13 @@ local function buildTeamColumn(alignLeft)
 
 		local statusBadges = {}
 		for order, spec in ipairs(STATUS_BADGES) do
-			local badge = Instance.new("TextLabel")
+			local badge = Instance.new("Frame")
 			badge.Name = spec.key
 			badge.LayoutOrder = order
-			badge.Size = UDim2.new(0, 13, 0, 12)
+			badge.Size = UDim2.new(0, 15, 0, 15)
 			badge.BackgroundTransparency = 0.25
 			badge.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
-			badge.TextColor3 = spec.color
-			badge.Font = Enum.Font.GothamBold
-			badge.TextSize = 9
-			badge.Text = spec.glyph
+			badge.BorderSizePixel = 0
 			badge.ZIndex = 8
 			badge.Visible = false
 			badge.Parent = statusStrip
@@ -554,6 +551,16 @@ local function buildTeamColumn(alignLeft)
 			local corner = Instance.new("UICorner")
 			corner.CornerRadius = UDim.new(0, 3)
 			corner.Parent = badge
+
+			local pad = Instance.new("Frame")
+			pad.AnchorPoint = Vector2.new(0.5, 0.5)
+			pad.Position = UDim2.fromScale(0.5, 0.5)
+			pad.Size = UDim2.new(1, -4, 1, -4)
+			pad.BackgroundTransparency = 1
+			pad.ZIndex = 9
+			pad.Parent = badge
+
+			PixelIcons.Build(spec.icon, pad, spec.color, 9)
 
 			statusBadges[spec.key] = badge
 		end
@@ -1749,7 +1756,7 @@ resultFx.buildButton = function(text, color, offsetY)
 	button.Size = UDim2.new(1, -60, 0, 46)
 	button.Position = UDim2.new(0, 30, 1, offsetY)
 	button.BackgroundColor3 = color
-	button.TextColor3 = Color3.fromRGB(228, 234, 244)
+	button.TextColor3 = Color3.fromRGB(244, 248, 255)
 	button.Font = GameConfig.UI_FONT_BODY
 	button.TextSize = 20
 	button.Text = text
@@ -1764,7 +1771,7 @@ resultFx.buildButton = function(text, color, offsetY)
 	local gradient = Instance.new("UIGradient")
 	gradient.Rotation = 90
 	gradient.Color = ColorSequence.new(
-		Color3.fromRGB(214, 216, 222), Color3.fromRGB(148, 150, 160))
+		Color3.fromRGB(255, 255, 255), Color3.fromRGB(206, 208, 216))
 	gradient.Parent = button
 
 	local buttonStroke = Instance.new("UIStroke")
@@ -1823,8 +1830,10 @@ function renderReplayButton(state)
 		replayButton.AutoButtonColor = true
 		replayButton.BackgroundColor3 = Color3.fromRGB(70, 150, 90)
 
-		if state.campaign and state.winner == "win" then
-			replayButton.Text = "Próximo herói"
+		if state.campaign and state.winner == "win" and state.campaignNext then
+			replayButton.Text = ("Próximo: %s"):format(state.campaignNext)
+		elseif state.campaign and state.winner == "win" then
+			replayButton.Text = "Enfrentar de novo"
 		elseif state.campaign then
 			replayButton.Text = "Tentar de novo"
 		else

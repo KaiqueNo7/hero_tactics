@@ -72,6 +72,18 @@ function HeroUnlockService.GetPlayableIds(player)
 	return set
 end
 
+function HeroUnlockService.GetEarnedIds(player)
+	local won = player and WonSet(player.UserId) or {}
+
+	local set = {}
+	for _, data in ipairs(HeroData.CATALOG) do
+		if HeroData.IsStarter(data) or won[data.id] then
+			set[data.id] = true
+		end
+	end
+	return set
+end
+
 function HeroUnlockService.OwnsHero(player, dataId)
 	return HeroUnlockService.GetPlayableIds(player)[dataId] == true
 end

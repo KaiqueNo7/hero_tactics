@@ -2144,6 +2144,54 @@ do
 	end
 end
 
+do
+	local function StarterSet()
+		local set = {}
+		for _, data in ipairs(HeroData.CATALOG) do
+			if HeroData.IsStarter(data) then set[data.id] = true end
+		end
+		return set
+	end
+
+	local owned = StarterSet()
+
+	local first = Campaign.NextOpen(owned)
+	check("Campanha) so com os iniciais, o proximo e o primeiro da lista",
+		first == Campaign.FIGHTS[1], first and first.hero)
+
+	owned[Campaign.FIGHTS[1].hero] = true
+	check("Campanha) vencido o primeiro, vem o segundo do mesmo grupo",
+		Campaign.NextOpen(owned) == Campaign.FIGHTS[2])
+
+	for _, fight in ipairs(Campaign.FIGHTS) do
+		if fight.group == 1 then owned[fight.hero] = true end
+	end
+
+	local afterOne = Campaign.NextOpen(owned)
+	check("Campanha) grupo 1 completo abre o primeiro do grupo 2",
+		afterOne == Campaign.FIGHTS[4] and afterOne.group == 2,
+		afterOne and ("heroi %d do grupo %d"):format(afterOne.hero, afterOne.group))
+
+	local jumped = nil
+	for _, fight in ipairs(Campaign.FIGHTS) do
+		if fight.group == 3 then jumped = fight break end
+	end
+	owned[jumped.hero] = true
+
+	local stillTwo = Campaign.NextOpen(owned)
+	check("Campanha) heroi solto do grupo 3 nao fura a ordem do grupo 2",
+		stillTwo ~= nil and stillTwo.group == 2,
+		stillTwo and ("grupo %d"):format(stillTwo.group))
+
+	check("Campanha) skip nao devolve o confronto recem-vencido",
+		Campaign.NextOpen(StarterSet(), Campaign.FIGHTS[1]) == Campaign.FIGHTS[2])
+
+	local everything = StarterSet()
+	for _, fight in ipairs(Campaign.FIGHTS) do everything[fight.hero] = true end
+	check("Campanha) campanha completa nao oferece proximo",
+		Campaign.NextOpen(everything) == nil)
+end
+
 if #failures == 0 then
 	print(("CoreChecks: %d verificacoes, tudo certo."):format(passed))
 else

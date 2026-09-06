@@ -73,6 +73,7 @@ local nextMatchId = 0
 -- declaradas cedo porque se chamam entre si
 local BeginTurn, BotPlayTurn, BotPlaceOne, AdvancePlacement, CheckGameOver
 local TryTriggerPromotion, AttackGrave, FindNearestFreeHex, EndMatch
+local NextOpenFight
 
 -- O Estilhaçar do Golem invoca pela API das skills (BuildSkillApi), que é
 -- montada bem antes do CreateHero existir no arquivo.
@@ -1196,6 +1197,14 @@ local function Snapshot(match, viewerId)
 		}
 	end
 
+	local campaignNext = nil
+	if match.fight and match.phase == "finished"
+		and match.winner == viewerId and viewerSide.player then
+		local upcoming = NextOpenFight(viewerSide.player, match.fight)
+		local data = upcoming and HeroData.GetById(upcoming.hero)
+		campaignNext = data and data.name or nil
+	end
+
 	local promotionSquares = {}
 	for slotIndex, hexId in pairs(GameConfig.PROMOTION_HEX_FOR_SLOT) do
 		local side = match.sides[slotIndex]
@@ -1260,6 +1269,7 @@ local function Snapshot(match, viewerId)
 		pendingPromotion = pendingPromotion,
 		pendingShield = pendingShield,
 		campaign = match.fight ~= nil,
+		campaignNext = campaignNext,
 		rematch = (match.phase == "finished" and not match.vsBot) and {
 			open = match.rematchOpen == true,
 			mine = match.rematch[viewerId] == true,
@@ -2833,8 +2843,8 @@ function EndMatch(match)
 	matchBySlot[match.slot] = nil
 end
 
-local function NextOpenFight(player, justWon)
-	return Campaign.NextOpen(HeroUnlockService.GetPlayableIds(player), justWon)
+function NextOpenFight(player, justWon)
+	return Campaign.NextOpen(HeroUnlockService.GetEarnedIds(player), justWon)
 end
 
 local function RestartMatch(match, fight)
@@ -2878,11 +2888,7 @@ function MatchManager.Replay(player)
 
 	local fight = match.fight
 	if fight and match.winner == tostring(player.UserId) then
-		fight = NextOpenFight(player, fight)
-		if not fight then
-			Broadcast(match, "Você venceu todos os confrontos disponíveis!")
-			return
-		end
+		fight = NextOpenFight(player, fight) or fight
 	end
 
 	RestartMatch(match, fight)

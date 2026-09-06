@@ -131,6 +131,13 @@ local HP_TEXT_CRITICAL = Color3.fromRGB(255, 120, 120)
 
 -- Gelo do Kor: floco azul-claro no crachá enquanto o inimigo estiver congelado
 local FREEZE_ICON_COLOR = Color3.fromRGB(150, 225, 255)
+local SHOCK_ICON_COLOR = Color3.fromRGB(255, 226, 90)
+local PARALYSIS_ICON_COLOR = Color3.fromRGB(212, 190, 124)
+local POISON_ICON_COLORS = {
+	Color3.fromRGB(170, 250, 130),
+	Color3.fromRGB(126, 214, 96),
+	Color3.fromRGB(92, 168, 74),
+}
 
 -- Passiva do herói (data.ability) -> ícone e cor do selo ao lado da vida
 local ABILITY_BADGES = {
@@ -2174,18 +2181,13 @@ function HeroView.Create(hero)
 	statusSlot.ZIndex = 2
 	statusSlot.Parent = status
 
-	-- tira de 3 células: a ImageLabel fica 3x mais larga que a janela (status)
-	-- e desliza por escala (Position em múltiplos de -1) pra mostrar só 1 célula
-	local statusIcon = Instance.new("ImageLabel")
-	statusIcon.Name = "Icon"
-	statusIcon.Size = UDim2.new(HeroData.POISON_FRAME_COUNT, 0, 1, 0)
-	statusIcon.Position = UDim2.new(0, 0, 0, 0)
-	statusIcon.BackgroundTransparency = 1
-	statusIcon.ScaleType = Enum.ScaleType.Stretch
-	statusIcon.Visible = false
-	statusIcon.ResampleMode = Enum.ResamplerMode.Pixelated
-	statusIcon.ZIndex = 3
-	statusIcon.Parent = statusSlot
+	local poisonIcon = PixelIcons.Build("poison", statusSlot, POISON_ICON_COLORS[1], 3)
+	poisonIcon.Name = "PoisonIcon"
+	poisonIcon.Visible = false
+
+	local boltIcon = PixelIcons.Build("bolt", statusSlot, SHOCK_ICON_COLOR, 3)
+	boltIcon.Name = "BoltIcon"
+	boltIcon.Visible = false
 
 	-- Gelo do Kor: mesma casca dos outros selos, com o floco desenhado (PixelIcons)
 	-- em vez de tira de imagem. Montado uma vez; o UpdateStats só liga e desliga.
@@ -2205,13 +2207,17 @@ function HeroView.Create(hero)
 
 	local statusFallback = Instance.new("TextLabel")
 	statusFallback.Name = "Fallback"
-	statusFallback.Size = UDim2.fromScale(1, 1)
+	statusFallback.AnchorPoint = Vector2.new(1, 1)
+	statusFallback.Position = UDim2.fromScale(1, 1)
+	statusFallback.Size = UDim2.fromScale(0.52, 0.52)
 	statusFallback.BackgroundTransparency = 1
 	statusFallback.Text = ""
-	statusFallback.TextColor3 = Color3.fromRGB(160, 240, 140)
+	statusFallback.TextColor3 = SHOCK_ICON_COLOR
+	statusFallback.TextStrokeColor3 = Color3.fromRGB(12, 14, 20)
+	statusFallback.TextStrokeTransparency = 0.2
 	statusFallback.TextScaled = true
-	statusFallback.Font = Enum.Font.GothamBold
-	statusFallback.ZIndex = 3
+	statusFallback.Font = Enum.Font.GothamBlack
+	statusFallback.ZIndex = 4
 	statusFallback.Parent = statusSlot
 
 	hero.part = anchor
@@ -2794,7 +2800,8 @@ function HeroView.UpdateStats(hero)
 
 	local statusSlot = status and status:FindFirstChild("Slot")
 	if statusSlot then
-		local icon = statusSlot:FindFirstChild("Icon")
+		local poisonIcon = statusSlot:FindFirstChild("PoisonIcon")
+		local boltIcon = statusSlot:FindFirstChild("BoltIcon")
 		local fallback = statusSlot:FindFirstChild("Fallback")
 		local poison, charge, paralysis = nil, nil, nil
 		for _, effect in ipairs(hero.statusEffects) do
@@ -2809,26 +2816,19 @@ function HeroView.UpdateStats(hero)
 
 		SetParalysisSpark(hero, paralysis ~= nil)
 
-		local spriteId = HeroData.GetPoisonSpriteId()
-		if paralysis then
-			icon.Visible = false
-			fallback.Text = "⚡X"
-		elseif charge then
-			icon.Visible = false
-			fallback.Text = ("⚡%d"):format(charge.stacks or 1)
-		elseif poison and spriteId then
+		poisonIcon.Visible = false
+		boltIcon.Visible = false
+		fallback.Text = ""
 
-			local stage = HeroData.GetPoisonStageIndex(poison.duration)
-			icon.Image = spriteId
-			icon.Position = UDim2.new(-stage, 0, 0, 0)
-			icon.Visible = true
-			fallback.Text = ""
+		if paralysis or charge then
+			boltIcon.Visible = true
+			PixelIcons.SetColor(boltIcon, paralysis and PARALYSIS_ICON_COLOR or SHOCK_ICON_COLOR)
+			fallback.Text = paralysis and "" or tostring(charge.stacks or 1)
 		elseif poison then
-			icon.Visible = false
-			fallback.Text = "☠"
-		else
-			icon.Visible = false
-			fallback.Text = ""
+			poisonIcon.Visible = true
+			PixelIcons.SetColor(poisonIcon,
+				POISON_ICON_COLORS[HeroData.GetPoisonStageIndex(poison.duration) + 1]
+					or POISON_ICON_COLORS[1])
 		end
 	end
 

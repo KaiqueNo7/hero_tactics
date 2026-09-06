@@ -45,7 +45,7 @@ the `Remotes` folder itself is Studio-owned, not Rojo-managed.
 Image/sound assets also live outside Rojo's reach: sound names are read from
 `ReplicatedStorage.Sounds` (`Hit`, `SwordSwing`, `Heal`, `PoisonHiss`, `FootstepWood`, `MatchStart`,
 `HeroSelect`, `HeroSelectBattle`; per-arena names too — `BattleDefault`, which plays only during hero selection, plus the per-region
-`Music<Region>` battle tracks (a region with no such Sound plays silence, no fallback) and the object sounds each theme names in `Arenas.luau`); asset IDs (hero spritesheet, poison icon) are constants in
+`Music<Region>` battle tracks (a region with no such Sound plays silence, no fallback) and the object sounds each theme names in `Arenas.luau`); the hero spritesheet asset ID is a constant in
 `HeroData.luau`.
 
 ## Architecture

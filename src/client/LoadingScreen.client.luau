@@ -229,7 +229,7 @@ heroDataModule = heroDataModule and heroDataModule:FindFirstChild("HeroData")
 if heroDataModule then
 	local ok, HeroData = pcall(require, heroDataModule)
 	if ok then
-		local ids = { HeroData.GetSpriteId(), HeroData.GetPoisonSpriteId() }
+		local ids = { HeroData.GetSpriteId() }
 
 		-- herói novo não entra na folha: cada um traz o próprio asset, e sem
 		-- preload ele aparece branco no primeiro quadro da partida

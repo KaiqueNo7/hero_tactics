@@ -58,14 +58,7 @@ function HeroData.GetArtAspect(data)
 	return HeroData.FRAME_WIDTH / HeroData.FRAME_HEIGHT
 end
 
-HeroData.POISON_SHEET = "81879107964596"
 HeroData.POISON_FRAME_COUNT = 3
-
-function HeroData.GetPoisonSpriteId()
-	local digits = HeroData.POISON_SHEET:gsub("%D", "")
-	if digits == "" or digits == "0" then return nil end
-	return "rbxassetid://" .. digits
-end
 
 function HeroData.GetPoisonStageIndex(durationRemaining)
 	return math.clamp(HeroData.POISON_FRAME_COUNT - durationRemaining, 0, HeroData.POISON_FRAME_COUNT - 1)
