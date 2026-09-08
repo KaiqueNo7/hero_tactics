@@ -73,6 +73,9 @@
         },
         "TutorialClient": {
           "$path": "src/client/TutorialClient.client.luau"
+        },
+        "SandboxClient": {
+          "$path": "src/client/SandboxClient.client.luau"
         }
       }
     }

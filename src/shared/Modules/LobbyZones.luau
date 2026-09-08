@@ -73,9 +73,9 @@ LobbyZones.ZONES = {
 	{
 		id = "bosque",
 		group = 2,
-		name = "Bosque Sombrio",
+		name = "Dark Mountain",
 		blurb = "As árvores aqui já morreram. Alguma coisa continua andando.",
-		center = Vector2.new(47.8, -150.2),
+		center = Vector2.new(54, -161),
 		rotation = -17.9,
 		ground = { color = Color3.fromRGB(58, 54, 68), material = Enum.Material.Ground },
 		rim = Color3.fromRGB(40, 36, 48),
@@ -128,7 +128,7 @@ LobbyZones.ZONES = {
 		group = 5,
 		name = "Santuário de Brasa",
 		blurb = "A mesma chama da Forja, do lado que aquece em vez de queimar.",
-		center = Vector2.new(135, 158),
+		center = Vector2.new(102, 162),
 		rotation = 39.9,
 		ground = { color = Color3.fromRGB(158, 128, 108), material = Enum.Material.Sand },
 		rim = Color3.fromRGB(96, 72, 58),
@@ -140,7 +140,42 @@ LobbyZones.ZONES = {
 			Brightness = 2.3,
 		},
 	},
-	
+
+	{
+		id = "boske",
+		group = 6,
+		name = "Boske",
+		blurb = "O pântano que engoliu a estrada. Nada aqui apodrece sozinho.",
+		center = Vector2.new(-101, -174),
+		rotation = 0,
+		ground = { color = Color3.fromRGB(62, 74, 56), material = Enum.Material.Ground },
+		rim = Color3.fromRGB(44, 52, 40),
+		ambience = {
+			Ambient = Color3.fromRGB(30, 40, 34),
+			OutdoorAmbient = Color3.fromRGB(104, 124, 106),
+			Atmosphere = { Density = 0.44, Haze = 2.2, Color = Color3.fromRGB(150, 178, 148), Decay = Color3.fromRGB(58, 78, 62) },
+			Tint = Color3.fromRGB(236, 252, 238),
+			Brightness = 1.8,
+		},
+	},
+
+	{
+		id = "templo",
+		group = 7,
+		name = "Templo",
+		blurb = "Degraus gastos por quem subiu antes e não voltou.",
+		center = Vector2.new(180, -93),
+		rotation = 0,
+		ground = { color = Color3.fromRGB(168, 152, 118), material = Enum.Material.Sandstone },
+		rim = Color3.fromRGB(112, 100, 76),
+		ambience = {
+			Ambient = Color3.fromRGB(46, 42, 34),
+			OutdoorAmbient = Color3.fromRGB(150, 138, 112),
+			Atmosphere = { Density = 0.26, Haze = 1.2, Color = Color3.fromRGB(238, 224, 190), Decay = Color3.fromRGB(118, 104, 78) },
+			Tint = Color3.fromRGB(255, 250, 236),
+			Brightness = 2.2,
+		},
+	},
 }
 
 function LobbyZones.ForGroup(group)

@@ -10,9 +10,9 @@
 	jogador, e uma Part tem uma cor só pra todo mundo: quem pinta cada cópia é o
 	cliente (LobbyMenu), pela tag Campaign.PAD_TAG.
 
-	Várias partidas rodam ao mesmo tempo, cada uma na sua arena. A entrada só
-	recusa quando (a) as arenas acabaram — MAX_LIVE_MATCHES — ou (b) o
-	jogador já está numa partida.
+	Várias partidas rodam ao mesmo tempo, cada uma na sua arena, e o número de
+	arenas não tem teto: o slot livre é sempre alocado. A entrada só recusa quem
+	já está numa partida.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -33,6 +33,7 @@ local LobbyZoneBuilder = require(ServerScriptService.Modules.LobbyZoneBuilder)
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 local RewardQueueService = require(ServerScriptService.Modules.RewardQueueService)
+local SandboxService = require(ServerScriptService.Modules.SandboxService)
 local TutorialService = require(ServerScriptService.Modules.TutorialService)
 
 local PlaceHero = ReplicatedStorage.Remotes.PlaceHero
@@ -40,25 +41,11 @@ local GameAction = ReplicatedStorage.Remotes.GameAction
 local LobbyStatus = ReplicatedStorage.Remotes.LobbyStatus
 
 local TOUCH_DEBOUNCE = 1.5
-local PAD_WAIT_TIMEOUT = 20
 
-local function WaitForPad(name)
-	local deadline = os.clock() + PAD_WAIT_TIMEOUT
+LobbyZoneBuilder.EnsureLobbyPads()
 
-	repeat
-		local pad = Workspace:FindFirstChild(name, true)
-		if pad and pad:IsA("BasePart") then return pad end
-		task.wait(0.25)
-	until os.clock() > deadline
-
-	warn(("GameStartTrigger: pad '%s' não encontrado no Workspace em %ds. " ..
-		"Ele precisa ser uma Part com esse nome exato, em qualquer lugar do cenário.")
-		:format(name, PAD_WAIT_TIMEOUT))
-	return nil
-end
-
-local botPad = WaitForPad("StartBotMatch")
-local pvpPad = WaitForPad("StartPvpMatch")
+local botPad = Workspace:FindFirstChild("StartBotMatch", true)
+local pvpPad = Workspace:FindFirstChild("StartPvpMatch", true)
 
 local queue = {}
 local lastTouch = {}
@@ -190,12 +177,44 @@ local function BuildFightBillboard(pad, data)
 	nameLabel.Parent = billboard
 end
 
+local function CollectPads(padName)
+	local found = {}
+	for _, instance in ipairs(Workspace:GetDescendants()) do
+		if instance.Name == padName and instance:IsA("BasePart") then
+			table.insert(found, instance)
+		end
+	end
+	return found
+end
+
+local function KeepOnePad(padName)
+	local found = CollectPads(padName)
+	if #found <= 1 then return found[1] end
+
+	local keeper = found[1]
+	for _, pad in ipairs(found) do
+		if pad:GetAttribute("KeepPosition") then
+			keeper = pad
+			break
+		end
+	end
+
+	for _, pad in ipairs(found) do
+		if pad ~= keeper then pad:Destroy() end
+	end
+
+	warn(("GameStartTrigger: %d copias de %s no place — %d removida(s), sobrou a de %s.")
+		:format(#found, padName, #found - 1, keeper.Parent.Name))
+
+	return keeper
+end
+
 local function EnsureFightPad(fight)
 	local data = HeroData.GetById(fight.hero)
 	if not data then return nil end
 
 	local padName = "FightPad_" .. fight.hero
-	local pad = Workspace:FindFirstChild(padName, true)
+	local pad = KeepOnePad(padName)
 	local home = DefaultFightPadPosition(fight)
 
 	if not home then
@@ -317,11 +336,6 @@ end
 local function CanStart(player)
 	if MatchManager.IsInMatch(player) then
 		SendStatus(player, "busy", "Você já está numa partida")
-		return false
-	end
-
-	if not MatchManager.HasFreeSlot() then
-		SendStatus(player, "busy", "Todas as arenas estão ocupadas — tente em instantes")
 		return false
 	end
 
@@ -481,6 +495,8 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 		end
 	elseif action == "fight" then
 		OnFightRequested(player, arg1)
+	elseif action == "sandbox" then
+		SandboxService.Handle(player, arg1)
 	end
 end)
 

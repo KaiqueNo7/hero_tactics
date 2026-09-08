@@ -22,6 +22,29 @@ local winsStore = DataStoreService:GetOrderedDataStore(WINS_STORE_NAME)
 local updatedEvent = Instance.new("BindableEvent")
 LeaderboardService.Updated = updatedEvent.Event
 
+local identities = {}
+
+local function IdentityOf(userId)
+	local cached = identities[userId]
+	if cached then return cached end
+
+	local identity = { name = "Jogador " .. tostring(userId), avatar = nil }
+
+	local nameOk, nameResult = pcall(function()
+		return Players:GetNameFromUserIdAsync(userId)
+	end)
+	if nameOk and nameResult then identity.name = nameResult end
+
+	local avatarOk, avatarResult = pcall(function()
+		return Players:GetUserThumbnailAsync(userId,
+			Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+	end)
+	if avatarOk and avatarResult then identity.avatar = avatarResult end
+
+	identities[userId] = identity
+	return identity
+end
+
 function LeaderboardService.RecordWin(userId)
 	if type(userId) ~= "number" then return end
 
@@ -54,14 +77,14 @@ function LeaderboardService.GetTop(count)
 
 	for _, entry in ipairs(page) do
 		local userId = tonumber(entry.key)
-		local name = "Jogador " .. tostring(userId)
+		local identity = IdentityOf(userId)
 
-		local nameOk, nameResult = pcall(function()
-			return Players:GetNameFromUserIdAsync(userId)
-		end)
-		if nameOk and nameResult then name = nameResult end
-
-		table.insert(result, { userId = userId, name = name, wins = entry.value })
+		table.insert(result, {
+			userId = userId,
+			name = identity.name,
+			avatar = identity.avatar,
+			wins = entry.value,
+		})
 	end
 
 	return result

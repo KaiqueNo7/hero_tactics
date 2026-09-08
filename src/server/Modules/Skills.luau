@@ -40,6 +40,14 @@ Skills.beyondFront = {
 
 		local line = ctx.api.GetLineBeyond(ctx.hero.position, ctx.target.position, 2)
 
+		local sweep = { ctx.target.position }
+		for _, hexId in ipairs(line) do
+			local blocker = ctx.api.GetHeroAt(hexId)
+			if blocker and blocker.isAlive and blocker.ownerId == ctx.hero.ownerId then break end
+			table.insert(sweep, hexId)
+		end
+		ctx.api.LineShot(ctx.hero, sweep)
+
 		for _, hexId in ipairs(line) do
 			local other = ctx.api.GetHeroAt(hexId)
 
@@ -595,18 +603,17 @@ Skills.flameFury = {
 		if ctx.movedHero ~= ctx.hero then return end
 		if not ctx.enteredFlameCount or ctx.enteredFlameCount <= 0 then return end
 
-		-- Empréstimo, não acúmulo: se ainda restar um Furor de um passo
-		-- anterior, desfaz ele PRIMEIRO — o resto da conta parte sempre da
-		-- ficha BASE, nunca de cima de um bônus que ainda não venceu. Sem isso,
-		-- dois passos em fogo em turnos diferentes se somariam sem nunca
-		-- esbarrar no teto.
+		-- Empréstimo, não acúmulo: a conta parte sempre da ficha BASE, nunca de
+		-- cima de um Furor que ainda não venceu. Sem isso, dois passos em fogo em
+		-- turnos diferentes se somariam sem nunca esbarrar no teto.
+		--
+		-- O bônus velho não é devolvido aqui: quem devolve é o ApplyStatusEffect
+		-- ao trocar o efeito, lá embaixo. Descontar nos dois lugares tirava o
+		-- ponto duas vezes.
 		local existing = ctx.api.FindStatusEffect(ctx.hero, "flameFury")
 		local previous = existing and existing.attackBonus or 0
-		if existing then
-			ctx.api.IncreaseAttack(ctx.hero, -previous)
-		end
 
-		local base = ctx.hero.attack
+		local base = ctx.hero.attack - previous
 		for _, effect in ipairs(ctx.hero.statusEffects) do
 			if effect ~= existing then
 				base -= effect.attackBonus or 0
@@ -758,38 +765,44 @@ Skills.longShot = {
 -- o registro do adversário e que o AttackHero lê pra recusar a mira), então
 -- toda saída da sombra passa por aqui — atacar e levar dano usam a mesma porta.
 local function BreakStealth(ctx)
+	ctx.hero.stealthCombo = false
 	if not ctx.hero.stealth then return end
 	ctx.hero.stealth = false
 	ctx.api.Effect(ctx.hero, "stealthBreak")
 end
 
--- Fica invisível enquanto nenhum inimigo estiver a STEALTH_RANGE ou menos.
--- Mora aqui fora porque o recálculo acontece em dois gatilhos diferentes.
+-- Revela por PROXIMIDADE, e só quando a aproximação não foi obra do próprio
+-- Shadow: inimigo que anda pra cima dele entrega o vulto (é a regra da ficha,
+-- "enquanto nenhum inimigo estiver a menos de 2 casas"), mas o passo DELE nunca
+-- entrega — senão a Emboscada seria impossível, já que ele bate de perto.
 --
--- SÓ O MOVIMENTO DO INIMIGO CONTA. Se o passo do próprio Shadow recalculasse,
--- a Emboscada seria impossível: ele bate de perto (alcance 1), e 1 é menos que
--- STEALTH_RANGE — a invisibilidade cairia no passo de andar, antes do golpe.
--- O que o tira da sombra é o ATAQUE dele ou o DANO que ele leva (os dois pelo
--- BreakStealth acima), não a própria aproximação.
-local function SyncStealth(ctx)
-	local hidden = #ctx.api.GetEnemiesInRange(ctx.hero, GameConfig.STEALTH_RANGE) == 0
-	if ctx.hero.stealth == hidden then return end
+-- `stealthCombo` é a exceção que o Instinto de Caça promete por escrito: depois
+-- de um abate ele volta à sombra "mesmo com inimigo colado", e essa carência
+-- vale até o próximo golpe sair ou o turno virar.
+local function RevealIfCrowded(ctx)
+	if not ctx.hero.stealth then return end
+	if ctx.hero.stealthCombo then return end
+	if #ctx.api.GetEnemiesInRange(ctx.hero, GameConfig.STEALTH_RANGE) == 0 then return end
 
-	-- A ORDEM IMPORTA nos dois sentidos, porque a marca `stealth` é o que
-	-- silencia TODO efeito visual do herói (ver HeroView): a fumaça do sumiço
-	-- sai enquanto ele ainda está à vista, e a da revelação depois de a marca
-	-- cair. Invertendo, o efeito da vez seria engolido pelo próprio filtro.
-	if hidden then
-		ctx.api.Effect(ctx.hero, "stealth")
-		-- Som só na ENTRADA na sombra, não na quebra: o pedido era "efeito
-		-- quando ele ficar invisível", e a quebra já tem leitura visual própria
-		-- (stealthBreak) sem precisar de áudio extra.
-		ctx.api.PlaySkillSound("stealth")
-		ctx.hero.stealth = true
-	else
-		ctx.hero.stealth = false
-		ctx.api.Effect(ctx.hero, "stealthBreak")
-	end
+	BreakStealth(ctx)
+end
+
+-- ENTRA na sombra quando nenhum inimigo está a STEALTH_RANGE ou menos. Só isso:
+-- a condição de entrada NÃO vale ao contrário. Quem tira o Shadow da sombra é o
+-- ATAQUE dele ou o DANO que ele leva (os dois pelo BreakStealth acima) — chegar
+-- perto de um inimigo, depois de já estar invisível, não revela nada, senão a
+-- invisibilidade preservada pelo abate (huntInstinct) morria no passo seguinte.
+--
+-- O efeito sai ANTES da marca subir, porque `stealth` é o que silencia TODO
+-- efeito visual do herói (ver HeroView): com a marca já de pé, a fumaça do
+-- sumiço seria engolida pelo próprio filtro.
+local function SyncStealth(ctx)
+	if ctx.hero.stealth then return end
+	if #ctx.api.GetEnemiesInRange(ctx.hero, GameConfig.STEALTH_RANGE) > 0 then return end
+
+	ctx.api.Effect(ctx.hero, "stealth")
+	ctx.api.PlaySkillSound("stealth")
+	ctx.hero.stealth = true
 end
 
 Skills.stealth = {
@@ -802,16 +815,33 @@ Skills.stealth = {
 		-- não muda: quem reduz dano recebido são as passivas do ApplyDamage, e
 		-- a furtividade nunca foi uma delas.
 		--
-		-- Sai antes do recálculo por proximidade: quem bateu pode estar longe
-		-- demais pra revelar por distância, e ainda assim a sombra caiu.
+		-- Sai antes de qualquer reavaliação de entrada: a quebra é imediata.
 		local trigger = ctx.trigger
 		if trigger == "onAttack" or trigger == "onCounterAttack" or trigger == "onDamage" then
 			BreakStealth(ctx)
 			return
 		end
 
-		-- o próprio passo não conta contra ele, salvo o bônus do Instinto de Caça
-		if ctx.movedHero == ctx.hero and not ctx.bonusMove then return end
+		-- Turno novo fecha a carência do abate e reavalia do zero: quem terminou
+		-- o combo colado num inimigo é revelado aqui, não no meio da sequência.
+		if trigger == "onTurnStart" then
+			ctx.hero.stealthCombo = false
+			RevealIfCrowded(ctx)
+			SyncStealth(ctx)
+			return
+		end
+
+		if ctx.movedHero == ctx.hero then
+			-- o próprio passo não o devolve à sombra, salvo o bônus do Instinto de
+			-- Caça — e nunca o entrega, seja normal ou de combo
+			if not ctx.bonusMove then return end
+			SyncStealth(ctx)
+			return
+		end
+
+		if ctx.movedHero and ctx.movedHero.ownerId ~= ctx.hero.ownerId then
+			RevealIfCrowded(ctx)
+		end
 
 		SyncStealth(ctx)
 	end,
@@ -879,6 +909,7 @@ Skills.ambush = {
 }
 
 local function Restealth(ctx)
+	ctx.hero.stealthCombo = true
 	if ctx.hero.stealth then return end
 	ctx.api.Effect(ctx.hero, "stealth")
 	ctx.api.PlaySkillSound("stealth")

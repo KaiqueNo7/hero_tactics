@@ -97,7 +97,7 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(80, 90, 120),
 		sprite = "95643253305726", spriteSize = Vector2.new(312, 306), scale = 1.04 },
 
-	{ id = 14, name = "Golem", attack = 1, hp = 40, ability = "Taunt",
+	{ id = 14, name = "Golem", attack = 1, hp = 38, ability = "Taunt",
 		abilities = { "shatter" },
 		color = Color3.fromRGB(140, 140, 140),
 		sprite = "95596148134035", spriteSize = Vector2.new(447, 361), scale = 1.62 },
@@ -130,7 +130,7 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(120, 190, 110),
 		sprite = "125043635721594", spriteSize = Vector2.new(734, 866), scale = 0.99 },
 
-	{ id = 24, name = "Rush", attack = 0, hp = 11, ability = GameConfig.ABILITIES.SPRINT,
+	{ id = 24, name = "Rush", attack = 0, hp = 13, ability = GameConfig.ABILITIES.SPRINT,
 		moveRange = GameConfig.RUSH_MOVE_RANGE,
 		abilities = { "momentum", "dodge" },
 		color = Color3.fromRGB(80, 170, 255),
@@ -180,12 +180,12 @@ HeroData.SUMMONS = {
 		color = Color3.fromRGB(100, 100, 100),
 		sprite = MINI_GOLEM_SPRITE, spriteSize = MINI_GOLEM_SIZE, scale = MINI_GOLEM_SCALE },
 
-	{ id = 21, name = "Caveira", attack = SKULL_ATTACK, hp = SKULL_HP, ability = nil,
+	{ id = 21, name = "Morn", attack = SKULL_ATTACK, hp = SKULL_HP, ability = nil,
 		abilities = {}, moveRange = SKULL_MOVE, deathSound = SKULL_DEATH_SOUND,
 		color = Color3.fromRGB(120, 200, 120),
 		sprite = SKULL_SPRITE, spriteSize = SKULL_SIZE, scale = SKULL_SCALE },
 
-	{ id = 22, name = "Caveira", attack = SKULL_ATTACK, hp = SKULL_HP, ability = nil,
+	{ id = 22, name = "Morn", attack = SKULL_ATTACK, hp = SKULL_HP, ability = nil,
 		abilities = {}, moveRange = SKULL_MOVE, deathSound = SKULL_DEATH_SOUND,
 		color = Color3.fromRGB(105, 180, 105),
 		sprite = SKULL_SPRITE, spriteSize = SKULL_SIZE, scale = SKULL_SCALE },

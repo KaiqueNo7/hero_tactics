@@ -197,6 +197,47 @@ function LobbyZoneBuilder.IslandTop(name)
 	return nil
 end
 
+local LOBBY_PAD_SIZE = Vector3.new(12, 1, 12)
+local LOBBY_PAD_REACH = 26
+local LOBBY_PAD_FORWARD = 40
+local LOBBY_PADS = {
+	{ name = "StartBotMatch", sideways = -1, color = Color3.fromRGB(60, 170, 130) },
+	{ name = "StartPvpMatch", sideways = 1, color = Color3.fromRGB(200, 70, 70) },
+}
+
+function LobbyZoneBuilder.EnsureLobbyPads()
+	local center = LobbyZones.LOBBY_CENTER
+	local made = {}
+
+	for _, spec in ipairs(LOBBY_PADS) do
+		local pad = Workspace:FindFirstChild(spec.name, true)
+
+		if pad and not pad:IsA("BasePart") then
+			pad:Destroy()
+			pad = nil
+		end
+
+		if not pad then
+			local place = CFrame.new(
+				center.X + spec.sideways * LOBBY_PAD_REACH,
+				LobbyZones.GROUND_Y + LOBBY_PAD_SIZE.Y / 2,
+				center.Y + LOBBY_PAD_FORWARD)
+
+			NewPart(spec.name, LOBBY_PAD_SIZE, place, spec.color, Enum.Material.SmoothPlastic,
+				Workspace:FindFirstChild("Base") or Workspace)
+
+			table.insert(made, spec.name)
+		end
+	end
+
+	if #made > 0 then
+		print(("LobbyZoneBuilder: %s levantado(s) no centro do lobby. Arraste no Studio e salve — "
+			.. "quem já existe nunca é movido."):format(table.concat(made, " e ")))
+	end
+
+	return #made
+end
+
 function LobbyZoneBuilder.PlacePads()
 	local rows, order = {}, {}
 	for _, fight in ipairs(Campaign.FIGHTS) do

@@ -627,26 +627,116 @@ end
 -- partida e reaproveitadas. Antes nasciam e morriam a cada ataque à distância —
 -- e como o servidor só resolve uma ação por vez, nunca houve mais de um tiro no
 -- ar: criar e destruir era trabalho de replicação puro, no meio do golpe.
-local function EnsureBolt(view)
+local Bolt = {
+	SIZE = 0.9,
+	SPEED = 60,
+	MIN_TIME = 0.16,
+	MAX_TIME = 0.5,
+	TRAIL_LIFETIME = 0.32,
+	RETICLE_SPAN = RING_THICKNESS * 9,
+	RETICLE_HOLD = 0.24,
+	ARCANE_TAIL = Color3.fromRGB(120, 205, 255),
+	SPELL_TAIL = Color3.fromRGB(190, 255, 235),
+	STYLES = { gustPush = "wind", clean = "arcane", longShot = "spell" },
+	SLASH_SPEED = 26,
+	SLASH_MIN_TIME = 0.35,
+	SLASH_MAX_TIME = 0.9,
+
+	TRAIL_WIDTH = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(0.6, 0.55),
+		NumberSequenceKeypoint.new(1, 0),
+	}),
+	TRAIL_FADE = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(1, 1),
+	}),
+
+	WIND_WIDTH = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 2.6),
+		NumberSequenceKeypoint.new(0.35, 3.4),
+		NumberSequenceKeypoint.new(1, 0.6),
+	}),
+	WIND_FADE = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.55),
+		NumberSequenceKeypoint.new(0.4, 0.72),
+		NumberSequenceKeypoint.new(1, 1),
+	}),
+
+	ARCANE_WIDTH = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1.4),
+		NumberSequenceKeypoint.new(0.5, 1.1),
+		NumberSequenceKeypoint.new(1, 0),
+	}),
+	ARCANE_FADE = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.15),
+		NumberSequenceKeypoint.new(0.55, 0.35),
+		NumberSequenceKeypoint.new(1, 1),
+	}),
+
+	SPELL_WIDTH = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 2.2),
+		NumberSequenceKeypoint.new(0.3, 1.6),
+		NumberSequenceKeypoint.new(1, 0),
+	}),
+	SPELL_FADE = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.05),
+		NumberSequenceKeypoint.new(0.5, 0.3),
+		NumberSequenceKeypoint.new(1, 1),
+	}),
+}
+
+function Bolt.Ensure(view)
 	if view.bolt and view.bolt.Parent then return view.bolt, view.reticle end
 
-	local bolt = Instance.new("Part")
-	bolt.Name = "RangedBolt"
-	bolt.Shape = Enum.PartType.Ball
-	bolt.Size = Vector3.new(0.5, 0.5, 0.5)
-	bolt.Color = Color3.fromRGB(255, 235, 150)
-	bolt.Material = Enum.Material.Neon
-	bolt.Anchored = true
-	bolt.CanCollide = false
-	bolt.CanQuery = false
-	bolt.CastShadow = false
-	bolt.Transparency = 1
-	bolt.Parent = view.heroesFolder
+	local part = Instance.new("Part")
+	part.Name = "RangedBolt"
+	part.Shape = Enum.PartType.Ball
+	part.Size = Vector3.new(Bolt.SIZE, Bolt.SIZE, Bolt.SIZE)
+	part.Color = Color3.fromRGB(255, 235, 150)
+	part.Material = Enum.Material.Neon
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CastShadow = false
+	part.Transparency = 1
+	part.Parent = view.heroesFolder
+
+	local top = Instance.new("Attachment")
+	top.Name = "TrailTop"
+	top.Position = Vector3.new(0, Bolt.SIZE * 0.62, 0)
+	top.Parent = part
+
+	local bottom = Instance.new("Attachment")
+	bottom.Name = "TrailBottom"
+	bottom.Position = Vector3.new(0, -Bolt.SIZE * 0.62, 0)
+	bottom.Parent = part
+
+	local trail = Instance.new("Trail")
+	trail.Name = "BoltTrail"
+	trail.Attachment0 = top
+	trail.Attachment1 = bottom
+	trail.Lifetime = Bolt.TRAIL_LIFETIME
+	trail.MinLength = 0
+	trail.FaceCamera = true
+	trail.LightEmission = 1
+	trail.LightInfluence = 0
+	trail.WidthScale = Bolt.TRAIL_WIDTH
+	trail.Transparency = Bolt.TRAIL_FADE
+	trail.Enabled = false
+	trail.Parent = part
+
+	local glow = Instance.new("PointLight")
+	glow.Name = "BoltGlow"
+	glow.Range = 10
+	glow.Brightness = 2.2
+	glow.Enabled = false
+	glow.Parent = part
 
 	local reticle = Instance.new("Part")
 	reticle.Name = "RangedTarget"
 	reticle.Shape = Enum.PartType.Cylinder
-	reticle.Size = Vector3.new(0.15, RING_THICKNESS * 3, RING_THICKNESS * 3)
+	reticle.Size = Vector3.new(0.15, Bolt.RETICLE_SPAN, Bolt.RETICLE_SPAN)
 	reticle.Color = Color3.fromRGB(255, 90, 80)
 	reticle.Material = Enum.Material.Neon
 	reticle.Anchored = true
@@ -656,8 +746,258 @@ local function EnsureBolt(view)
 	reticle.Transparency = 1
 	reticle.Parent = view.heroesFolder
 
-	view.bolt, view.reticle = bolt, reticle
-	return bolt, reticle
+	view.bolt, view.reticle, view.boltTrail, view.boltGlow = part, reticle, trail, glow
+	return part, reticle
+end
+
+function Bolt.Wind(part)
+	local existing = part:FindFirstChild("BoltWind")
+	if existing then return existing end
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "BoltWind"
+	emitter.Texture = FX_SMOKE
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.55),
+		NumberSequenceKeypoint.new(0.3, 0.4),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.8),
+		NumberSequenceKeypoint.new(0.45, 3.2),
+		NumberSequenceKeypoint.new(1, 0.4),
+	})
+	emitter.Lifetime = NumberRange.new(0.22, 0.42)
+	emitter.Rate = 260
+	emitter.Speed = NumberRange.new(1, 5)
+	emitter.SpreadAngle = Vector2.new(45, 45)
+	emitter.Rotation = NumberRange.new(0, 360)
+	emitter.RotSpeed = NumberRange.new(-260, 260)
+	emitter.Drag = 3
+	emitter.LightEmission = 0.45
+	emitter.LightInfluence = 0
+	emitter.Enabled = false
+	emitter.Parent = part
+
+	return emitter
+end
+
+function Bolt.Motes(part)
+	local existing = part:FindFirstChild("BoltMotes")
+	if existing then return existing end
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "BoltMotes"
+	emitter.Texture = FX_SPARK
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(0.6, 0.45),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.5),
+		NumberSequenceKeypoint.new(0.35, 1.7),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	emitter.Lifetime = NumberRange.new(0.35, 0.62)
+	emitter.Rate = 160
+	emitter.Speed = NumberRange.new(0.5, 2.5)
+	emitter.SpreadAngle = Vector2.new(70, 70)
+	emitter.Rotation = NumberRange.new(0, 360)
+	emitter.RotSpeed = NumberRange.new(-90, 90)
+	emitter.Acceleration = Vector3.new(0, 5, 0)
+	emitter.Drag = 4
+	emitter.LightEmission = 1
+	emitter.LightInfluence = 0
+	emitter.Enabled = false
+	emitter.Parent = part
+
+	return emitter
+end
+
+function Bolt.Sparks(part)
+	local existing = part:FindFirstChild("BoltSparks")
+	if existing then return existing end
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "BoltSparks"
+	emitter.Texture = FX_SPARK
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0),
+		NumberSequenceKeypoint.new(0.55, 0.3),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.4),
+		NumberSequenceKeypoint.new(0.3, 1.5),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	emitter.Lifetime = NumberRange.new(0.18, 0.34)
+	emitter.Rate = 240
+	emitter.Speed = NumberRange.new(0, 1.5)
+	emitter.SpreadAngle = Vector2.new(180, 180)
+	emitter.Rotation = NumberRange.new(0, 360)
+	emitter.RotSpeed = NumberRange.new(-420, 420)
+	emitter.Drag = 8
+	emitter.LightEmission = 1
+	emitter.LightInfluence = 0
+	emitter.Enabled = false
+	emitter.Parent = part
+
+	return emitter
+end
+
+function Bolt.Style(hero)
+	for _, key in ipairs(hero.abilities or {}) do
+		local style = Bolt.STYLES[key]
+		if style then return style end
+	end
+	return nil
+end
+
+function Bolt.Color(hero)
+	local data = hero and hero.dataId and HeroData.GetById(hero.dataId)
+	local color = (data and data.color) or Color3.fromRGB(255, 235, 150)
+	return color:Lerp(Color3.new(1, 1, 1), 0.42)
+end
+
+function Bolt.SpellSpectrum(color)
+	return ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+		ColorSequenceKeypoint.new(0.35, color),
+		ColorSequenceKeypoint.new(1, Bolt.SPELL_TAIL),
+	})
+end
+
+function Bolt.Spectrum(color)
+	return ColorSequence.new({
+		ColorSequenceKeypoint.new(0, color:Lerp(Color3.new(1, 1, 1), 0.55)),
+		ColorSequenceKeypoint.new(0.45, color),
+		ColorSequenceKeypoint.new(1, Bolt.ARCANE_TAIL),
+	})
+end
+
+function Bolt.Quiet(part)
+	for _, name in ipairs({ "BoltWind", "BoltMotes", "BoltSparks" }) do
+		local emitter = part:FindFirstChild(name)
+		if emitter then emitter.Enabled = false end
+	end
+end
+
+function Bolt.ApplyStyle(part, trail, glow, color, style)
+	if not (trail and glow) then return end
+
+	Bolt.Quiet(part)
+	part.Size = Vector3.new(Bolt.SIZE, Bolt.SIZE, Bolt.SIZE)
+	glow.Range = 10
+
+	if style == "wind" then
+		part.Transparency = 0.8
+		trail.Color = ColorSequence.new(color)
+		trail.WidthScale = Bolt.WIND_WIDTH
+		trail.Transparency = Bolt.WIND_FADE
+		glow.Brightness = 1.1
+
+		local emitter = Bolt.Wind(part)
+		emitter.Color = ColorSequence.new(color)
+		emitter.Enabled = true
+		return
+	end
+
+	if style == "spell" then
+		local spectrum = Bolt.SpellSpectrum(color)
+
+		part.Size = Vector3.new(Bolt.SIZE * 1.3, Bolt.SIZE * 1.3, Bolt.SIZE * 1.3)
+		part.Transparency = 0.05
+		trail.Color = spectrum
+		trail.WidthScale = Bolt.SPELL_WIDTH
+		trail.Transparency = Bolt.SPELL_FADE
+		glow.Brightness = 3.2
+		glow.Range = 14
+
+		local emitter = Bolt.Sparks(part)
+		emitter.Color = spectrum
+		emitter.Enabled = true
+		return
+	end
+
+	if style == "arcane" then
+		local spectrum = Bolt.Spectrum(color)
+
+		part.Transparency = 0.25
+		trail.Color = spectrum
+		trail.WidthScale = Bolt.ARCANE_WIDTH
+		trail.Transparency = Bolt.ARCANE_FADE
+		glow.Brightness = 2.6
+
+		local emitter = Bolt.Motes(part)
+		emitter.Color = spectrum
+		emitter.Enabled = true
+		return
+	end
+
+	part.Transparency = 0
+	trail.Color = ColorSequence.new(color)
+	trail.WidthScale = Bolt.TRAIL_WIDTH
+	trail.Transparency = Bolt.TRAIL_FADE
+	glow.Brightness = 2.2
+end
+
+function Bolt.Reticle(view, groundPos, color, delay)
+	local _, reticle = Bolt.Ensure(view)
+
+	reticle.Color = color
+	reticle.CFrame = CFrame.new(groundPos) * CFrame.Angles(0, 0, math.rad(90))
+	reticle.Size = Vector3.new(0.15, Bolt.RETICLE_SPAN * 1.7, Bolt.RETICLE_SPAN * 1.7)
+	reticle.Transparency = 0.25
+
+	TweenService:Create(reticle, TweenInfo.new(math.max(delay, 0.08), Enum.EasingStyle.Quad), {
+		Size = Vector3.new(0.15, Bolt.RETICLE_SPAN, Bolt.RETICLE_SPAN),
+		Transparency = 0.1,
+	}):Play()
+
+	task.delay(delay + Bolt.RETICLE_HOLD, function()
+		if not reticle.Parent then return end
+		TweenService:Create(reticle, TweenInfo.new(0.2), {
+			Size = Vector3.new(0.15, Bolt.RETICLE_SPAN * 1.35, Bolt.RETICLE_SPAN * 1.35),
+			Transparency = 1,
+		}):Play()
+	end)
+end
+
+function Bolt.Launch(view, fromPos, toPos, color, speed, style)
+	local part = Bolt.Ensure(view)
+	local trail, glow = view.boltTrail, view.boltGlow
+	local travel = math.clamp((toPos - fromPos).Magnitude / (speed or Bolt.SPEED),
+		Bolt.MIN_TIME, Bolt.MAX_TIME)
+
+	part.Color = color
+	part.CFrame = CFrame.new(fromPos)
+
+	if trail then trail.Enabled = false end
+	if glow then
+		glow.Color = color
+		glow.Enabled = true
+	end
+
+	Bolt.ApplyStyle(part, trail, glow, color, style)
+
+	task.defer(function()
+		if trail and trail.Parent then trail.Enabled = true end
+	end)
+
+	local tween = TweenService:Create(part, TweenInfo.new(travel, Enum.EasingStyle.Linear), {
+		CFrame = CFrame.new(toPos),
+	})
+	tween:Play()
+	tween.Completed:Once(function()
+		if part.Parent then part.Transparency = 1 end
+		if trail and trail.Parent then trail.Enabled = false end
+		if glow and glow.Parent then glow.Enabled = false end
+		if part.Parent then Bolt.Quiet(part) end
+	end)
+
+	return travel
 end
 
 -- Bolinha de energia viajando do atacante até o alvo + retícula no impacto,
@@ -668,28 +1008,75 @@ function HeroView.ShowRangedAttack(attacker, target)
 	local view = attacker.view
 	if not view then return end
 
-	local bolt, reticle = EnsureBolt(view)
+	local color = Bolt.Color(attacker)
 	local fromPos = attacker.part.Position
 	local toPos = target.part.Position
+	local style = Bolt.Style(attacker)
 
-	reticle.CFrame = CFrame.new(toPos - Vector3.new(0, ANCHOR_LIFT * 0.6, 0)) * CFrame.Angles(0, 0, math.rad(90))
-	TweenService:Create(reticle, TweenInfo.new(0.12), { Transparency = 0.2 }):Play()
-	task.delay(0.28, function()
-		if reticle.Parent then
-			TweenService:Create(reticle, TweenInfo.new(0.15), { Transparency = 1 }):Play()
-		end
-	end)
+	if style == "spell" then
+		HeroView.PlaySkillEffect(attacker, "longShot")
+	end
 
-	bolt.CFrame = CFrame.new(fromPos)
-	bolt.Transparency = 0
+	local travel = Bolt.Launch(view, fromPos, toPos, color, nil, style)
+	Bolt.Reticle(view, toPos - Vector3.new(0, ANCHOR_LIFT * 0.6, 0), color, travel)
 
-	local tween = TweenService:Create(bolt, TweenInfo.new(0.18, Enum.EasingStyle.Linear), {
-		CFrame = CFrame.new(toPos),
-	})
-	tween:Play()
-	tween.Completed:Once(function()
-		if bolt.Parent then bolt.Transparency = 1 end
-	end)
+	return travel
+end
+
+function Bolt.SlashTemplate()
+	local folder = ReplicatedStorage:FindFirstChild("VFX")
+	folder = folder and folder:FindFirstChild("Blade")
+
+	local template = folder and folder:FindFirstChild("Slash")
+	return (template and template:IsA("BasePart")) and template or nil
+end
+
+function HeroView.ShowLineAttack(attacker, hexIds)
+	local view = attacker.view
+	if not (view and attacker.part and hexIds and #hexIds > 0) then return end
+
+	local color = Bolt.Color(attacker)
+	local farHex = hexIds[#hexIds]
+	local target = HexGrid.GetWorldPosition(farHex, view.origin) + Vector3.new(0, ANCHOR_LIFT, 0)
+	local from = attacker.part.Position
+	local template = Bolt.SlashTemplate()
+
+	if not template then
+		HeroView.FlashAttackRange(view, hexIds, color, color)
+		Bolt.Launch(view, from, target, color, Bolt.SPEED * 2.4)
+		return
+	end
+
+	local level = math.max(from.Y, target.Y)
+	local start = Vector3.new(from.X, level, from.Z)
+	local finish = Vector3.new(target.X, level, target.Z)
+	local ahead = (finish - start)
+	if ahead.Magnitude < 0.01 then return end
+	ahead = ahead.Unit
+
+	local travel = math.clamp((finish - start).Magnitude / Bolt.SLASH_SPEED,
+		Bolt.SLASH_MIN_TIME, Bolt.SLASH_MAX_TIME)
+
+	local slash = template:Clone()
+	slash.Name = "BladeSlash"
+	slash.Color = color
+	slash.Anchored = true
+	slash.CanCollide = false
+	slash.CanQuery = false
+	slash.CanTouch = false
+	slash.CastShadow = false
+	slash.Transparency = 0.08
+	slash.CFrame = CFrame.lookAt(start, start + ahead, Vector3.yAxis)
+	slash.Parent = view.heroesFolder
+
+	TweenService:Create(slash, TweenInfo.new(travel, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		CFrame = CFrame.lookAt(finish, finish + ahead, Vector3.yAxis),
+	}):Play()
+	TweenService:Create(slash, TweenInfo.new(travel * 1.5, Enum.EasingStyle.Linear), {
+		Transparency = 1,
+	}):Play()
+
+	Debris:AddItem(slash, travel * 1.8)
 end
 
 -- ===== HELPERS =====

@@ -30,6 +30,7 @@ local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local LeaderboardService = require(ServerScriptService.Modules.LeaderboardService)
 local ProgressionService = require(ServerScriptService.Modules.ProgressionService)
 local HeroStatsService = require(ServerScriptService.Modules.HeroStatsService)
+local HeroUsageService = require(ServerScriptService.Modules.HeroUsageService)
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local MatchQuery = require(ServerScriptService.Modules.MatchQuery)
@@ -562,7 +563,15 @@ local function ApplyStatusEffect(match, hero, effect)
 	end
 
 	for index = #hero.statusEffects, 1, -1 do
-		if hero.statusEffects[index].type == effect.type then
+		local previous = hero.statusEffects[index]
+		if previous.type == effect.type then
+			-- Trocar um efeito DEVOLVE o que ele emprestava. Sem isto o bônus do
+			-- antigo sumia da lista sem nunca voltar pra ficha e virava
+			-- permanente — o herói que quebrava dois barris no mesmo mapa (o
+			-- Deserto tem quatro objetos) ficava com +1 de ataque pra sempre.
+			if previous.attackBonus then
+				IncreaseAttack(match, hero, -previous.attackBonus)
+			end
 			table.remove(hero.statusEffects, index)
 		end
 	end
@@ -780,6 +789,11 @@ local function IsChainTarget(origin, occupant)
 		and occupant.ownerId ~= origin.ownerId
 end
 
+local function ConductsChain(origin, occupant)
+	if occupant ~= nil and occupant.isBarrel == true then return true end
+	return IsChainTarget(origin, occupant)
+end
+
 local function WeakPointHunters(match)
 	local hunters = nil
 
@@ -892,7 +906,7 @@ local function BuildSkillApi(match)
 				local current = table.remove(queue, 1)
 				for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
 					local occupant = match.occupied[neighbor.id]
-					if not visited[neighbor.id] and IsChainTarget(origin, occupant) then
+					if not visited[neighbor.id] and ConductsChain(origin, occupant) then
 						visited[neighbor.id] = true
 						depth[neighbor.id] = depth[current] + 1
 						table.insert(queue, neighbor.id)
@@ -901,7 +915,9 @@ local function BuildSkillApi(match)
 							to = neighbor.id,
 							depth = depth[neighbor.id],
 						})
-						table.insert(hit, occupant)
+						if IsChainTarget(origin, occupant) then
+							table.insert(hit, occupant)
+						end
 					end
 				end
 			end
@@ -978,6 +994,10 @@ local function BuildSkillApi(match)
 				table.insert(hexIds, hex.id)
 			end
 			HeroView.FlashAttackRange(match.view, hexIds)
+		end,
+
+		LineShot = function(hero, hexIds)
+			HeroView.ShowLineAttack(hero, hexIds)
 		end,
 
 		Summon = function(origin, dataId)
@@ -1518,6 +1538,7 @@ function AttackGrave(match, attacker, grave)
 end
 
 local function AwardXp(match, side, result, survivors)
+	if match.sandbox then return end
 	if not side or side.isBot or not side.player then return end
 	task.spawn(ProgressionService.AwardMatchXp, side.player, result, survivors, match.vsBot)
 end
@@ -1612,6 +1633,19 @@ local function RecordHeroStats(match)
 		end
 	else
 		HeroStatsService.AddMatch(entries)
+
+		for _, side in ipairs(match.sides) do
+			if side.player then
+				local used = {}
+				for _, hero in pairs(match.heroes) do
+					if hero.ownerId == side.id and not hero.summoner
+						and not HeroData.IsSummon(hero.dataId) then
+						table.insert(used, hero.dataId)
+					end
+				end
+				task.spawn(HeroUsageService.AddMatch, side.player.UserId, used)
+			end
+		end
 	end
 end
 
@@ -1631,6 +1665,8 @@ local function IsRankedPvp(match)
 end
 
 function CheckGameOver(match)
+	if match.sandbox then return false end
+
 	local aliveOne = #LivingHeroesOf(match, match.sides[1].id)
 	local aliveTwo = #LivingHeroesOf(match, match.sides[2].id)
 
@@ -2680,14 +2716,13 @@ local function StreamArenaTo(players, origin)
 end
 
 local function AllocateSlot()
-	for slot = 1, GameConfig.MatchCapacity() do
-		if not matchBySlot[slot] then return slot end
-	end
-	return nil
+	local slot = 1
+	while matchBySlot[slot] do slot += 1 end
+	return slot
 end
 
 function MatchManager.HasFreeSlot()
-	return AllocateSlot() ~= nil
+	return true
 end
 
 function MatchManager.IsInMatch(player)
@@ -2696,6 +2731,7 @@ end
 
 function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 	local botVsBot = options ~= nil and options.botVsBot == true
+	local sandbox = options ~= nil and options.sandbox == true
 	if not playerOne and not botVsBot then return false end
 
 	slot = slot or AllocateSlot()
@@ -2764,6 +2800,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		rematchOpen = true,
 		fight = fight,
 		simulated = botVsBot,
+		sandbox = sandbox,
 		onFinish = options and options.onFinish or nil,
 		onStats = options and options.onStats or nil,
 		phase = "placement",
@@ -2794,7 +2831,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 	matches[matchId] = match
 	matchBySlot[slot] = match
 
-	SpawnBarrels(match)
+	if not sandbox then SpawnBarrels(match) end
 
 	StreamArenaTo(players, origin)
 
@@ -2810,13 +2847,18 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 
 	HeroView.PlayMatchSound(match.view, "MatchStart")
 
-	StartPlacementClock(match)
-	Broadcast(match)
+	if sandbox then
+		match.phase = "battle"
+		BeginTurn(match, sides[1].id, 1)
+	else
+		StartPlacementClock(match)
+		Broadcast(match)
 
-	if sides[1].isBot then
-		task.delay(GameConfig.BOT_PLACE_DELAY, function()
-			BotPlaceOne(match)
-		end)
+		if sides[1].isBot then
+			task.delay(GameConfig.BOT_PLACE_DELAY, function()
+				BotPlaceOne(match)
+			end)
+		end
 	end
 
 	local label = playerTwo and "PvP" or (playerOne and "vs bot" or "bot vs bot")
@@ -3065,5 +3107,16 @@ function MatchManager.ActiveCount()
 	for _ in pairs(matches) do count += 1 end
 	return count
 end
+
+MatchManager.Internal = {
+	MatchOfPlayer = MatchOfPlayer,
+	CreateHero = CreateHero,
+	KillHero = KillHero,
+	PerformAttack = PerformAttack,
+	TriggerSkills = TriggerSkills,
+	Broadcast = Broadcast,
+	BeginTurn = BeginTurn,
+	EndMatch = EndMatch,
+}
 
 return MatchManager

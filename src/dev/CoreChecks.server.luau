@@ -13,6 +13,7 @@ local BotBrain = require(ServerScriptService.Modules.BotBrain)
 
 local KOR_ID = HeroData.GetByName("Kor").id
 local RUSH_ID = HeroData.GetByName("Rush").id
+local WREN_ID = HeroData.GetByName("Wren").id
 
 local passed, failures = 0, {}
 
@@ -46,6 +47,25 @@ local function FindStraightLine()
 		end
 	end
 	return nil, nil, nil
+end
+
+local function FindBentPair()
+	for _, hex in ipairs(hexes) do
+		local a = idOf(hex)
+		for _, other in ipairs(hexes) do
+			local c = idOf(other)
+
+			if a ~= c and HexGrid.Distance(a, c) == 2 then
+				local mids = 0
+				for _, neighbor in ipairs(HexGrid.GetNeighbors(a)) do
+					if HexGrid.Distance(idOf(neighbor), c) == 1 then mids += 1 end
+				end
+
+				if mids >= 2 then return a, c end
+			end
+		end
+	end
+	return nil, nil
 end
 
 local lineA, lineB, lineC = FindStraightLine()
@@ -126,6 +146,7 @@ local function FakeApi()
 		Effect = function() end,
 		PlaySkillSound = function() end,
 		FlashAttackRange = function() end,
+		LineShot = function() end,
 		IceStorm = function() end,
 		FireCircle = function() end,
 		PoisonBomb = function() end,
@@ -205,14 +226,20 @@ for _, data in ipairs(HeroData.CATALOG) do
 	check("IsRangedAttack coerente: " .. data.name,
 		GameConfig.IsRangedAttack(range) == (range > GameConfig.BASE_ATTACK_RANGE))
 
-	if data.id ~= KOR_ID and data.id ~= RUSH_ID then
-		check("so o Kor alcanca 3: " .. data.name, range < 3, range)
+	if data.id ~= KOR_ID and data.id ~= WREN_ID then
+		check("so o Kor e a Wren passam do alcance ranged: " .. data.name,
+			range <= GameConfig.RANGED_ATTACK_RANGE, range)
 	end
 
 	local move = HeroData.GetMoveRange(data)
-	local expectedMove = data.ability == GameConfig.ABILITIES.SPRINT
-		and GameConfig.SPRINT_MOVE_RANGE
-		or GameConfig.BASE_MOVE_RANGE
+	local expectedMove
+	if data.moveRange then
+		expectedMove = data.moveRange
+	elseif data.ability == GameConfig.ABILITIES.SPRINT then
+		expectedMove = GameConfig.SPRINT_MOVE_RANGE
+	else
+		expectedMove = GameConfig.BASE_MOVE_RANGE
+	end
 
 		if data.id ~= RUSH_ID then
 			check("so o Rush alcanca 4: " .. data.name, move < 4, move)
@@ -258,15 +285,18 @@ if lineA then
 	local detour = HexGrid.FindPath(lineA, lineC, 2, blocked)
 	check("nao atravessa casa bloqueada", detour == nil or detour[1] ~= lineB)
 
+	local bendA, bendC = FindBentPair()
 	local mids = {}
-	for _, neighbor in ipairs(HexGrid.GetNeighbors(lineA)) do
-		if HexGrid.Distance(neighbor.id, lineC) == 1 then table.insert(mids, neighbor.id) end
+	if bendA then
+		for _, neighbor in ipairs(HexGrid.GetNeighbors(bendA)) do
+			if HexGrid.Distance(neighbor.id, bendC) == 1 then table.insert(mids, neighbor.id) end
+		end
 	end
 	check("existe mais de um caminho de mesmo tamanho", #mids >= 2, #mids)
 
 	for index = 1, math.min(#mids, 2) do
 		local want = mids[index]
-		local biased = HexGrid.FindPath(lineA, lineC, 2, alwaysFree,
+		local biased = HexGrid.FindPath(bendA, bendC, 2, alwaysFree,
 			function(hexId) return hexId == want and 1 or -1 end)
 		check("caminho desempata pela casa preferida " .. index,
 			biased ~= nil and biased[1] == want, biased and biased[1])
@@ -274,7 +304,7 @@ if lineA then
 
 	if #mids >= 2 then
 		local burning = mids[1]
-		local away = HexGrid.FindPath(lineA, lineC, 2, alwaysFree,
+		local away = HexGrid.FindPath(bendA, bendC, 2, alwaysFree,
 			function(hexId) return hexId == burning and -4 or 0 end)
 		check("caminho foge da casa penalizada",
 			away ~= nil and away[1] ~= burning, away and away[1])
@@ -1214,16 +1244,19 @@ do
 			local current = table.remove(queue, 1)
 			for _, neighbor in ipairs(HexGrid.GetNeighbors(current)) do
 				local occupant = occupied[neighbor.id]
-				-- espelha o IsChainTarget do MatchManager: so inimigo VIVO com
-				-- dono conduz, e o que conduz e o que apanha
-				if not visited[neighbor.id] and occupant ~= nil
+				-- espelha ConductsChain/IsChainTarget do MatchManager: inimigo vivo
+				-- conduz E apanha, barril so conduz
+				local alvo = occupant ~= nil
 					and occupant ~= origin
 					and occupant.isAlive == true
 					and occupant.ownerId ~= nil
-					and occupant.ownerId ~= origin.ownerId then
+					and occupant.ownerId ~= origin.ownerId
+				local conduz = alvo or (occupant ~= nil and occupant.isBarrel == true)
+
+				if not visited[neighbor.id] and conduz then
 					visited[neighbor.id] = true
 					table.insert(queue, neighbor.id)
-					table.insert(hit, occupant)
+					if alvo then table.insert(hit, occupant) end
 				end
 			end
 		end
@@ -1265,8 +1298,8 @@ do
 	check("caso 2: vizinho do alvo leva a corrente", #chain == 1, #chain)
 	check("caso 2: alvo direto nao leva a corrente de novo",
 		chain[1] ~= a1)
-	check("caso 2: condutor nao ganha carga",
-		MatchQuery.FindStatusEffect(b1, "charge") == nil)
+	check("caso 2: condutor tambem ganha carga",
+		MatchQuery.FindStatusEffect(b1, "charge") ~= nil)
 
 	local gap = HexGrid.GetLineBeyond(lineB, lineC, 1)
 	if gap and gap[1] then

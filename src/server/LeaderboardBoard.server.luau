@@ -13,15 +13,23 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 
+local HeroUsageService = require(ServerScriptService.Modules.HeroUsageService)
 local LeaderboardService = require(ServerScriptService.Modules.LeaderboardService)
 local LeaderboardBoardView = require(ServerScriptService.Modules.LeaderboardBoardView)
 
 local REFRESH_INTERVAL = 60
+local HERO_SLOTS = 3
 
 LeaderboardBoardView.EnsureBoard()
 
 local function Refresh()
-	LeaderboardBoardView.Render(LeaderboardService.GetTop(LeaderboardBoardView.ROW_COUNT))
+	local entries = LeaderboardService.GetTop(LeaderboardBoardView.ROW_COUNT)
+
+	for _, entry in ipairs(entries) do
+		entry.heroes = HeroUsageService.GetTop(entry.userId, HERO_SLOTS)
+	end
+
+	LeaderboardBoardView.Render(entries)
 end
 
 Refresh()

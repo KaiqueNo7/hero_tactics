@@ -3,7 +3,7 @@
 	LocalScript — StarterPlayer/StarterPlayerScripts
 
 	Câmera fixa no ângulo calibrado, com zoom. F alterna pra voo livre de
-	calibração (só ativo com SHOW_CAMERA_DEBUG=true): WASD move, E sobe,
+	calibração (ativo com SHOW_CAMERA_DEBUG=true ou no sandbox): WASD move, E sobe,
 	Q desce, botão direito olha em volta. O HUD loga elev/dist/fov/azim
 	relativos ao centro do tabuleiro — os mesmos números usados nas
 	constantes fixas, prontos pra copiar quando achar o ângulo ideal.
@@ -126,8 +126,13 @@ local function resetZoom()
 	applyCamera()
 end
 
+local function cameraDebugOn()
+	return SHOW_CAMERA_DEBUG
+		or (RunService:IsStudio() and player:GetAttribute("SandboxCam") == true)
+end
+
 local function buildDebugReadout()
-	if not SHOW_CAMERA_DEBUG then return end
+	if not cameraDebugOn() then return end
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "CameraDebug"
@@ -182,7 +187,7 @@ local function updateFreeFly(dt)
 end
 
 local function toggleFreeFly()
-	if not SHOW_CAMERA_DEBUG or not activated then return end
+	if not cameraDebugOn() or not activated then return end
 
 	freeFlying = not freeFlying
 

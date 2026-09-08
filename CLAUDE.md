@@ -134,6 +134,24 @@ brand-new pad is born), so keep them measured from the real lobby. Several serve
 and `LobbyZoneBuilder` can all be re-run from the command bar in Edit mode without duplicating
 what they build.
 
+### Sandbox de captura (dev)
+
+`SandboxService` é o modo de captura de trailer: NÃO é uma cópia do jogo, é uma partida
+normal com `options.sandbox = true`. Essa flag faz o `MatchManager` pular barris e draft, entrar
+direto em `battle`, e ela é o que corta `CheckGameOver` e `AwardXp` — por isso nenhuma cena de
+teste mexe em XP, moedas, heróis desbloqueados, ranking ou `HeroStatsService`. Tudo o que aparece
+na tela (HUD, luz da arena, música, câmera de finalização, invisibilidade) continua vindo do
+snapshot de sempre; o sandbox só monta o estado. `MatchManager.Internal` existe só pra ele.
+
+Os comandos entram pelo `GameAction` com a ação `"sandbox"` (sem Remote novo) e são texto:
+`spawn Nash 1 C3`, `status Kira poison 3`, `finish win`. `hit` e `go` passam pelo
+`MatchManager` de verdade (turno, alcance, contra-ataque, gatilhos); `attack` e `move` são o
+atalho forçado, pra montar o quadro. Os presets de "melhor momento" são 3v3 como partida real. Quem pode: Studio, o dono, ou
+`DevAccess.EXTRA_TESTER_IDS` — amigos do dono NÃO entram. `SandboxService.ENABLED = false`
+desliga tudo. `cam/hud/cine` são resolvidos no `SandboxClient` (painel com F2); o resto no
+servidor. `Validate()` roda na carga e avisa se um preset citar herói, casa, arena ou comando
+que não existe mais.
+
 ### Comment convention
 
 **Never add comments to code.** Not header blocks, not inline notes, not `--` explanations above a

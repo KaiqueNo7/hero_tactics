@@ -296,12 +296,12 @@ Arenas.THEMES = {
 			{ class = "PointLight", color = Color3.fromRGB(255, 226, 186), brightness = 1.2, range = 80, height = 28 },
 		},
 		object = {
-			label = "Árvore Seca",
+			label = "Cactos",
 			hitSound = "WoodHit",
 			breakSound = "WoodBreak",
-			instance = "Objects.MeshPart",
+			instance = "Cactos",
 			height = 7,
-			rotation = 45,
+			rotation = 60,
 			part = {
 				size = Vector3.new(4.4, 5, 4.4),
 				color = Color3.fromRGB(198, 168, 138),
