@@ -335,6 +335,13 @@ function KillHero(match, hero, attacker, sourceKey)
 		ownerId = hero.ownerId,
 		sideIndex = hero.sideIndex,
 		sourceKey = sourceKey,
+		killer = attacker and attacker ~= hero and {
+			dataId = attacker.dataId,
+			name = attacker.name,
+			ownerId = attacker.ownerId,
+			sideIndex = attacker.sideIndex,
+			hex = attacker.position,
+		} or nil,
 		at = os.clock(),
 	}
 
@@ -1673,14 +1680,15 @@ function CheckGameOver(match)
 	if aliveOne > 0 and aliveTwo > 0 then return false end
 
 	if not match.finisher and match.lastDeath and (os.clock() - match.lastDeath.at) < 5 then
+		local killer = match.lastDeath.killer
 		local cause = match.lastDeath.sourceKey and DAMAGE_SOURCES[match.lastDeath.sourceKey]
 		match.finisher = {
-			dataId = match.lastDeath.dataId,
-			name = cause or match.lastDeath.name,
+			dataId = killer and killer.dataId or match.lastDeath.dataId,
+			name = killer and killer.name or cause or match.lastDeath.name,
 			victim = match.lastDeath.name,
-			ownerId = match.lastDeath.ownerId,
-			sideIndex = match.lastDeath.sideIndex,
-			hex = match.lastDeath.hex,
+			ownerId = killer and killer.ownerId or match.lastDeath.ownerId,
+			sideIndex = killer and killer.sideIndex or match.lastDeath.sideIndex,
+			hex = killer and killer.hex or match.lastDeath.hex,
 		}
 	end
 
