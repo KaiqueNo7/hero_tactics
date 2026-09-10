@@ -20,6 +20,7 @@ local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
+local DevAccess = require(ServerScriptService.Modules.DevAccess)
 local HeroView = require(ServerScriptService.Modules.HeroView)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 
@@ -27,7 +28,8 @@ local Internal = MatchManager.Internal
 local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 
 local CLIENT_COMMANDS = { cam = true, hud = true, cine = true, panel = true }
-local NO_MATCH = { open = true, presets = true, scenes = true, rewards = true, help = true, hello = true }
+local NO_MATCH = { open = true, presets = true, scenes = true, rewards = true, help = true, hello = true,
+	challenge = true }
 local AUTO_OPEN = { preset = true, scene = true }
 
 local STATUS_TURNS = {
@@ -294,8 +296,22 @@ local SCENES = {
 
 local sessions = {}
 
+-- DUAS TRAVAS, e a de fora é a que importa: o módulo inteiro vira no-op fora do
+-- Studio (ver o topo do arquivo), então em servidor de verdade este caminho não
+-- existe. Esta aqui é a de dentro, e ela só passava `player ~= nil` — o
+-- CLAUDE.md prometia dono ou EXTRA_TESTER_IDS e o código não cumpria.
+--
+-- Vale a pena mesmo sendo redundante hoje: no dia em que alguém precisar do
+-- sandbox num servidor fechado e tirar o `IsStudio` lá de cima, a trava de
+-- dentro é a única coisa entre um comando `finish win` e qualquer jogador.
+--
+-- Amigo do dono NÃO entra, ao contrário do resto do DevAccess: catálogo
+-- completo é conveniência de playtest, montar cena é ferramenta de autor.
 local function IsDev(player)
-	return SandboxService.ENABLED and player ~= nil
+	if not (SandboxService.ENABLED and player) then return false end
+	if RunService:IsStudio() then return true end
+	if player.UserId == DevAccess.OWNER_USER_ID then return true end
+	return DevAccess.EXTRA_TESTER_IDS[player.UserId] == true
 end
 
 local function Send(player, payload)
@@ -450,32 +466,7 @@ local function RemoveHero(match, hero)
 	match.heroes[hero.uid] = nil
 end
 
-local function ClearScene(match)
-	HeroView.ClearMatch(match.view)
-
-	if match.turn then
-		match.turn.moved = {}
-		match.turn.attacked = {}
-		match.turn.bonusMove = {}
-		match.turn.weakChain = {}
-		match.turn.counterAttack = false
-	end
-
-	match.heroes = {}
-	match.occupied = {}
-	match.barrels = {}
-	match.flames = {}
-	match.usedHeroIds = {}
-	match.lastSeen = {}
-	match.pendingPromotion = nil
-	match.pendingShield = nil
-	match.finisher = nil
-	match.lastDeath = nil
-	match.winner = nil
-	match.message = nil
-	match.busy = false
-	match.phase = "battle"
-end
+local ClearScene = Internal.ClearScene
 
 local function SetArena(match, theme)
 	match.theme = theme
@@ -1064,8 +1055,36 @@ COMMANDS.stop = function(player)
 	Log(player, "cena interrompida")
 end
 
+COMMANDS.challenge = function(player, _match, words)
+	local ChallengeService = require(ServerScriptService.Modules.ChallengeService)
+	local HeroChallenges = require(ReplicatedStorage.Modules.HeroChallenges)
+
+	local data = DataFrom(words[1])
+	if not data then
+		local names = {}
+		for _, heroId in ipairs(HeroChallenges.HeroIds()) do
+			table.insert(names, HeroData.GetById(heroId).name)
+		end
+		Log(player, "heróis com desafio: " .. table.concat(names, ", "))
+		return
+	end
+
+	local index = tonumber(words[2]) or 1
+	local spec = HeroChallenges.Get(data.id, index)
+	if not spec then
+		Log(player, ("%s não tem desafio %d"):format(data.name, index))
+		return
+	end
+
+	local current = Internal.MatchOfPlayer(player)
+	if current then Internal.EndMatch(current) end
+
+	local ok, why = ChallengeService.Start(player, data.id, index, true)
+	Log(player, ok and ("desafio " .. spec.id) or ("recusado: " .. tostring(why)))
+end
+
 COMMANDS.help = function(player)
-	Log(player, "open [arena] | close | arena <id> | clear | reset")
+	Log(player, "open [arena] | close | arena <id> | clear | reset | challenge <herói> <1-3>")
 	Log(player, "spawn <herói> [lado] [casa] hp= dir= status= | remove")
 	Log(player, "go <h> <casa> = movimento com as regras | move <h> <casa> [walk] = forçado")
 	Log(player, "hp | dmg | heal | kill | revive | status | unstatus | stealth | frenzy | shield")

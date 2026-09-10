@@ -155,6 +155,24 @@ HeroData.CATALOG = {
 		abilities = { "weakPoint" },
 		color = Color3.fromRGB(190, 200, 225),
 		sprite = "73708047829791", spriteSize = Vector2.new(400, 400), scale = 1.00 },
+
+	{ id = 29, name = "Shin", hp = 18,
+		attack = GameConfig.SHIN_STANCES[GameConfig.SHIN_FIRST_STANCE].attack,
+		ability = GameConfig.SHIN_STANCES[GameConfig.SHIN_FIRST_STANCE].ability,
+		stance = GameConfig.SHIN_FIRST_STANCE,
+		abilities = { "shadowSwap" },
+		color = Color3.fromRGB(96, 92, 130),
+		sprite = "111181083283158", spriteSize = Vector2.new(400, 400), scale = 1.00 },
+
+	-- Ranged pelo attackRange, e não pela ability: a vaga de `ability` é da
+	-- Agility. As duas coisas convivem sem caso especial — o GetAttackRange
+	-- respeita o campo explícito, e o GetAbilityDescription já junta os dois
+	-- textos quando o alcance passa de uma casa (a Wren estreou esse arranjo).
+	{ id = 30, name = "Ryder", attack = 2, hp = 19, ability = "Agility",
+		attackRange = GameConfig.RANGED_ATTACK_RANGE,
+		abilities = { "gunCharge" },
+		color = Color3.fromRGB(120, 215, 235),
+		sprite = "109917512616108", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 }
 
 local MINI_GOLEM_SPRITE = "125545602412754"
@@ -235,7 +253,7 @@ HeroData.SKILL_INFO = {
 		:format(GameConfig.MERLIN_FRENZY_HEAL, GameConfig.MERLIN_FRENZY_ATTACK, GameConfig.MERLIN_FRENZY_KILL_HEAL) },
 	flamePath     = { name = "Caminho de Chamas", desc = "Deixa fogo nas casas que atravessa e na de origem — só a de destino fica de fora. O fogo dura 2 turnos e causa 2 de dano em quem pisar nele." },
 	flameStrike   = { name = "Soco de Chamas",    desc = "O golpe gira: todos os inimigos a uma casa de distância levam o mesmo dano." },
-	flameFury     = { name = "Furor das Chamas",  desc = ("Ao pisar numa casa já em chamas (dele mesmo), ganha +%d de ataque por casa por %d turno. Não acumula, e o ataque não passa de %d.")
+	flameFury     = { name = "Furor das Chamas",  desc = ("Ao pisar numa casa já em chamas (dele mesmo), ganha +%d de ataque por casa por %d turno. Acumula enquanto ele continuar pisando no próprio fogo, e o ataque não passa de %d.")
 		:format(GameConfig.FLAME_FURY_ATTACK, GameConfig.FLAME_FURY_DURATION, GameConfig.FLAME_FURY_MAX_ATTACK) },
 	stealth       = { name = "Furtividade",  desc = "Fica invisível enquanto nenhum inimigo estiver a menos de 2 casas. Atacar ou levar dano quebra a invisibilidade." },
 	stealthHeal   = { name = "Sombra Densa", desc = "Recupera 1 de vida a cada turno enquanto estiver invisível." },
@@ -243,6 +261,17 @@ HeroData.SKILL_INFO = {
 		:format(GameConfig.AMBUSH_BONUS_DAMAGE) },
 	huntInstinct  = { name = "Instinto de Caça", desc = "Ao atingir um inimigo isolado sem abatê-lo, pode se mover de novo. Ao abater o alvo, recupera movimento E ataque, e volta à invisibilidade na hora, mesmo com inimigo colado — abates em sequência encadeiam sem limite." },
 	shatter       = { name = "Corpo de Pedra", desc = "Ao perder a primeira vida, se parte em dois golens menores: 2 de ataque e 5 de vida cada. Os pedaços não deixam túmulo — o Golem é enterrado uma vez só, quando o último deles cair." },
+
+	-- Ryder
+	gunCharge = { name = "Impulso", desc = ("Ao andar no próprio turno, as pistolas carregam e ele ganha +%d de ataque até o fim do turno. NÃO acumula: andar de novo não soma nada. O golpe que sai ANTES do passo ainda vale o ataque de ficha — a ordem das ações é a escolha.")
+		:format(GameConfig.RYDER_IMPULSE_ATTACK) },
+
+	-- Shin
+	shadowSwap = { name = "Troca de Sombra", desc = ("Uma vez por turno, escolha QUALQUER aliado vivo — sem limite de distância — e troque de lugar com ele. Cada troca vira a postura do Shin: %s com %d de ataque vira %s com %d de ataque, e a próxima troca desfaz. Ele começa a partida em %s, e a postura nova já vale no golpe do mesmo turno.")
+		:format(
+			GameConfig.SHIN_STANCES.ranged.ability, GameConfig.SHIN_STANCES.ranged.attack,
+			GameConfig.SHIN_STANCES.melee.ability, GameConfig.SHIN_STANCES.melee.attack,
+			GameConfig.SHIN_STANCES[GameConfig.SHIN_FIRST_STANCE].ability) },
 
 	-- Kira
 	aegis = { name = "Égide", desc = "Uma vez por turno, escolha um aliado COLADO nela (1 casa) e ainda sem escudo: ele fica com um escudo dourado que anula por completo o próximo golpe que receber, seja de 1 ou de 20. O escudo some ao bloquear, dura o tempo que precisar até lá, e ninguém carrega dois — pra proteger, ela precisa estar no mesmo aperto que o protegido." },
@@ -285,6 +314,7 @@ HeroData.ABILITY_INFO = {
 		:format(GameConfig.SPRINT_MOVE_RANGE, GameConfig.BASE_MOVE_RANGE),
 	Ranged = ("Ataca a até %d casas de distância.")
 		:format(GameConfig.RANGED_ATTACK_RANGE),
+	Melee  = "Luta na casa ao lado: ataca a 1 casa de distância.",
 	Taunt  = "Inimigos adjacentes só podem atacar este herói.",
 	Agility = "O ataque não encerra o movimento: pode andar, atacar e andar de novo no mesmo turno. O ataque continua sendo um só.",
 }

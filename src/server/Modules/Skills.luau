@@ -40,14 +40,6 @@ Skills.beyondFront = {
 
 		local line = ctx.api.GetLineBeyond(ctx.hero.position, ctx.target.position, 2)
 
-		local sweep = { ctx.target.position }
-		for _, hexId in ipairs(line) do
-			local blocker = ctx.api.GetHeroAt(hexId)
-			if blocker and blocker.isAlive and blocker.ownerId == ctx.hero.ownerId then break end
-			table.insert(sweep, hexId)
-		end
-		ctx.api.LineShot(ctx.hero, sweep)
-
 		for _, hexId in ipairs(line) do
 			local other = ctx.api.GetHeroAt(hexId)
 
@@ -603,9 +595,10 @@ Skills.flameFury = {
 		if ctx.movedHero ~= ctx.hero then return end
 		if not ctx.enteredFlameCount or ctx.enteredFlameCount <= 0 then return end
 
-		-- Empréstimo, não acúmulo: a conta parte sempre da ficha BASE, nunca de
-		-- cima de um Furor que ainda não venceu. Sem isso, dois passos em fogo em
-		-- turnos diferentes se somariam sem nunca esbarrar no teto.
+		-- O que já foi juntado entra na conta: a chama nova soma em cima do Furor
+		-- aberto e só para no teto. A conta parte da ficha BASE porque `previous`
+		-- e os outros bônus são descontados aqui embaixo — sem isso, o teto seria
+		-- medido contra um ataque que já carrega o empréstimo.
 		--
 		-- O bônus velho não é devolvido aqui: quem devolve é o ApplyStatusEffect
 		-- ao trocar o efeito, lá embaixo. Descontar nos dois lugares tirava o
@@ -622,7 +615,7 @@ Skills.flameFury = {
 
 		local room = GameConfig.FLAME_FURY_MAX_ATTACK - base
 		local gained = ctx.enteredFlameCount * GameConfig.FLAME_FURY_ATTACK
-		local bonus = math.clamp(math.max(previous, gained), 0, room)
+		local bonus = math.clamp(previous + gained, 0, room)
 		if bonus <= 0 then return end
 
 		ctx.api.IncreaseAttack(ctx.hero, bonus)
@@ -1091,6 +1084,67 @@ Skills.momentum = {
 	end,
 }
 
+-- ===== RYDER: O PISTOLEIRO =====
+-- Impulso — andar carrega as pistolas: +1 de ataque até o FIM DO TURNO DELE.
+--
+-- Primo do Embalo do Rush e nascido do mesmo molde (status com `attackBonus`,
+-- que o motor devolve sozinho), com três diferenças que são a habilidade toda:
+--
+--   NÃO ACUMULA. O efeito já aberto faz a skill sair na hora. É a mesma linha
+--   que impede o segundo passo de somar +1 e de repetir a faísca das pistolas —
+--   uma trava, os dois requisitos.
+--
+--   NÃO É GASTO NO GOLPE. O Embalo some no onAttackResolved (é impulso virando
+--   pancada); este fica de pé até o turno acabar, então Ryder pode andar,
+--   atirar e ainda andar de novo com a Agility, sempre com o mesmo +1.
+--
+--   MORRE NO PRÓPRIO onTurnEnd, e não pelo prazo. Um `duration` sozinho não
+--   serve: o ProcessStatusEffects pula o que nasceu neste turno (ver
+--   appliedTurnToken), então o bônus atravessaria o turno do adversário. O
+--   onTurnEnd só dispara pro lado que está encerrando — é exatamente o "até o
+--   fim do turno DELE" que a ficha promete.
+--
+-- SÓ O PASSO PRÓPRIO CONTA. `ctx.path` é a assinatura do MoveHero: quem chega
+-- por Troca do Shin, invocação ou Casa de Promoção passa pelo mesmo onMove sem
+-- caminho nenhum (ver AnnounceArrival), e empurrão nem dispara o gatilho (o
+-- ForceMove não chama skill). Perguntar pelo caminho separa os quatro casos de
+-- uma vez, sem listar quem é quem.
+Skills.gunCharge = {
+	triggers = { "onMove", "onAttack", "onTurnEnd" },
+	apply = function(ctx)
+		local charged = ctx.api.FindStatusEffect(ctx.hero, "gunCharge") ~= nil
+
+		if ctx.trigger == "onTurnEnd" then
+			ctx.api.RemoveStatusEffect(ctx.hero, "gunCharge")
+			return
+		end
+
+		if ctx.trigger == "onAttack" then
+			ctx.api.Tally(ctx.hero, "impulseAttacks")
+			ctx.api.Tally(ctx.hero, charged and "boostedAttacks" or "baseAttacks")
+			return
+		end
+
+		if ctx.movedHero ~= ctx.hero then return end
+		if not ctx.path or #ctx.path == 0 then return end
+		if charged then return end
+
+		ctx.api.IncreaseAttack(ctx.hero, GameConfig.RYDER_IMPULSE_ATTACK)
+		ctx.api.ApplyStatusEffect(ctx.hero, {
+			type = "gunCharge",
+			duration = 1,
+			attackBonus = GameConfig.RYDER_IMPULSE_ATTACK,
+		})
+
+		ctx.api.Tally(ctx.hero, "impulseActivations")
+		if ctx.api.HasAttacked(ctx.hero) then
+			ctx.api.Tally(ctx.hero, "impulseAfterAttack")
+		end
+
+		ctx.api.Effect(ctx.hero)
+	end,
+}
+
 Skills.dodge = {
 	passive = true,
 	triggers = {},
@@ -1172,7 +1226,7 @@ Skills.vengeance = {
 --
 -- A skill faz UMA coisa: abre a oferta. Ela não aplica o escudo, não sabe
 -- bloquear dano e não conhece a tabela de efeitos — quem escolhe é o jogador
--- (MatchManager.GrantShield) e quem gasta é o cano de dano (ConsumeShield). Essa
+-- (MatchManager.ResolveAllyChoice) e quem gasta é o cano de dano (ConsumeShield). Essa
 -- divisão é o que deixa o escudo ser um estado do JOGO e não uma regra da Kira:
 -- outra fonte que aplique um efeito `shield` ganha o bloqueio inteiro de graça.
 --
@@ -1181,7 +1235,26 @@ Skills.vengeance = {
 Skills.aegis = {
 	triggers = { "onTurnStart" },
 	apply = function(ctx)
-		ctx.api.OfferShield(ctx.hero)
+		ctx.api.OfferAllyChoice(ctx.hero, "shield")
+	end,
+}
+
+-- ===== SHIN: O NINJA =====
+-- Troca de Sombra — uma vez por turno ele troca de lugar com QUALQUER aliado
+-- vivo, sem limite de distância, e cada troca vira a postura dele: Ranged com 2
+-- de ataque vira Melee com 3, e a próxima desfaz.
+--
+-- A skill não troca ninguém de lugar: ela só ABRE a oferta, exatamente como a
+-- Égide da Kira. Quem escolhe é o jogador (ou o BotBrain.PickSwapTarget) e quem
+-- executa é o MatchManager.ResolveAllyChoice. Essa divisão é o que faz a Troca
+-- aparecer na seleção normal do herói — casa pinta de passo, inimigo de ataque,
+-- aliado de troca — sem modo à parte, sem botão de habilidade e sem gastar o
+-- passo nem o golpe do turno. Andar antes de trocar continua valendo porque a
+-- oferta não olha pro movimento: ela vive até ser usada ou até o BeginTurn.
+Skills.shadowSwap = {
+	triggers = { "onTurnStart" },
+	apply = function(ctx)
+		ctx.api.OfferAllyChoice(ctx.hero, "swap")
 	end,
 }
 

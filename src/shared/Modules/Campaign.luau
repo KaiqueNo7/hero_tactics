@@ -50,6 +50,7 @@ Campaign.FIGHTS = {
 
 	{ hero = Hero.Nash,    group = 5, team = { Hero.Kor, Hero.Noctin, Hero.Nash }, island = "Desert" },
 	{ hero = Hero.Wren,    group = 5, team = { Hero.Wren, Hero.Ceos, Hero.Bramm }, island = "Desert" },
+	{ hero = Hero.Ryder,   group = 5, team = { Hero.Ryder, Hero.Kor, Hero.Merlin }, island = "Desert" },
 
 	{ hero = Maluco,       group = 6, team = { Maluco, Hero.Morn, Hero.Vic }, island = "Boske" },
 	{ hero = Hero.Morn,    group = 6, team = { Maluco, Hero.Morn, Hero.Vic }, island = "Boske" },
@@ -59,10 +60,58 @@ Campaign.FIGHTS = {
 	{ hero = Hero.Kira,    group = 6, team = { Hero.Kira, Hero.Blade, Hero.Elaria }, island = "Boske" },   -- ela puxa o foco e blinda o Blade, que é quem realmente machuca
 
 	{ hero = Hero.Zaro,    group = 7, team = { Hero.Zaro, Hero.Ceos, Hero.Blade }, island = "Temple" },
+	{ hero = Hero.Shin, 	group = 7, team = { Hero.Shin, Hero.Zaro, Hero.Kira }, island = "Temple" },
 }
 
 Campaign.PVP_MIN_HEROES = 6
 Campaign.PAD_TAG = "FightPad"
+
+-- ===================== ESTRELAS =====================
+-- A nota de cada confronto: uma estrela por vencer, e mais uma por condição
+-- cumprida. A conta é SOMA, não degrau — quem soma é o mesmo avaliador dos
+-- desafios de herói (ver ChallengeService.StarsEarned).
+--
+-- POR QUE "SEM PROMOÇÃO" APARECE NAS DUAS. A regra pedida é em degraus: usar a
+-- Casa de Promoção limita a UMA estrela, mesmo vencendo rápido e com o time
+-- inteiro. Numa soma pura isso não cabe — vitória no turno 8 com três de pé e
+-- promoção usada daria duas. Repetindo a condição nas duas linhas, a soma
+-- produz exatamente o degrau, e nenhum teto precisa ser escrito. A tabela das
+-- oito combinações está no CoreChecks e falha se alguém mexer aqui.
+--
+-- SÃO DUAS LINHAS, e não três, porque a primeira estrela é a própria vitória.
+Campaign.STAR_TURN_LIMIT = 10
+Campaign.XP_PER_STAR = 40
+
+Campaign.DEFAULT_STARS = {
+	{
+		text = "Terminar com 2 heróis de pé, sem a Casa de Promoção",
+		check = { kind = "allOf", checks = {
+			{ kind = "heroesAlive", count = 2 },
+			{ kind = "noPromotion" },
+		} },
+	},
+	{
+		text = ("Vencer antes do turno %d com o time inteiro de pé")
+			:format(Campaign.STAR_TURN_LIMIT),
+		check = { kind = "allOf", checks = {
+			-- "antes do turno 10" é `<= 9`, e o `withinTurns` já compara assim.
+			-- O número do turno conta RODADA (só avança quando o segundo lado
+			-- encerra), então não existe meio turno pra criar ambiguidade.
+			{ kind = "withinTurns", turns = Campaign.STAR_TURN_LIMIT - 1 },
+			{ kind = "heroesAlive", count = 3 },
+			{ kind = "noPromotion" },
+		} },
+	},
+}
+
+Campaign.MAX_STARS = #Campaign.DEFAULT_STARS + 1
+
+-- Confronto pode trazer `stars` próprio e sair do padrão. É o gancho pra fase
+-- com regra especial ("vencer em 7", "não deixe ninguém congelar") sem que o
+-- resto da campanha saiba que existe exceção.
+function Campaign.StarsFor(fight)
+	return (fight and fight.stars) or Campaign.DEFAULT_STARS
+end
 
 function Campaign.GetFight(heroId)
 	for _, fight in ipairs(Campaign.FIGHTS) do

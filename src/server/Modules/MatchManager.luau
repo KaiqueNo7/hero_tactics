@@ -33,6 +33,8 @@ local HeroStatsService = require(ServerScriptService.Modules.HeroStatsService)
 local HeroUsageService = require(ServerScriptService.Modules.HeroUsageService)
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
+local FightStore = require(ServerScriptService.Modules.FightStore)
+local Objectives = require(ServerScriptService.Modules.Objectives)
 local MatchQuery = require(ServerScriptService.Modules.MatchQuery)
 local BotBrain = require(ServerScriptService.Modules.BotBrain)
 local PROMOTION_HEXES = MatchQuery.PROMOTION_HEXES
@@ -57,6 +59,8 @@ local BoardReady = ReplicatedStorage.Remotes.BoardReady
 
 local MatchManager = {}
 
+MatchManager.Resolvers = {}
+
 -- ===== AJUSTE FINO =====
 local BOT_ACTION_DELAY = 0.7
 local COUNTER_ATTACK_DELAY = 0.4
@@ -70,6 +74,23 @@ local BOT_ONE_ID = "BOT_A"
 local matches = {} -- [matchId] = match
 local matchBySlot = {} -- [slot] = match
 local nextMatchId = 0
+
+local DEFAULT_RULES = {
+	draft = true,
+	objects = true,
+	promotion = true,
+	suddenDeath = true,
+	progression = true,
+	resolve = "elimination",
+	botPolicy = "brain",
+}
+
+local function BuildRules(overrides)
+	local rules = {}
+	for key, value in pairs(DEFAULT_RULES) do rules[key] = value end
+	for key, value in pairs(overrides or {}) do rules[key] = value end
+	return rules
+end
 
 -- declaradas cedo porque se chamam entre si
 local BeginTurn, BotPlayTurn, BotPlaceOne, AdvancePlacement, CheckGameOver
@@ -157,6 +178,14 @@ local function TriggerSkills(match, hero, triggerName, target, isCounterAttack, 
 				warn(("Skill %s falhou em %s: %s"):format(key, hero.name, tostring(err)))
 			end
 			HeroView.UpdateStats(hero)
+		end
+	end
+end
+
+local function AnnounceArrival(match, arrival)
+	for _, other in pairs(match.heroes) do
+		if other.isAlive then
+			TriggerSkills(match, other, "onMove", nil, false, { movedHero = arrival })
 		end
 	end
 end
@@ -270,7 +299,6 @@ function KillHero(match, hero, attacker, sourceKey)
 			end
 		end
 	end
-
 	if hero.noGrave then
 		hero.graveDestroyed = true
 		hero.graveHitsLeft = 0
@@ -285,17 +313,6 @@ function KillHero(match, hero, attacker, sourceKey)
 
 		HeroView.Destroy(hero)
 	else
-		if attacker and attacker ~= hero and not hero.summoner then
-			match.finisher = {
-				dataId = attacker.dataId,
-				name = attacker.name,
-				ownerId = attacker.ownerId,
-				sideIndex = attacker.sideIndex,
-				victim = hero.name,
-				hex = attacker.position,
-			}
-		end
-
 		if hero.graveOwner then
 			hero.graveDestroyed = true
 			hero.graveHitsLeft = 0
@@ -327,6 +344,18 @@ function KillHero(match, hero, attacker, sourceKey)
 	end
 
 	ResolvePendingGraves(match)
+
+	local fallen = hero.graveOwner or hero
+	if attacker and attacker ~= hero and not fallen.summoner and not fallen.gravePending then
+		match.finisher = {
+			dataId = attacker.dataId,
+			name = attacker.name,
+			ownerId = attacker.ownerId,
+			sideIndex = attacker.sideIndex,
+			victim = fallen.name,
+			hex = attacker.position,
+		}
+	end
 
 	match.lastDeath = {
 		hex = hero.position,
@@ -755,36 +784,80 @@ local function Electrify(match, victim, origin)
 	end
 end
 
-local function ShieldOptionsFor(match, hero)
-	local options = {}
-	if not (hero and hero.isAlive) then return options end
+-- ===== ESCOLHA DE ALIADO =====
+-- A Égide da Kira estreou este arranjo e a Troca de Sombra do Shin entrou nele:
+-- o herói selecionado revela, junto das casas de passo e dos inimigos no
+-- alcance, a lista de ALIADOS em que clicar faz outra coisa. O `kind` é a única
+-- diferença entre as duas — quem pode ser escolhido, e o que acontece no clique.
+--
+-- Uma oferta por vez e por turno, fechada no uso e zerada no BeginTurn: é o que
+-- impede a mesma seleção de valer duas vezes sem inventar contador de ação.
+local ALLY_CHOICE = {
+	shield = {
+		Options = function(match, hero)
+			local options = {}
+			for _, ally in ipairs(GetAlliesInRange(match, hero, 1)) do
+				if not FindStatusEffect(ally, "shield") then
+					table.insert(options, ally.uid)
+				end
+			end
+			return options
+		end,
 
-	for _, ally in ipairs(GetAlliesInRange(match, hero, 1)) do
-		if not FindStatusEffect(ally, "shield") then
-			table.insert(options, ally.uid)
-		end
-	end
+		Blocked = function(match, hero)
+			local protected = ActiveShieldOf(match, hero)
+			if not protected then return nil end
+
+			Tally(hero, "shieldUnavailableAttempts")
+			return ("%s ainda protege %s — a Égide só volta quando esse escudo cair")
+				:format(hero.name, protected.name), "ESCUDO ATIVO"
+		end,
+	},
+
+	swap = {
+		-- Sem alcance nenhum, e é o ponto da habilidade. Fora invocado, que é
+		-- peça de outro herói, e o próprio Shin, que o GetAlliesInRange já tira.
+		Options = function(match, hero)
+			local options = {}
+			for _, ally in ipairs(GetAlliesInRange(match, hero, math.huge)) do
+				if not ally.summoner then
+					table.insert(options, ally.uid)
+				end
+			end
+			return options
+		end,
+	},
+}
+
+local function AllyOptionsFor(match, hero, kind)
+	local spec = kind and ALLY_CHOICE[kind]
+	if not (spec and hero and hero.isAlive) then return {} end
+
+	local options = spec.Options(match, hero)
 	table.sort(options)
 	return options
 end
 
-local function OfferShield(match, hero)
+local function OfferAllyChoice(match, hero, kind)
 	if not match.turn or match.turn.ownerId ~= hero.ownerId then return end
-	if match.pendingShield then return end
+	if match.pendingAlly then return end
 
-	local protected = ActiveShieldOf(match, hero)
-	if protected then
-		Tally(hero, "shieldUnavailableAttempts")
-		HeroView.Say(hero, "ESCUDO ATIVO", "absorb")
-		LogEvent(match, "skill", hero.sideIndex,
-			("%s ainda protege %s — a Égide só volta quando esse escudo cair"):format(
-				hero.name, protected.name))
-		return
+	local spec = ALLY_CHOICE[kind]
+	if not spec then return end
+
+	if spec.Blocked then
+		local reason, shout = spec.Blocked(match, hero)
+		if reason then
+			HeroView.Say(hero, shout, "absorb")
+			LogEvent(match, "skill", hero.sideIndex, reason)
+			return
+		end
 	end
 
-	match.pendingShield = {
+	match.pendingAlly = {
 		ownerId = hero.ownerId,
 		sourceUid = hero.uid,
+		kind = kind,
 	}
 end
 
@@ -1003,16 +1076,15 @@ local function BuildSkillApi(match)
 			HeroView.FlashAttackRange(match.view, hexIds)
 		end,
 
-		LineShot = function(hero, hexIds)
-			HeroView.ShowLineAttack(hero, hexIds)
-		end,
-
 		Summon = function(origin, dataId)
 			local hexId = FindNearestFreeHex(match, origin.position)
 			if not hexId then return nil end
 
 			local minion = CreateHero(match, dataId, origin.ownerId, hexId)
-			if minion then minion.summoner = origin end
+			if minion then
+				minion.summoner = origin
+				AnnounceArrival(match, minion)
+			end
 			return minion
 		end,
 
@@ -1043,13 +1115,17 @@ local function BuildSkillApi(match)
 			end
 		end,
 
-		OfferShield = function(hero) OfferShield(match, hero) end,
+		OfferAllyChoice = function(hero, kind) OfferAllyChoice(match, hero, kind) end,
 
 		RecordChainHit = function(hero, target) RecordChainHit(match, hero, target) end,
 		RerollWeakPoint = RerollWeakPoint,
 		WeakPointDirection = HexGrid.DirectionBetween,
 		DirectionName = HexGrid.DirectionName,
 		BreakWeakPoint = function(hero) HeroView.BreakWeakPoint(hero) end,
+
+		HasAttacked = function(hero)
+			return match.turn ~= nil and match.turn.attacked[hero.uid] == true
+		end,
 
 		GrantExtraAction = function(hero, includeAttack)
 			if not match.turn then return end
@@ -1233,7 +1309,7 @@ local function Snapshot(match, viewerId)
 	end
 
 	local promotionSquares = {}
-	for slotIndex, hexId in pairs(GameConfig.PROMOTION_HEX_FOR_SLOT) do
+	for slotIndex, hexId in pairs(match.rules.promotion and GameConfig.PROMOTION_HEX_FOR_SLOT or {}) do
 		local side = match.sides[slotIndex]
 		local squareState
 		if side and side.promotionUsed then
@@ -1257,13 +1333,17 @@ local function Snapshot(match, viewerId)
 		pendingPromotion = { options = match.pendingPromotion.options }
 	end
 
-	local pendingShield = nil
-	if match.pendingShield and match.pendingShield.ownerId == viewerId then
-		local source = match.heroes[match.pendingShield.sourceUid]
-		local options = ShieldOptionsFor(match, source)
+	local pendingAlly = nil
+	if match.pendingAlly and match.pendingAlly.ownerId == viewerId then
+		local source = match.heroes[match.pendingAlly.sourceUid]
+		local options = AllyOptionsFor(match, source, match.pendingAlly.kind)
 
 		if #options > 0 then
-			pendingShield = { sourceUid = match.pendingShield.sourceUid, options = options }
+			pendingAlly = {
+				sourceUid = match.pendingAlly.sourceUid,
+				kind = match.pendingAlly.kind,
+				options = options,
+			}
 		end
 	end
 
@@ -1294,7 +1374,7 @@ local function Snapshot(match, viewerId)
 		barrels = barrels,
 		promotionSquares = promotionSquares,
 		pendingPromotion = pendingPromotion,
-		pendingShield = pendingShield,
+		pendingAlly = pendingAlly,
 		campaign = match.fight ~= nil,
 		campaignNext = campaignNext,
 		rematch = (match.phase == "finished" and not match.vsBot) and {
@@ -1321,6 +1401,14 @@ local function Snapshot(match, viewerId)
 
 		arena = match.theme and match.theme.id or nil,
 		arenaName = match.theme and match.theme.name or nil,
+
+		challenge = match.challengeState,
+
+		-- Só pra quem ganhou as estrelas. O adversário de uma PvP não tem o que
+		-- fazer com isso, e o campo mudo é o que evita a tela dele desenhar três
+		-- estrelas apagadas do nada.
+		fightStars = (match.fightStars and match.fightStars.ownerId == viewerId)
+			and match.fightStars or nil,
 
 		winner = winner,
 		message = match.message,
@@ -1406,6 +1494,7 @@ function CreateHero(match, dataId, ownerId, hexId)
 
 		skullCooldown = 0,
 		summoner = nil,
+		stance = data.stance,
 
 		view = match.view,
 	}
@@ -1545,18 +1634,68 @@ function AttackGrave(match, attacker, grave)
 end
 
 local function AwardXp(match, side, result, survivors)
-	if match.sandbox then return end
+	if not match.rules.progression then return end
 	if not side or side.isBot or not side.player then return end
 	task.spawn(ProgressionService.AwardMatchXp, side.player, result, survivors, match.vsBot)
 end
 
+-- ===== ESTRELAS DO CONFRONTO =====
+-- Avaliado NO INSTANTE da vitória, dentro do CheckGameOver: um passo depois o
+-- EndMatch já limpou o tabuleiro, e contar herói de pé num tabuleiro vazio daria
+-- zero sempre.
+--
+-- Só confronto de campanha com jogador humano e progressão ligada. Bot contra
+-- bot, BalanceSim, desafio e sandbox passam pelo mesmo CheckGameOver e têm que
+-- sair antes de encostar em DataStore.
+local function AwardFightStars(match, winningSide)
+	if not match.fight then return end
+	if not match.rules.progression then return end
+	if not winningSide.player or winningSide.isBot then return end
+	if match.starsDone then return end
+	match.starsDone = true
+
+	local run = { playerId = winningSide.id, enemyId = OpponentSide(match, winningSide.id).id }
+	local rules = Campaign.StarsFor(match.fight)
+
+	-- Uma pela vitória, mais uma por linha cumprida. A soma reproduz a regra em
+	-- degrau porque "sem promoção" está nas duas linhas (ver Campaign).
+	local earned = 1
+	local reasons = { { text = "Vitória", done = true } }
+
+	for _, star in ipairs(rules) do
+		local done = Objectives.Eval(match, run, star.check) == Objectives.DONE
+		if done then earned += 1 end
+		table.insert(reasons, { text = star.text, done = done })
+	end
+
+	local gained = FightStore.Record(winningSide.player, match.fight.hero, earned)
+
+	match.fightStars = {
+		earned = earned,
+		best = FightStore.StarsOf(winningSide.player, match.fight.hero),
+		max = Campaign.MAX_STARS,
+		gained = gained,
+		xp = gained * Campaign.XP_PER_STAR,
+		reasons = reasons,
+		ownerId = winningSide.id,
+	}
+
+	-- Só estrela NOVA paga. Repetir o confronto com o mesmo resultado rende zero,
+	-- e é isso que fecha a porta do farm sem precisar de trava de tempo.
+	if gained > 0 then
+		task.spawn(ProgressionService.AwardXp, winningSide.player, match.fightStars.xp)
+	end
+end
+
 local function AwardFightHero(match, side)
+	if not match.rules.progression then return end
 	if not match.fight or not side or side.isBot or not side.player then return end
 	task.spawn(HeroUnlockService.Unlock, side.player, match.fight.hero)
 end
 
 local function RecordHeroStats(match)
 	if match.statsRecorded then return end
+	if not (match.rules.progression or match.simulated) then return end
 	match.statsRecorded = true
 
 	local entries = {}
@@ -1658,6 +1797,7 @@ end
 
 local function IsRankedPvp(match)
 	if match.simulated then return nil, "BalanceSim" end
+	if not match.rules.progression then return nil, "modo sem progressao" end
 	if match.fight then return nil, "campanha" end
 	if not match.turn then return nil, "partida nao chegou a comecar" end
 
@@ -1672,7 +1812,12 @@ local function IsRankedPvp(match)
 end
 
 function CheckGameOver(match)
-	if match.sandbox then return false end
+	if match.rules.resolve == "manual" then return false end
+
+	if match.rules.resolve ~= "elimination" then
+		local resolver = MatchManager.Resolvers[match.rules.resolve]
+		return resolver ~= nil and resolver(match) == true
+	end
 
 	local aliveOne = #LivingHeroesOf(match, match.sides[1].id)
 	local aliveTwo = #LivingHeroesOf(match, match.sides[2].id)
@@ -1724,6 +1869,10 @@ function CheckGameOver(match)
 				print(("[Ranking] resultado ignorado — %s"):format(why))
 			end
 		end
+
+		-- ANTES do AwardXp e do EndMatch: as estrelas leem heróis de pé e o
+		-- número do turno, e os dois só existem enquanto a partida existe.
+		AwardFightStars(match, winningSide)
 
 		AwardXp(match, winningSide, "win", survivors)
 		AwardXp(match, losingSide, "loss")
@@ -1861,24 +2010,51 @@ local function ResolveBotPromotion(match, botId)
 end
 
 function BotPlayTurn(match, botId)
+	local scene = match.sceneToken
+
 	task.spawn(function()
+		local function MatchIsLive(other)
+			return matches[other.id] ~= nil and other.sceneToken == scene
+		end
+
 		task.wait(BOT_ACTION_DELAY)
+
+		if match.rules.botPolicy == "hold" then
+			if MatchIsLive(match) and match.phase == "battle"
+				and match.turn and match.turn.ownerId == botId then
+				MatchManager.EndTurn(nil, match)
+			end
+			return
+		end
 
 		ResolveBotPromotion(match, botId)
 
-		local function TentarEscudo()
-			if not (MatchIsLive(match) and match.pendingShield
-				and match.pendingShield.ownerId == botId) then return end
+		-- A escolha de aliado sai ANTES do laço de ações porque ela muda o
+		-- tabuleiro que o laço vai ler: a Troca do Shin reposiciona dois heróis e
+		-- vira a postura dele, e planejar o passo com as casas antigas seria
+		-- decidir com um tabuleiro que já não existe.
+		local function TentarEscolhaAliada()
+			if not (MatchIsLive(match) and match.pendingAlly
+				and match.pendingAlly.ownerId == botId) then return end
 
-			local source = match.heroes[match.pendingShield.sourceUid]
-			local options = ShieldOptionsFor(match, source)
+			local source = match.heroes[match.pendingAlly.sourceUid]
+			local kind = match.pendingAlly.kind
+			local options = AllyOptionsFor(match, source, kind)
 			if #options == 0 then return end
 
-			MatchManager.GrantShield(nil, BotBrain.PickShieldTarget(match, botId, options), match)
+			local pick = kind == "swap"
+				and BotBrain.PickSwapTarget(match, source, options)
+				or BotBrain.PickShieldTarget(match, botId, options)
+
+			-- Recusar é jogada válida na Troca: sem ganho, o Shin fica onde está
+			-- e guarda a postura. O escudo nunca devolve nil — ele sempre vale.
+			if not pick then return end
+
+			MatchManager.ResolveAllyChoice(nil, pick, match)
 			task.wait(BOT_ACTION_DELAY)
 		end
 
-		TentarEscudo()
+		TentarEscolhaAliada()
 
 		local resolved = {}
 		for _ = 1, GameConfig.HEROES_PER_PLAYER * 3 do
@@ -1948,6 +2124,13 @@ function BotPlayTurn(match, botId)
 
 			if not best then break end
 
+			-- O BotBrain só avisa; quem grava é aqui, porque lá não se escreve em
+			-- `match`. Conta quantas vezes o freio do estopim segurou um abate que
+			-- teria explodido o próprio time.
+			if best.avoidedUnsafeKill then
+				Tally(best.hero, "unsafeExplosiveKillsAvoided")
+			end
+
 			if best.position ~= best.hero.position then
 				MatchManager.MoveHero(nil, best.hero.uid, best.position, match)
 				task.wait(BOT_ACTION_DELAY)
@@ -1984,8 +2167,10 @@ function BotPlayTurn(match, botId)
 			end
 
 			-- o time andou: quem estava fora do alcance da Kira pode estar do
-			-- lado dela agora
-			TentarEscudo()
+			-- lado dela agora, e uma Troca que não valia a pena antes do
+			-- reposicionamento pode valer agora. Se a oferta já foi usada, isto
+			-- não faz nada — ela é uma só por turno.
+			TentarEscolhaAliada()
 		end
 
 		if MatchIsLive(match) and match.phase == "battle" and match.turn.ownerId == botId then
@@ -2044,11 +2229,12 @@ function BeginTurn(match, ownerId, number)
 		startedAt = os.clock(),
 	}
 
-	-- A oferta de escudo vale pelo turno em que nasceu. Zerar aqui, ANTES do
-	-- onTurnStart, é o que faz a lista ser recalculada do zero a cada turno da
-	-- Kira (quem ganhou escudo no turno passado some das opções sozinho) e o que
-	-- fecha a oferta que o jogador escolheu ignorar.
-	match.pendingShield = nil
+	-- A oferta de aliado vale pelo turno em que nasceu. Zerar aqui, ANTES do
+	-- onTurnStart, é o que faz a lista ser recalculada do zero a cada turno de
+	-- quem abre a oferta (quem ganhou escudo no turno passado some das opções
+	-- sozinho), o que fecha a oferta que o jogador escolheu ignorar, e o que
+	-- limita a Troca do Shin a uma por turno sem inventar contador de ação.
+	match.pendingAlly = nil
 
 	-- onTurnStart dispara pros heróis dos DOIS lados (igual ao Phaser)
 	for _, hero in pairs(match.heroes) do
@@ -2058,17 +2244,17 @@ function BeginTurn(match, ownerId, number)
 	end
 
 	local message = nil
-	if number == GameConfig.SUDDEN_DEATH_WARNING_TURN then
-		message = "⚠ Morte Súbita se aproxima!"
+	if match.rules.suddenDeath and number == GameConfig.SUDDEN_DEATH_WARNING_TURN then
+		message = "Morte Súbita se aproxima!"
 	end
 
-	if number >= GameConfig.SUDDEN_DEATH_START_TURN then
+	if match.rules.suddenDeath and number >= GameConfig.SUDDEN_DEATH_START_TURN then
+		message = "Morte Súbita: todos perdem 1 de vida!"
 		for _, hero in pairs(match.heroes) do
 			if hero.isAlive then
 				ApplyDamage(match, hero, GameConfig.SUDDEN_DEATH_DAMAGE, nil, false, nil, "suddenDeath")
 			end
 		end
-		message = "☠ Morte Súbita: todos perdem 1 de vida!"
 	end
 
 	if CheckGameOver(match) then
@@ -2383,12 +2569,7 @@ local function PerformResurrection(match, pending, grave)
 	newHero.currentHp = math.min(GameConfig.RESURRECT_HP, newHero.maxHp)
 
 	TriggerSkills(match, newHero, "onTurnStart")
-
-	for _, other in pairs(match.heroes) do
-		if other.isAlive then
-			TriggerSkills(match, other, "onMove", nil, false, { movedHero = newHero })
-		end
-	end
+	AnnounceArrival(match, newHero)
 
 	HeroView.UpdateStats(newHero)
 	HeroView.PlayMatchSound(match.view, "Resurrect")
@@ -2397,6 +2578,7 @@ local function PerformResurrection(match, pending, grave)
 end
 
 function TryTriggerPromotion(match, hero)
+	if not match.rules.promotion then return end
 	if match.phase ~= "battle" or not match.turn then return end
 	if match.turn.number < GameConfig.PROMOTION_UNLOCK_TURN then return end
 
@@ -2445,29 +2627,74 @@ function TryTriggerPromotion(match, hero)
 	Broadcast(match, message)
 end
 
-function MatchManager.GrantShield(player, heroUid, match)
-	match = match or MatchOfPlayer(player)
-	local pending = match and match.pendingShield
-	if not pending then return end
-	if match.phase ~= "battle" or not match.turn then return end
-	if match.turn.ownerId ~= pending.ownerId then return end
+-- A postura do Shin troca a FICHA, não empilha bônus: `baseAttack` vira o número
+-- da postura nova e só a DIFERENÇA entra no ataque atual. É o que preserva a
+-- aura do Spyke, o barril e qualquer attackBonus aberto — reescrever `attack` de
+-- ponta a ponta apagaria os três, e somar um bônus de postura viraria a escada
+-- de ATK que esta habilidade justamente não é.
+local function SetStance(match, hero, stanceKey)
+	local stance = GameConfig.SHIN_STANCES[stanceKey]
+	if not stance then return end
 
-	if player then
-		local side = SideOfPlayer(match, player)
-		if not side or side.id ~= pending.ownerId then return end
+	hero.stance = stanceKey
+	hero.ability = stance.ability
+	hero.attackRange = stance.attackRange
+
+	local delta = stance.attack - hero.baseAttack
+	hero.baseAttack = stance.attack
+	if delta ~= 0 then
+		IncreaseAttack(match, hero, delta)
 	end
 
-	local source = match.heroes[pending.sourceUid]
-	local valid = false
-	for _, uid in ipairs(ShieldOptionsFor(match, source)) do
-		if uid == heroUid then valid = true break end
-	end
+	HeroView.Say(hero, stance.label, "buff")
+	HeroView.PlaySkillEffect(hero, "stance" .. stance.ability)
+	HeroView.UpdateStats(hero)
+end
 
-	local target = match.heroes[heroUid]
-	if valid and target and target.isAlive
-		and target.ownerId == pending.ownerId
-		and not ActiveShieldOf(match, source)
-	then
+local function SwapPlaces(match, hero, ally)
+	local from, to = hero.position, ally.position
+
+	-- `busy` fecha a porta do turno enquanto as duas peças estão no ar: é a mesma
+	-- trava que o passo e o contra-ataque usam, e sem ela um segundo clique
+	-- resolveria alcance contra um tabuleiro que ainda não terminou de mudar.
+	match.busy = true
+	HeroView.PlaySwap(hero, ally)
+
+	match.occupied[from] = ally
+	match.occupied[to] = hero
+	hero.position, ally.position = to, from
+	HeroView.SetPosition(hero, to)
+	HeroView.SetPosition(ally, from)
+
+	HeroView.FinishSwap(hero, ally)
+	match.busy = false
+
+	-- A postura vira ANTES do pedágio de fogo e das varreduras: o golpe do mesmo
+	-- turno já sai com a ficha nova, e quem for recalculado abaixo lê o Shin que
+	-- ele é agora, não o que ele era antes de sumir na fumaça.
+	local current = GameConfig.SHIN_STANCES[hero.stance]
+	if current then SetStance(match, hero, current.next) end
+
+	ConsumeFlame(match, hero, to)
+	ConsumeFlame(match, ally, from)
+
+	-- Duas chegadas, duas varreduras: adjacência, aura do Spyke, Confiança do
+	-- Dante e furtividade do Nash são recalculadas pelo MESMO gatilho que o passo
+	-- normal dispara, então nada aqui precisa saber quais habilidades existem.
+	if hero.isAlive then AnnounceArrival(match, hero) end
+	if ally.isAlive then AnnounceArrival(match, ally) end
+
+	LogEvent(match, "skill", hero.sideIndex,
+		("%s trocou de lugar com %s e ficou em %s"):format(hero.name, ally.name, hero.ability))
+
+	if hero.isAlive then TryTriggerPromotion(match, hero) end
+	if ally.isAlive then TryTriggerPromotion(match, ally) end
+end
+
+local ALLY_RESOLVE = {
+	shield = function(match, source, target)
+		if ActiveShieldOf(match, source) then return end
+
 		ApplyStatusEffect(match, target, {
 			type = "shield",
 			permanent = true,
@@ -2490,9 +2717,52 @@ function MatchManager.GrantShield(player, heroUid, match)
 
 		LogEvent(match, "skill", target.sideIndex,
 			("%s protegeu %s com um escudo"):format(source and source.name or "Kira", target.name))
+	end,
+
+	swap = function(match, source, target)
+		Tally(source, "shadowSwaps")
+		SwapPlaces(match, source, target)
+	end,
+}
+
+function MatchManager.ResolveAllyChoice(player, heroUid, match)
+	match = match or MatchOfPlayer(player)
+	local pending = match and match.pendingAlly
+	if not pending then return end
+	if match.phase ~= "battle" or not match.turn then return end
+	if match.turn.ownerId ~= pending.ownerId then return end
+	if match.busy then return end
+
+	if player then
+		local side = SideOfPlayer(match, player)
+		if not side or side.id ~= pending.ownerId then return end
 	end
 
-	match.pendingShield = nil
+	local source = match.heroes[pending.sourceUid]
+	local valid = false
+	for _, uid in ipairs(AllyOptionsFor(match, source, pending.kind)) do
+		if uid == heroUid then valid = true break end
+	end
+
+	local target = match.heroes[heroUid]
+	if valid and target and target.isAlive
+		and target.ownerId == pending.ownerId
+		and source and source.isAlive
+		and not IsDisabled(source)
+	then
+		ALLY_RESOLVE[pending.kind](match, source, target)
+	end
+
+	match.pendingAlly = nil
+
+	-- A Troca passa por casa em chamas, e fogo mata: sem esta checagem o último
+	-- herói podia cair aqui e a partida seguir aberta até a ação seguinte. Mesma
+	-- linha que fecha o MoveHero e o AttackHero.
+	if CheckGameOver(match) then
+		Broadcast(match)
+		return
+	end
+
 	Broadcast(match)
 end
 
@@ -2742,6 +3012,17 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 	local sandbox = options ~= nil and options.sandbox == true
 	if not playerOne and not botVsBot then return false end
 
+	local rules = BuildRules(options and options.rules)
+	if sandbox then
+		rules.draft = false
+		rules.objects = false
+		rules.promotion = false
+		rules.suddenDeath = false
+		rules.progression = false
+		rules.resolve = "manual"
+	end
+	if botVsBot then rules.progression = false end
+
 	slot = slot or AllocateSlot()
 	if not slot then return false end
 
@@ -2809,6 +3090,8 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		fight = fight,
 		simulated = botVsBot,
 		sandbox = sandbox,
+		rules = rules,
+		challenge = options and options.challenge or nil,
 		onFinish = options and options.onFinish or nil,
 		onStats = options and options.onStats or nil,
 		phase = "placement",
@@ -2831,7 +3114,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		lastSeen = {},
 		busy = false,
 		pendingPromotion = nil, -- ver TryTriggerPromotion/MatchManager.Resurrect
-		pendingShield = nil, -- ver OfferShield/MatchManager.GrantShield
+		pendingAlly = nil, -- ver OfferAllyChoice/MatchManager.ResolveAllyChoice
 	}
 
 	match.skillApi = BuildSkillApi(match)
@@ -2839,7 +3122,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 	matches[matchId] = match
 	matchBySlot[slot] = match
 
-	if not sandbox then SpawnBarrels(match) end
+	if rules.objects then SpawnBarrels(match) end
 
 	StreamArenaTo(players, origin)
 
@@ -2855,9 +3138,11 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 
 	HeroView.PlayMatchSound(match.view, "MatchStart")
 
-	if sandbox then
+	if not rules.draft then
 		match.phase = "battle"
-		BeginTurn(match, sides[1].id, 1)
+		if rules.resolve ~= "challenge" then
+			BeginTurn(match, sides[1].id, 1)
+		end
 	else
 		StartPlacementClock(match)
 		Broadcast(match)
@@ -2872,6 +3157,41 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 	local label = playerTwo and "PvP" or (playerOne and "vs bot" or "bot vs bot")
 	print(("MatchManager: partida %d no slot %d (%s)."):format(matchId, slot, label))
 	return true
+end
+
+local function ClearScene(match)
+	HeroView.ClearMatch(match.view)
+
+	match.sceneToken = (match.sceneToken or 0) + 1
+	match.turnToken += 1
+
+	if match.turn then
+		match.turn.moved = {}
+		match.turn.attacked = {}
+		match.turn.bonusMove = {}
+		match.turn.weakChain = {}
+		match.turn.counterAttack = false
+		match.turn.token = match.turnToken
+	end
+
+	match.heroes = {}
+	match.occupied = {}
+	match.barrels = {}
+	match.flames = {}
+	match.usedHeroIds = {}
+	match.lastSeen = {}
+	match.log = {}
+	match.pendingPromotion = nil
+	match.pendingAlly = nil
+	match.finisher = nil
+	match.lastDeath = nil
+	match.winner = nil
+	match.message = nil
+	match.statsRecorded = nil
+	match.fightStars = nil
+	match.starsDone = nil
+	match.busy = false
+	match.phase = "battle"
 end
 
 function EndMatch(match)
@@ -2918,6 +3238,7 @@ end
 function MatchManager.Replay(player)
 	local match = MatchOfPlayer(player)
 	if not match or match.phase ~= "finished" then return end
+	if match.challenge then return end
 
 	if not match.vsBot then
 		local side = SideOfPlayer(match, player)
@@ -3119,12 +3440,16 @@ end
 MatchManager.Internal = {
 	MatchOfPlayer = MatchOfPlayer,
 	CreateHero = CreateHero,
+	CreateBarrel = CreateBarrel,
 	KillHero = KillHero,
 	PerformAttack = PerformAttack,
 	TriggerSkills = TriggerSkills,
+	ApplyStatusEffect = ApplyStatusEffect,
 	Broadcast = Broadcast,
 	BeginTurn = BeginTurn,
+	ClearScene = ClearScene,
 	EndMatch = EndMatch,
+	SetStance = SetStance,
 }
 
 return MatchManager

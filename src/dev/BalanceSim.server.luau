@@ -40,6 +40,7 @@ local SUM_ONLY = {
 	weakPointHitGapSum = true,
 	weakPointHitGaps = true,
 	weakPointAttacks = true,
+	impulseAttacks = true,
 }
 
 local DERIVED = {
@@ -54,6 +55,7 @@ local DERIVED = {
 	{ "avgDamagePerShieldBlock",      "damageBlockedByShield",    "shieldBlocks" },
 	{ "weakPointHitRate",             "weakPointsHit",            "weakPointAttacks",     true },
 	{ "avgTurnsBetweenWeakPointHits", "weakPointHitGapSum",       "weakPointHitGaps" },
+	{ "boostedAttackRate",            "boostedAttacks",           "impulseAttacks",       true },
 }
 
 local seed = BALANCE_SIM_SEED or (os.time() % 2147483647)
@@ -570,5 +572,5 @@ print(("BalanceSim: %d partidas, %d por vez (%d slots de arena). Seed: %d"):form
 	BALANCE_SIM_MATCHES, CONCURRENT, GameConfig.MAX_LIVE_MATCHES, seed))
 
 -- for _ = 1, CONCURRENT do
--- 	StartOne()
+	-- StartOne()
 -- end

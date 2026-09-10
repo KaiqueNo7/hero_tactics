@@ -79,6 +79,14 @@ GameConfig.SPYKE_AURA_ATTACK = 1
 GameConfig.SPYKE_VENGEANCE_ATTACK = 1
 GameConfig.SPYKE_VENGEANCE_DURATION = 1
 
+GameConfig.RYDER_IMPULSE_ATTACK = 1
+
+GameConfig.SHIN_STANCES = {
+	ranged = { ability = "Ranged", attack = 2, attackRange = 2, next = "melee", label = "RANGED" },
+	melee = { ability = "Melee", attack = 3, attackRange = 1, next = "ranged", label = "MELEE" },
+}
+GameConfig.SHIN_FIRST_STANCE = "ranged"
+
 GameConfig.RUSH_MOVE_RANGE = 4
 GameConfig.MOMENTUM_PER_HEX = 1
 GameConfig.DODGE_MIN_DISTANCE = 2
@@ -116,6 +124,7 @@ GameConfig.ABILITIES = {
 	TAUNT = "Taunt",
 	RANGED = "Ranged",
 	AGILITY = "Agility",
+	MELEE = "Melee",
 }
 
 function GameConfig.HasAgility(hero)

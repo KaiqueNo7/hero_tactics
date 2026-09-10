@@ -295,12 +295,24 @@ function LobbyZoneBuilder.BuildTerrain(force)
 		adopted = true
 		built = {}
 
-		-- Adotar não é ignorar: zona da planta que ainda NÃO tem chão no place é
-		-- grupo novo da campanha, e essa precisa nascer. Busca recursiva porque
-		-- o place agrupa ilha e ponte em Models feitos à mão.
+		-- Adotar não é ignorar: zona da planta sem chão nenhum no place é grupo
+		-- novo da campanha, e essa precisa nascer. "Sem chão" é a pergunta
+		-- inteira, não só pelo nome da planta: a ilha montada à mão tem o nome
+		-- que o Campaign usa em `fight.island` (Temple, Boske, Forge...), e
+		-- procurar só por `<id>_Floor` levantava a ilha genérica POR CIMA dela.
+		-- Busca recursiva porque o place agrupa ilha e ponte em Models feitos à
+		-- mão, e no Workspace inteiro porque nada obriga esses Models a morarem
+		-- dentro da pasta da trilha.
+		local handBuilt = {}
+		for _, fight in ipairs(Campaign.FIGHTS) do
+			if fight.island then handBuilt[fight.group] = fight.island end
+		end
+
 		local novas = 0
 		for index, zone in ipairs(LobbyZones.ZONES) do
-			if not existing:FindFirstChild(zone.id .. "_Floor", true) then
+			local hand = handBuilt[zone.group]
+			if not existing:FindFirstChild(zone.id .. "_Floor", true)
+				and not (hand and Workspace:FindFirstChild(hand, true)) then
 				BuildIsland(zone, existing)
 				BuildBridge(zone, index, existing)
 				built[zone.id] = true

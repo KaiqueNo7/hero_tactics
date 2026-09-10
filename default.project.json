@@ -59,6 +59,9 @@
         "BattleClient": {
           "$path": "src/client/BattleClient.client.luau"
         },
+        "ChallengeClient": {
+          "$path": "src/client/ChallengeClient.client.luau"
+        },
         "MatchLogClient": {
           "$path": "src/client/MatchLogClient.client.luau"
         },

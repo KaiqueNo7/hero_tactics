@@ -65,20 +65,39 @@ end
 -- Esvaziar ANTES de devolver é de propósito: se o jogador cair entre a leitura e
 -- a limpeza, o pior caso é ver a comemoração duas vezes — melhor que perder uma
 -- conquista que ele nunca chegou a ver.
+-- LER E LIMPAR NUMA OPERAÇÃO SÓ. Era Get e depois Set, e entre os dois havia uma
+-- chamada de DataStore inteira cedendo: dois `claimRewards` na mesma janela liam
+-- a fila antes de qualquer um esvaziar, e a comemoração saía duas vezes. Nada era
+-- creditado duas vezes (moeda e XP entram na hora em que são ganhos, não aqui),
+-- mas a festa repetida parece bug de economia — que é pior do que ser um.
+--
+-- O `transform` do UpdateAsync roda com a fila travada, então a captura aqui
+-- dentro é o que garante que só UMA chamada leva o prêmio.
 function RewardQueueService.Take(player)
 	if not player then return nil end
 
-	local key = tostring(player.UserId)
-	local ok, data = SafeStore.Get(store, key, "leitura da fila de recompensa")
-	if not ok or IsEmpty(data) then return nil end
+	local taken = nil
 
-	SafeStore.Set(store, key, Empty(), "limpeza da fila de recompensa")
+	local ok = SafeStore.Update(store, tostring(player.UserId), function(old)
+		-- zerado a cada passagem: o SafeStore repete o transform na retentativa,
+		-- e o que vale é sempre a última leitura, não a da tentativa que falhou
+		taken = nil
+		if IsEmpty(old) then return nil end
 
-	return {
-		heroes = data.heroes or {},
-		xp = data.xp or 0,
-		coins = data.coins or 0,
-	}
+		taken = {
+			heroes = old.heroes or {},
+			xp = old.xp or 0,
+			coins = old.coins or 0,
+		}
+		return Empty()
+	end, ("retirada da fila de recompensa de %s"):format(player.Name))
+
+	-- A escrita falhou depois de o transform ter rodado: devolver o prêmio agora
+	-- mostraria uma comemoração que continua na fila, e ela voltaria no próximo
+	-- login. Melhor mostrar só quando a limpeza pegou.
+	if not ok then return nil end
+
+	return taken
 end
 
 return RewardQueueService

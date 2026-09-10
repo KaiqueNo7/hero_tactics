@@ -57,24 +57,14 @@ local function Load(player)
 	Push(player)
 end
 
--- result: "win" | "loss" | "draw". survivors só pesa na vitória.
 -- Cede (UpdateAsync), então chame de dentro de um task.spawn se estiver no meio
 -- da resolução de uma partida.
-function ProgressionService.AwardMatchXp(player, result, survivors, vsBot)
+function ProgressionService.AwardXp(player, amount)
 	if not player then return end
 
 	local userId = player.UserId
 
-	-- Moedas da vitória: independem do XP e são pagas mesmo se a gravação do XP
-	-- falhar logo abaixo. São dois DataStores diferentes; amarrar um ao outro só
-	-- faria um soluço num deles levar o outro junto.
-	local matchCoins = Progression.MatchCoins(result)
-	if matchCoins > 0 then
-		CoinService.Award(userId, matchCoins)
-		RewardQueueService.Push(userId, { coins = matchCoins })
-	end
-
-	local amount = Progression.MatchReward(result, survivors, vsBot)
+	amount = math.floor(tonumber(amount) or 0)
 	if amount <= 0 then return end
 
 	-- guardado ANTES de somar o XP: é a comparação com o nível de depois que diz
@@ -110,6 +100,22 @@ function ProgressionService.AwardMatchXp(player, result, survivors, vsBot)
 
 	RewardQueueService.Push(userId, { xp = amount })
 	Push(player, amount)
+end
+
+-- result: "win" | "loss" | "draw". survivors só pesa na vitória.
+function ProgressionService.AwardMatchXp(player, result, survivors, vsBot)
+	if not player then return end
+
+	-- Moedas da vitória: independem do XP e são pagas mesmo se a gravação do XP
+	-- falhar logo abaixo. São dois DataStores diferentes; amarrar um ao outro só
+	-- faria um soluço num deles levar o outro junto.
+	local matchCoins = Progression.MatchCoins(result)
+	if matchCoins > 0 then
+		CoinService.Award(player.UserId, matchCoins)
+		RewardQueueService.Push(player.UserId, { coins = matchCoins })
+	end
+
+	ProgressionService.AwardXp(player, Progression.MatchReward(result, survivors, vsBot))
 end
 
 function ProgressionService.GetTotalXp(userId)

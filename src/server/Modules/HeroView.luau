@@ -353,6 +353,7 @@ local SKILL_SOUNDS = {
 	dodge = "SkillDodge",
 	aegis = "SkillAegis",
 	weakPoint = "SkillWeakPoint",
+	shadowSwap = "SkillShadowSwap",
 }
 
 local SKILL_SOUND_FALLBACK = {
@@ -474,13 +475,30 @@ local SKILL_EFFECTS = {
 	aegisBreak     = { color = Color3.fromRGB(255, 240, 200), texture = FX_SPARK, shape = "burst", count = 28, size = 2.4, speed = 20 },
 
 	-- ===== WREN =====
-	-- Estoura NO ALVO (é lá que a skill chama o Effect), não nela: o tiro dela
-	-- já tem a bolinha do ShowRangedAttack cruzando o tabuleiro, e o que falta
-	-- é a marca do impacto na outra ponta. Verde-espectral, a cor dela.
+	-- Estoura NO ALVO (é lá que a skill chama o Effect), não nela: o tiro dela já
+	-- tem o tracejante do Bolt.Tracer cruzando o tabuleiro, e o que falta é a
+	-- marca do impacto na outra ponta. Verde-espectral, a cor dela.
 	longShot = { color = Color3.fromRGB(120, 225, 190), texture = FX_SPARK, shape = "burst", count = 24, size = 2.6, speed = 17 },
 
 	raiseSkulls = { color = Color3.fromRGB(120, 245, 110), texture = FX_SMOKE, shape = "rise",  count = 24, size = 2.8, speed = 8 },
 	estopim     = { color = Color3.fromRGB(150, 255, 120), texture = FX_SMOKE, shape = "burst", count = 32, size = 3.2, speed = 20 },
+
+	-- ===== RYDER =====
+	-- As pistolas carregando: faísca ciano que SOBE, mesma linguagem do vengeance
+	-- e do stanceMelee — é um estado ligando pro resto do turno, não uma pancada.
+	-- Curta e estreita de propósito: dispara no passo, e passo é a coisa mais
+	-- frequente do jogo.
+	gunCharge     = { color = Color3.fromRGB(120, 235, 255), texture = FX_SPARK, shape = "rise",  count = 14, size = 1.9, speed = 10 },
+
+	-- ===== SHIN =====
+	-- A fumaça da Troca estoura nas DUAS casas, e é escura de propósito: some
+	-- rápido e não disputa leitura com nenhum golpe. As duas posturas usam a
+	-- mesma forma "rise" (é um estado ligando, não uma pancada) e se separam
+	-- pela cor e pela textura — lâmina fria e faísca curta pro Melee, rajada
+	-- pálida e larga pro Ranged.
+	shadowSwap    = { color = Color3.fromRGB(48, 44, 70),   texture = FX_SMOKE, shape = "burst", count = 26, size = 2.6, speed = 16 },
+	stanceMelee   = { color = Color3.fromRGB(190, 235, 255), texture = FX_SPARK, shape = "rise",  count = 12, size = 1.8, speed = 9 },
+	stanceRanged  = { color = Color3.fromRGB(215, 215, 235), texture = FX_SMOKE, shape = "rise",  count = 14, size = 2.2, speed = 11 },
 }
 
 -- ===== CORTE DO BLADE (IMAGEM ANIMADA) =====
@@ -638,9 +656,6 @@ local Bolt = {
 	ARCANE_TAIL = Color3.fromRGB(120, 205, 255),
 	SPELL_TAIL = Color3.fromRGB(190, 255, 235),
 	STYLES = { gustPush = "wind", clean = "arcane", longShot = "spell" },
-	SLASH_SPEED = 26,
-	SLASH_MIN_TIME = 0.35,
-	SLASH_MAX_TIME = 0.9,
 
 	TRAIL_WIDTH = NumberSequence.new({
 		NumberSequenceKeypoint.new(0, 1),
@@ -1001,7 +1016,9 @@ function Bolt.Launch(view, fromPos, toPos, color, speed, style)
 end
 
 -- Bolinha de energia viajando do atacante até o alvo + retícula no impacto,
--- pra deixar ataques à distância (Ranged) mais perceptíveis.
+-- pra deixar ataques à distância (Ranged) mais perceptíveis. A Wren é a exceção:
+-- o tiro dela é o tracejante montado no place (ver Bolt.Tracer, lá embaixo, ao
+-- lado do carregador de VFX que ele precisa).
 function HeroView.ShowRangedAttack(attacker, target)
 	if not attacker.part or not target.part then return end
 
@@ -1013,70 +1030,27 @@ function HeroView.ShowRangedAttack(attacker, target)
 	local toPos = target.part.Position
 	local style = Bolt.Style(attacker)
 
+	local travel = math.clamp((toPos - fromPos).Magnitude / Bolt.SPEED,
+		Bolt.MIN_TIME, Bolt.MAX_TIME)
+
+	-- `style` e não o nome do herói: "spell" é o estilo que o catálogo do Bolt
+	-- amarra ao longShot, então quem herdar a skill um dia herda o tracejante
+	-- junto. Falhando o VFX do place (pasta renomeada, nome trocado), o
+	-- VfxTemplate avisa no output e a bolinha de sempre assume — o tiro nunca
+	-- fica invisível.
+	local firedTracer = style == "spell" and Bolt.Tracer(view, fromPos, toPos, travel)
+
 	if style == "spell" then
 		HeroView.PlaySkillEffect(attacker, "longShot")
 	end
 
-	local travel = Bolt.Launch(view, fromPos, toPos, color, nil, style)
+	if not firedTracer then
+		Bolt.Launch(view, fromPos, toPos, color, nil, style)
+	end
+
 	Bolt.Reticle(view, toPos - Vector3.new(0, ANCHOR_LIFT * 0.6, 0), color, travel)
 
 	return travel
-end
-
-function Bolt.SlashTemplate()
-	local folder = ReplicatedStorage:FindFirstChild("VFX")
-	folder = folder and folder:FindFirstChild("Blade")
-
-	local template = folder and folder:FindFirstChild("Slash")
-	return (template and template:IsA("BasePart")) and template or nil
-end
-
-function HeroView.ShowLineAttack(attacker, hexIds)
-	local view = attacker.view
-	if not (view and attacker.part and hexIds and #hexIds > 0) then return end
-
-	local color = Bolt.Color(attacker)
-	local farHex = hexIds[#hexIds]
-	local target = HexGrid.GetWorldPosition(farHex, view.origin) + Vector3.new(0, ANCHOR_LIFT, 0)
-	local from = attacker.part.Position
-	local template = Bolt.SlashTemplate()
-
-	if not template then
-		HeroView.FlashAttackRange(view, hexIds, color, color)
-		Bolt.Launch(view, from, target, color, Bolt.SPEED * 2.4)
-		return
-	end
-
-	local level = math.max(from.Y, target.Y)
-	local start = Vector3.new(from.X, level, from.Z)
-	local finish = Vector3.new(target.X, level, target.Z)
-	local ahead = (finish - start)
-	if ahead.Magnitude < 0.01 then return end
-	ahead = ahead.Unit
-
-	local travel = math.clamp((finish - start).Magnitude / Bolt.SLASH_SPEED,
-		Bolt.SLASH_MIN_TIME, Bolt.SLASH_MAX_TIME)
-
-	local slash = template:Clone()
-	slash.Name = "BladeSlash"
-	slash.Color = color
-	slash.Anchored = true
-	slash.CanCollide = false
-	slash.CanQuery = false
-	slash.CanTouch = false
-	slash.CastShadow = false
-	slash.Transparency = 0.08
-	slash.CFrame = CFrame.lookAt(start, start + ahead, Vector3.yAxis)
-	slash.Parent = view.heroesFolder
-
-	TweenService:Create(slash, TweenInfo.new(travel, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		CFrame = CFrame.lookAt(finish, finish + ahead, Vector3.yAxis),
-	}):Play()
-	TweenService:Create(slash, TweenInfo.new(travel * 1.5, Enum.EasingStyle.Linear), {
-		Transparency = 1,
-	}):Play()
-
-	Debris:AddItem(slash, travel * 1.8)
 end
 
 -- ===== HELPERS =====
@@ -2008,6 +1982,67 @@ local function VfxTemplate(path, label)
 	vfxTemplates[key] = template
 	return template
 end
+
+-- ===== O TRACEJANTE DA WREN =====
+-- O tiro dela deixou de ser a bolinha genérica e passou a ser o risco montado à
+-- mão em ReplicatedStorage.VFX.Wren.Bullet_Tracer — oito esferas neon esticadas,
+-- ~16 studs de comprimento, sem emissor e sem animação própria. Quem anima é
+-- daqui: o risco cruza o tabuleiro e some.
+--
+-- ELE MORA NO EIXO Z. O modelo é fino em X e Y e comprido em Z, e o pivô dele
+-- já está alinhado com esse comprimento (foi assim que a caixa envolvente saiu
+-- 0.74 x 0.74 x 16.30). Por isso `CFrame.lookAt` basta pra apontar: o risco cai
+-- em cima da linha do tiro sem correção de rotação nenhuma.
+--
+-- ANDA SOLDADO, não peça por peça. O PrepareVfx ancora tudo; aqui a primeira
+-- peça vira o boneco que o tween move e as outras sete soltam a âncora e
+-- acompanham por WeldConstraint. É o mesmo arranjo da bolha da Kira, e é o que
+-- evita um laço por quadro pra reposicionar oito peças.
+local WREN_TRACER_HOME = { "VFX", "Wren", "Bullet_Tracer" }
+
+function Bolt.Tracer(view, fromPos, toPos, travel)
+	local template = VfxTemplate(WREN_TRACER_HOME, "o tiro da Wren sai com a bolinha generica")
+	if not template then return false end
+
+	local _, size = template:GetBoundingBox()
+	local tracer = template:Clone()
+
+	-- parenteia ANTES de posicionar e soldar: mesma ordem do AttachObjectModel e
+	-- da bolha da Kira, que é a que engata a solda
+	tracer.Parent = view.heroesFolder
+
+	-- Meio comprimento pra trás: quem chega na casa do alvo é a PONTA do risco,
+	-- não o meio dele. O `+Z` é o que sobra atrás no lookAt (a frente dele é -Z).
+	local aim = CFrame.lookAt(fromPos, toPos)
+	local tail = CFrame.new(0, 0, size.Z / 2)
+	tracer:PivotTo(aim * tail)
+
+	local root = tracer:FindFirstChildWhichIsA("BasePart", true)
+	if not root then
+		tracer:Destroy()
+		return false
+	end
+
+	for _, piece in ipairs(tracer:GetDescendants()) do
+		if piece:IsA("BasePart") and piece ~= root then
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = root
+			weld.Part1 = piece
+			weld.Parent = root
+			piece.Anchored = false
+		end
+	end
+
+	-- A direção não muda no caminho, só a posição: o destino é o mesmo risco
+	-- deslocado pelo vetor do tiro. Translação pura, sem remontar CFrame nenhum.
+	TweenService:Create(root, TweenInfo.new(travel, Enum.EasingStyle.Linear), {
+		CFrame = root.CFrame + (toPos - fromPos),
+	}):Play()
+
+	Debris:AddItem(tracer, travel + 0.15)
+	return true
+end
+
 
 local function FireCircleTemplate()
 	return VfxTemplate(FIRE_CIRCLE_HOME, "o giro do Karo sai sem o anel de fogo")
@@ -3226,6 +3261,46 @@ function HeroView.UpdateStats(hero)
 		end
 		chill.Visible = frozen
 	end
+end
+
+-- ===== TROCA DE SOMBRA (SHIN) =====
+-- Some, troca, volta. O sumiço é do DESENHO (ImageTransparency), não da peça: o
+-- crachá de vida, o anel de time e a área clicável continuam onde estão, e é o
+-- que impede a troca de parecer que o herói morreu por meio segundo.
+--
+-- Só ESPERA e desenha; quem move é o MatchManager, entre a ida e a volta desta
+-- função. Rápido de propósito — meio segundo somado, porque isto acontece no
+-- meio de um turno e não é uma finalização.
+local Swap = {
+	FADE = 0.12,
+	HOLD = 0.1,
+}
+
+function Swap.Puff(hero, to)
+	HeroView.PlaySkillEffect(hero, "shadowSwap")
+
+	local gui = hero.part and hero.part:FindFirstChild("Sprite")
+	local image = gui and gui:FindFirstChild("Frame")
+	if not image then return end
+
+	TweenService:Create(image, TweenInfo.new(Swap.FADE, Enum.EasingStyle.Quad), {
+		ImageTransparency = to,
+	}):Play()
+end
+
+function HeroView.PlaySwap(one, other)
+	Swap.Puff(one, 1)
+	Swap.Puff(other, 1)
+	HeroView.PlaySkillSound("shadowSwap", one.view)
+
+	task.wait(Swap.FADE + Swap.HOLD)
+end
+
+function HeroView.FinishSwap(one, other)
+	Swap.Puff(one, 0)
+	Swap.Puff(other, 0)
+
+	task.wait(Swap.FADE)
 end
 
 -- ===== MOVIMENTO =====

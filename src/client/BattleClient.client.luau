@@ -26,13 +26,8 @@ local MOVE_COLOR = Color3.fromRGB(110, 220, 130)
 local ATTACK_COLOR = Color3.fromRGB(230, 90, 90)
 local BARREL_COLOR = Color3.fromRGB(232, 172, 74) -- alvo neutro: nem inimigo, nem passagem
 
--- Lápide inimiga: roxo, não o vermelho de herói vivo — mesma cor da moldura que
--- o HeroView desenha na lápide no servidor. Quebrar isto não é um ataque comum
--- (não sofre contra-ataque, não revida), e a cor avisa isso antes do clique,
--- igual o âmbar do barril avisa "isto também não é gente".
 local GRAVE_ATTACK_COLOR = Color3.fromRGB(178, 140, 210)
 
--- cor base caso o attribute BaseColor não exista (defensivo)
 local COLOR_A = GameConfig.HEX_COLOR_A
 local COLOR_B = GameConfig.HEX_COLOR_B
 
@@ -776,9 +771,15 @@ showHeroDetail = function(hero)
 	end
 	detailStatus.Text = table.concat(statusBits, "   •   ")
 
+	-- A Ability sai do SNAPSHOT, não da ficha do catálogo: a postura do Shin troca
+	-- Ranged por Melee em jogo, e ler o catálogo aqui deixaria a ficha jurando
+	-- "Ranged" com o herói batendo de perto. Pra todo mundo o snapshot repete o
+	-- que o catálogo já dizia, então isto não muda nada nos outros.
 	local lines = {}
-	if data.ability and HeroData.ABILITY_INFO[data.ability] then
-		table.insert(lines, ("•  %s — %s"):format(data.ability, HeroData.GetAbilityDescription(data)))
+	local ability = hero.ability or data.ability
+	if ability and HeroData.ABILITY_INFO[ability] then
+		local live = { ability = ability, attackRange = hero.attackRange }
+		table.insert(lines, ("•  %s — %s"):format(ability, HeroData.GetAbilityDescription(live)))
 	end
 	for _, key in ipairs(data.abilities) do
 		local info = HeroData.SKILL_INFO[key]
@@ -1444,7 +1445,20 @@ confirmBackdrop.MouseButton1Click:Connect(closeConfirm)
 keepPlayingButton.MouseButton1Click:Connect(closeConfirm)
 
 surrenderButton.MouseButton1Click:Connect(function()
-	if not state or (state.phase ~= "battle" and state.phase ~= "placement") then return end
+	if not state then return end
+
+	-- Desafio encerrado também abre a confirmação: aqui o botão é a saída
+	-- garantida pro lobby, e não a desistência. Sem este caso ele ficava visível
+	-- na tela de fim e não respondia a toque nenhum.
+	if state.phase == "finished" and state.challenge then
+		confirmTitle.Text = "Sair do desafio?"
+		giveUpButton.Text = "Sair"
+		confirmText.Text = "Você volta pro lobby. Seu resultado já foi salvo."
+		confirmLayer.Visible = true
+		return
+	end
+
+	if state.phase ~= "battle" and state.phase ~= "placement" then return end
 
 	local placing = state.phase == "placement"
 	confirmTitle.Text = placing and "Abandonar a partida?" or "Desistir da partida?"
@@ -1703,6 +1717,184 @@ resultTeamLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 resultTeamLayout.Padding = UDim.new(0, RESULT_CARD_GAP)
 resultTeamLayout.SortOrder = Enum.SortOrder.LayoutOrder
 resultTeamLayout.Parent = resultTeam
+
+-- ===== ESTRELAS DO CONFRONTO =====
+-- Tudo numa tabela só, e não em locais soltos: este arquivo está a poucos nomes
+-- do teto de 200 locais do Luau (ver o topo). Uma tabela custa UM.
+--
+-- A faixa e a lista de motivos ficam entre o subtítulo e a fileira de heróis, e
+-- só existem quando o snapshot traz `fightStars` — em PvP e em treino livre o
+-- painel continua exatamente como era, incluindo a altura.
+local starFx = {
+	SIZE = 46,
+	GAP = 8,
+	ROW_TOP = 74,
+	REASON_TOP = 126,
+	BLOCK_H = 104,
+	ON = Color3.fromRGB(255, 206, 104),
+	OFF = Color3.fromRGB(58, 62, 76),
+	GLOW = Color3.fromRGB(255, 246, 214),
+	token = 0,
+}
+
+starFx.row = Instance.new("Frame")
+starFx.row.Name = "FightStarsRow"
+starFx.row.Position = UDim2.new(0, 0, 0, starFx.ROW_TOP)
+starFx.row.Size = UDim2.new(1, 0, 0, starFx.SIZE)
+starFx.row.BackgroundTransparency = 1
+starFx.row.Visible = false
+starFx.row.Parent = resultPanel
+
+starFx.rowLayout = Instance.new("UIListLayout")
+starFx.rowLayout.Name = "FightStarsLayout"
+starFx.rowLayout.FillDirection = Enum.FillDirection.Horizontal
+starFx.rowLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+starFx.rowLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+starFx.rowLayout.Padding = UDim.new(0, starFx.GAP)
+starFx.rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
+starFx.rowLayout.Parent = starFx.row
+
+starFx.reasons = Instance.new("Frame")
+starFx.reasons.Name = "FightStarReasons"
+starFx.reasons.Position = UDim2.new(0, 0, 0, starFx.REASON_TOP)
+starFx.reasons.Size = UDim2.new(1, 0, 0, starFx.BLOCK_H - (starFx.REASON_TOP - starFx.ROW_TOP))
+starFx.reasons.BackgroundTransparency = 1
+starFx.reasons.Visible = false
+starFx.reasons.Parent = resultPanel
+
+starFx.reasonsLayout = Instance.new("UIListLayout")
+starFx.reasonsLayout.Name = "FightStarReasonsLayout"
+starFx.reasonsLayout.FillDirection = Enum.FillDirection.Vertical
+starFx.reasonsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+starFx.reasonsLayout.Padding = UDim.new(0, 2)
+starFx.reasonsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+starFx.reasonsLayout.Parent = starFx.reasons
+
+-- A estrela é o glifo com gradiente dourado e contorno escuro, e não um asset:
+-- o projeto ainda não tem imagem de estrela, e o glifo com essas três camadas
+-- lê bem em qualquer fundo de arena. Trocar por ImageLabel depois não muda a
+-- animação, que mexe em tamanho, rotação e transparência.
+function starFx.Build(index, lit)
+	local star = Instance.new("TextLabel")
+	star.Name = ("Star%d"):format(index)
+	star.LayoutOrder = index
+	star.Size = UDim2.fromOffset(starFx.SIZE, starFx.SIZE)
+	star.BackgroundTransparency = 1
+	star.Text = "★"
+	star.TextScaled = true
+	star.Font = Enum.Font.GothamBlack
+	star.TextColor3 = lit and starFx.ON or starFx.OFF
+	star.TextTransparency = 1
+	star.Parent = starFx.row
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Name = "StarOutline"
+	stroke.Color = Color3.fromRGB(26, 28, 38)
+	stroke.Thickness = 2
+	stroke.Transparency = 1
+	stroke.Parent = star
+
+	if lit then
+		local shine = Instance.new("UIGradient")
+		shine.Name = "StarShine"
+		shine.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, starFx.GLOW),
+			ColorSequenceKeypoint.new(0.5, starFx.ON),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(214, 150, 44)),
+		})
+		shine.Rotation = 90
+		shine.Parent = star
+	end
+
+	return star, stroke
+end
+
+function starFx.Reason(entry, order)
+	local line = Instance.new("TextLabel")
+	line.Name = entry.done and ("ReasonDone%d"):format(order) or ("ReasonMissed%d"):format(order)
+	line.LayoutOrder = order
+	line.Size = UDim2.new(1, -24, 0, 15)
+	line.BackgroundTransparency = 1
+	line.Font = GameConfig.UI_FONT_BODY
+	line.TextSize = 12
+	line.TextXAlignment = Enum.TextXAlignment.Center
+	line.Text = (entry.done and "✓  " or "✗  ") .. entry.text
+	line.TextColor3 = entry.done and Color3.fromRGB(150, 225, 175) or Color3.fromRGB(150, 160, 182)
+	line.TextTransparency = 1
+	line.Parent = starFx.reasons
+	return line
+end
+
+-- Uma de cada vez, com atraso entre elas: três estrelas aparecendo juntas viram
+-- um borrão só, e o que dá peso é a contagem. A conquistada entra grande e
+-- encolhe com Back (o estalo); a perdida entra sem estalo e sem brilho, porque
+-- comemorar o que faltou é confuso.
+function starFx.Play(entries, earned)
+	starFx.token += 1
+	local token = starFx.token
+
+	for index = 1, #entries do
+		local lit = index <= earned
+		local star, stroke = starFx.Build(index, lit)
+
+		task.delay(0.18 + (index - 1) * 0.22, function()
+			if starFx.token ~= token or not star.Parent then return end
+
+			star.Size = UDim2.fromOffset(starFx.SIZE * (lit and 2.1 or 1.25),
+				starFx.SIZE * (lit and 2.1 or 1.25))
+			star.Rotation = lit and -28 or -8
+
+			local style = lit and Enum.EasingStyle.Back or Enum.EasingStyle.Quad
+			TweenService:Create(star, TweenInfo.new(lit and 0.34 or 0.22, style,
+				Enum.EasingDirection.Out), {
+				Size = UDim2.fromOffset(starFx.SIZE, starFx.SIZE),
+				Rotation = 0,
+				TextTransparency = lit and 0 or 0.45,
+			}):Play()
+
+			TweenService:Create(stroke, TweenInfo.new(0.22), {
+				Transparency = lit and 0 or 0.5,
+			}):Play()
+
+			if lit then PlayUiSound("SkillGoodLuck") end
+		end)
+	end
+
+	for order, entry in ipairs(entries) do
+		local line = starFx.Reason(entry, order)
+		task.delay(0.18 + #entries * 0.22 + order * 0.08, function()
+			if starFx.token ~= token or not line.Parent then return end
+			TweenService:Create(line, TweenInfo.new(0.25), { TextTransparency = 0 }):Play()
+		end)
+	end
+end
+
+function starFx.Clear()
+	starFx.token += 1
+	for _, child in ipairs(starFx.row:GetChildren()) do
+		if child:IsA("GuiObject") then child:Destroy() end
+	end
+	for _, child in ipairs(starFx.reasons:GetChildren()) do
+		if child:IsA("GuiObject") then child:Destroy() end
+	end
+	starFx.row.Visible = false
+	starFx.reasons.Visible = false
+end
+
+-- Devolve quanto o resto do painel precisa descer. Zero quando não há estrelas,
+-- e é o que mantém PvP e treino livre com o layout de sempre.
+function starFx.Render(state)
+	starFx.Clear()
+
+	local info = state and state.fightStars
+	if not (info and info.reasons) then return 0 end
+
+	starFx.row.Visible = true
+	starFx.reasons.Visible = true
+	starFx.Play(info.reasons, info.earned or 0)
+
+	return starFx.BLOCK_H
+end
 
 local resultPage = "mine"
 local renderResultTeam
@@ -2217,9 +2409,22 @@ function renderResultTeam(state)
 	-- O painel acompanha a fileira. Com o agrupamento são sempre
 	-- HEROES_PER_PLAYER cards, mas a conta fica: um herói invocado cujo pai não
 	-- esteja na lista ainda pode virar card solto (ver groupHeroes).
+	-- As estrelas entram entre o subtítulo e a fileira, então o painel cresce e a
+	-- fileira desce pelo MESMO número. Sem `fightStars` no snapshot o deslocamento
+	-- é zero e o painel fica idêntico ao que sempre foi.
+	local starBlock = showingMine and starFx.Render(state) or 0
+	resultTeam.Position = UDim2.new(0, 0, 0, RESULT_ROW_TOP + starBlock)
+
+	-- As setas são posicionadas na altura do MEIO dos cards, então elas descem
+	-- junto. Sem isto elas ficavam boiando na altura das estrelas.
+	for _, arrow in ipairs({ resultPrev, resultNext }) do
+		arrow.Position = UDim2.new(arrow.Position.X.Scale, arrow.Position.X.Offset,
+			0, RESULT_ROW_TOP + starBlock + RESULT_CARD_H / 2)
+	end
+
 	local count = math.max(#mine, 1)
 	local width = 24 + count * RESULT_CARD_W + (count - 1) * RESULT_CARD_GAP
-	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412)
+	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412 + starBlock)
 
 	-- O selo é por uid, e um PEDAÇO pode ter sido o destaque da partida. Sem
 	-- olhar os filhos, o card do Golem ficaria sem faixa nenhuma enquanto o
@@ -2648,10 +2853,10 @@ do
 end
 
 -- ===== DESTAQUES =====
--- Declarado aqui, e não junto do renderShieldChoice lá embaixo, porque o
+-- Declarado aqui, e não junto do renderAllyChoice lá embaixo, porque o
 -- clearHighlights logo abaixo já precisa dele: em Lua uma função só enxerga
 -- local declarado ANTES dela, e mais tarde viraria uma global silenciosa.
-local shieldOptionUids = {} -- [uid] = true, lido pelo clique
+local allyOptionUids = {} -- [uid] = true, lido pelo clique
 
 local function clearHighlights()
 	for part in pairs(savedColors) do
@@ -2664,7 +2869,7 @@ local function clearHighlights()
 	-- A casa azul da Égide é pintada pelo mesmo `paint`, então ela já saiu no
 	-- laço acima junto com passo e ataque — aqui só cai a lista de quem o clique
 	-- aceita. Quem reacende é o fim do selectHero.
-	shieldOptionUids = {}
+	allyOptionUids = {}
 end
 
 -- O tabuleiro vem no snapshot: com várias partidas rodando, procurar "Board"
@@ -2695,7 +2900,7 @@ local function paint(hexId, color)
 	end
 end
 
--- ===== ESCOLHA DO ESCUDO DA KIRA =====
+-- ===== ESCOLHA DE ALIADO (ÉGIDE DA KIRA, TROCA DO SHIN) =====
 -- A CASA do aliado, pelo mesmo `paint` do passo e do ataque. É a linguagem que o
 -- jogador já lê no tabuleiro — casa tingida = ação possível ali —, e sai de
 -- graça no clearHighlights junto com as outras, sem bookkeeping próprio.
@@ -2704,25 +2909,33 @@ end
 -- então nunca é destino de movimento (o isFree recusa) nem alvo de ataque (é do
 -- mesmo time). As três listas são disjuntas por construção.
 --
--- Sem texto na tela: o azul já diz o que precisa ser dito, e um aviso fixo no
--- topo competia com o banner de turno e com a fila de mensagens.
-local SHIELD_CHOICE_COLOR = Color3.fromRGB(70, 150, 235)
+-- Sem texto na tela: a cor já diz o que precisa ser dito, e um aviso fixo no
+-- topo competia com o banner de turno e com a fila de mensagens. Uma cor por
+-- `kind`, e é a única coisa que o cliente sabe sobre a diferença entre as duas
+-- habilidades — quem pode ser escolhido e o que acontece no clique é do servidor.
+local ALLY_CHOICE_COLOR = {
+	shield = Color3.fromRGB(70, 150, 235),
+	swap = Color3.fromRGB(150, 120, 235),
+}
 
--- `selectedUid` é quem está selecionado AGORA. A oferta só acende quando a
--- própria Kira está na mão do jogador: ela deixou de ser um modo à parte que
--- nasce no início do turno e virou mais uma coisa que a seleção dela revela,
--- junto das casas de passo e dos inimigos no alcance.
-local function renderShieldChoice(state, selectedUid)
-	shieldOptionUids = {}
+-- `selectedUid` é quem está selecionado AGORA. A oferta só acende quando o dono
+-- dela está na mão do jogador: ela não é um modo à parte que nasce no início do
+-- turno, é mais uma coisa que a seleção do herói revela, junto das casas de
+-- passo e dos inimigos no alcance.
+local function renderAllyChoice(state, selectedUid)
+	allyOptionUids = {}
 
-	local pending = state and state.pendingShield
+	local pending = state and state.pendingAlly
 	if not pending or pending.sourceUid ~= selectedUid then return end
+
+	local color = ALLY_CHOICE_COLOR[pending.kind]
+	if not color then return end
 
 	for _, uid in ipairs(pending.options or {}) do
 		local hero = heroByUid(uid)
 		if hero and hero.isAlive then
-			shieldOptionUids[uid] = true
-			paint(hero.position, SHIELD_CHOICE_COLOR)
+			allyOptionUids[uid] = true
+			paint(hero.position, color)
 		end
 	end
 end
@@ -2855,11 +3068,14 @@ local function selectHero(uid)
 		end
 	end
 
-	-- A Égide entra AQUI, no mesmo lugar que as casas de passo e os inimigos no
-	-- alcance: selecionar a Kira revela as três coisas de uma vez. Não é modo
-	-- separado nem botão de habilidade — é mais uma opção da seleção dela, e
-	-- some junto com o resto quando ela é desselecionada (ver clearHighlights).
-	renderShieldChoice(state, uid)
+	-- A escolha de aliado entra AQUI, no mesmo lugar que as casas de passo e os
+	-- inimigos no alcance: selecionar a Kira ou o Shin revela as três coisas de
+	-- uma vez. Não é modo separado nem botão de habilidade — é mais uma opção da
+	-- seleção deles, e some junto com o resto quando são desselecionados (ver
+	-- clearHighlights). Depois de andar continua valendo: a oferta é do turno, e
+	-- este render roda a cada nova seleção, inclusive a que vem do snapshot que
+	-- o passo acabou de gerar.
+	renderAllyChoice(state, uid)
 end
 
 -- ===== CLIQUES =====
@@ -2916,33 +3132,34 @@ mouse.Button1Down:Connect(function()
 		return
 	end
 
-	-- Casa azul da Égide: clicar no aliado destacado dá o escudo a ele. Também
-	-- vem ANTES da seleção normal, e pelo motivo oposto ao da promoção — aqui o
-	-- alvo é um herói MEU e vivo, que é exatamente o que a seleção comum captura;
-	-- sem este desvio, clicar no elegível só o selecionaria.
+	-- Casa tingida da escolha de aliado: clicar no aliado destacado resolve a
+	-- oferta aberta (escudo da Kira, Troca do Shin). Também vem ANTES da seleção
+	-- normal, e pelo motivo oposto ao da promoção — aqui o alvo é um herói MEU e
+	-- vivo, que é exatamente o que a seleção comum captura; sem este desvio,
+	-- clicar no elegível só o selecionaria.
 	--
 	-- O destaque some na hora, sem esperar o snapshot: o servidor já vai fechar a
-	-- oferta, e deixar o azul aceso até a resposta chegar convidava a um segundo
+	-- oferta, e deixar a cor acesa até a resposta chegar convidava a um segundo
 	-- clique que não faria nada.
-	local shieldUid = nil
-	if heroUid and shieldOptionUids[heroUid] then
-		shieldUid = heroUid
+	local allyUid = nil
+	if heroUid and allyOptionUids[heroUid] then
+		allyUid = heroUid
 	elseif hexId then
-		for uid in pairs(shieldOptionUids) do
+		for uid in pairs(allyOptionUids) do
 			local option = heroByUid(uid)
 			if option and option.position == hexId then
-				shieldUid = uid
+				allyUid = uid
 				break
 			end
 		end
 	end
 
-	if shieldUid then
+	if allyUid then
 		-- some na hora, sem esperar o snapshot: o servidor já vai fechar a oferta,
 		-- e deixar o azul aceso até a resposta chegar convidava a um segundo
 		-- clique que não faria nada
 		clearHighlights()
-		GameAction:FireServer("shield", shieldUid)
+		GameAction:FireServer("allyChoice", allyUid)
 		return
 	end
 
@@ -3147,6 +3364,25 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 
 	if state.finisher and state.finisher.final and state.phase ~= "finished" then
 		resultFx.setScene("slowmo")
+	end
+
+	if state.phase == "finished" and state.challenge then
+		gui.Enabled = true
+		turnPanel.Visible = false
+		timerLabel.Visible = false
+		counterBadge.Visible = false
+		endTurnButton.Visible = false
+		surrenderButton.Visible = true
+		resultPanel.Visible = false
+		resultFx.setScene(nil)
+		closeConfirm()
+		renderTeams(state)
+		clearPromotionHighlights()
+		clearHighlights()
+		selectedUid = nil
+		secondsLeft = nil
+		wasMyTurn = false
+		return
 	end
 
 	if state.phase == "finished" then

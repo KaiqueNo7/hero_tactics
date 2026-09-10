@@ -146,7 +146,6 @@ local function FakeApi()
 		Effect = function() end,
 		PlaySkillSound = function() end,
 		FlashAttackRange = function() end,
-		LineShot = function() end,
 		IceStorm = function() end,
 		FireCircle = function() end,
 		PoisonBomb = function() end,
@@ -174,7 +173,9 @@ local function FakeApi()
 
 		ApplyStatusEffect = function(hero, effect)
 			for index = #hero.statusEffects, 1, -1 do
-				if hero.statusEffects[index].type == effect.type then
+				local previous = hero.statusEffects[index]
+				if previous.type == effect.type then
+					if previous.attackBonus then hero.attack -= previous.attackBonus end
 					table.remove(hero.statusEffects, index)
 				end
 			end
@@ -182,6 +183,7 @@ local function FakeApi()
 			table.insert(log.status, effect)
 		end,
 		IsMyTurn = function() return true end,
+		HasAttacked = function() return log.attacked == true end,
 		SetFrenzyAura = function(_, on) log.frenzyAura = on end,
 		GetAllyByData = function(_, dataId) return log.board[dataId] end,
 		Summon = function(origin, dataId)
@@ -267,6 +269,50 @@ for _, data in ipairs(HeroData.CATALOG) do
 	if data.ability then
 		check("passiva conhecida: " .. data.name, HeroData.ABILITY_INFO[data.ability] ~= nil, data.ability)
 	end
+end
+
+do
+	local shin = HeroData.GetByName("Shin")
+	local first = GameConfig.SHIN_STANCES[GameConfig.SHIN_FIRST_STANCE]
+
+	check("Shin) postura inicial existe", first ~= nil, GameConfig.SHIN_FIRST_STANCE)
+	check("Shin) ficha do catalogo bate com a postura inicial",
+		shin ~= nil and first ~= nil
+			and shin.stance == GameConfig.SHIN_FIRST_STANCE
+			and shin.attack == first.attack
+			and shin.ability == first.ability,
+		shin and (shin.attack .. "/" .. tostring(shin.ability)))
+	check("Shin) alcance da ficha bate com a postura inicial",
+		shin ~= nil and first ~= nil and HeroData.GetAttackRange(shin) == first.attackRange,
+		shin and HeroData.GetAttackRange(shin))
+
+	-- Duas posturas que apontam uma pra outra: e o que garante que N trocas
+	-- alternam em vez de virar escada de ATK. Uma terceira postura ou um `next`
+	-- que aponte pra si mesmo cai aqui.
+	local seen, key = {}, GameConfig.SHIN_FIRST_STANCE
+	local steps = 0
+	while key and not seen[key] and steps < 10 do
+		seen[key] = true
+		steps += 1
+		local stance = GameConfig.SHIN_STANCES[key]
+		check("Shin) postura conhecida: " .. key, stance ~= nil)
+		check("Shin) postura tem texto de Ability: " .. key,
+			stance ~= nil and HeroData.ABILITY_INFO[stance.ability] ~= nil,
+			stance and stance.ability)
+		key = stance and stance.next
+	end
+
+	check("Shin) a troca volta pra postura inicial", key == GameConfig.SHIN_FIRST_STANCE, key)
+	check("Shin) o ciclo tem exatamente duas posturas", steps == 2, steps)
+
+	local ranged = GameConfig.SHIN_STANCES.ranged
+	local melee = GameConfig.SHIN_STANCES.melee
+	check("Shin) Melee bate mais forte e mais perto que Ranged",
+		melee.attack > ranged.attack and melee.attackRange < ranged.attackRange,
+		("%d@%d vs %d@%d"):format(melee.attack, melee.attackRange, ranged.attack, ranged.attackRange))
+	check("Shin) so o Ranged conta como ataque a distancia",
+		GameConfig.IsRangedAttack(ranged.attackRange)
+			and not GameConfig.IsRangedAttack(melee.attackRange))
 end
 
 if lineA then
@@ -396,6 +442,45 @@ if lineA then
 	check("fogo acende na casa de origem", table.find(log.flames, lineA) ~= nil)
 	check("fogo acende na casa atravessada", table.find(log.flames, lineB) ~= nil)
 	check("fogo nao acende na casa de destino", table.find(log.flames, lineC) == nil)
+
+	local fury = FakeHero(12, "A", lineA)
+	api = FakeApi()
+	local function StepOnFlames(count)
+		Skills.flameFury.apply({
+			hero = fury,
+			movedHero = fury,
+			api = api,
+			enteredFlameCount = count,
+		})
+	end
+
+	StepOnFlames(1)
+	local afterFirst = fury.baseAttack + GameConfig.FLAME_FURY_ATTACK
+	check("Furor: primeira chama soma na ficha", fury.attack == afterFirst, fury.attack)
+
+	StepOnFlames(1)
+	check("Furor: chama de outra caminhada acumula em cima",
+		fury.attack == math.min(afterFirst + GameConfig.FLAME_FURY_ATTACK,
+			GameConfig.FLAME_FURY_MAX_ATTACK), fury.attack)
+
+	local mesmoPasso = FakeHero(12, "A", lineA)
+	StepOnFlames = function(count)
+		Skills.flameFury.apply({
+			hero = mesmoPasso,
+			movedHero = mesmoPasso,
+			api = api,
+			enteredFlameCount = count,
+		})
+	end
+	StepOnFlames(2)
+	check("Furor: duas chamas na mesma caminhada contam as duas",
+		mesmoPasso.attack == math.min(
+			mesmoPasso.baseAttack + 2 * GameConfig.FLAME_FURY_ATTACK,
+			GameConfig.FLAME_FURY_MAX_ATTACK), mesmoPasso.attack)
+
+	StepOnFlames(3)
+	check("Furor: o teto segura o acumulo",
+		mesmoPasso.attack == GameConfig.FLAME_FURY_MAX_ATTACK, mesmoPasso.attack)
 
 	local blade = FakeHero(4, "A", lineA)
 	local front = FakeHero(1, "B", lineB)
@@ -589,15 +674,26 @@ do
 	-- A skill so ABRE a oferta: nao aplica escudo, nao bloqueia dano, nao conhece
 	-- a tabela de efeitos. Se um dia ela passar a fazer mais que isto, este check
 	-- cai junto.
-	local offered = nil
+	local offered, offeredKind = nil, nil
 	local api = FakeApi()
-	api.OfferShield = function(hero) offered = hero end
+	api.OfferAllyChoice = function(hero, kind) offered, offeredKind = hero, kind end
 	local kira = FakeHero(KIRA_ID, "A", lineA)
 	Skills.aegis.apply({ hero = kira, api = api, trigger = "onTurnStart" })
-	check("a Egide so abre a oferta, quem aplica e o servidor", offered == kira)
+	check("a Egide so abre a oferta, quem aplica e o servidor",
+		offered == kira and offeredKind == "shield", offeredKind)
+
+	-- A Troca do Shin entra pela MESMA porta da Égide: mesma oferta, mesmo clique
+	-- no aliado, mesma limpeza no BeginTurn. Só o `kind` separa as duas.
+	offered, offeredKind = nil, nil
+	local shinHero = FakeHero(HeroData.GetByName("Shin").id, "A", lineA)
+	check("a Troca dispara no inicio do turno",
+		Skills.shadowSwap ~= nil and table.find(Skills.shadowSwap.triggers, "onTurnStart") ~= nil)
+	Skills.shadowSwap.apply({ hero = shinHero, api = api, trigger = "onTurnStart" })
+	check("a Troca so abre a oferta, pela mesma porta da Egide",
+		offered == shinHero and offeredKind == "swap", offeredKind)
 
 	-- ===== QUEM PODE RECEBER =====
-	-- Espelha o ShieldOptionsFor do MatchManager: aliado VIVO, A UMA CASA dela e
+	-- Espelha o ALLY_CHOICE.shield.Options do MatchManager: aliado VIVO, A UMA CASA dela e
 	-- ainda sem escudo. Os tres filtros moram no mesmo lugar — e é o mesmo que
 	-- vira o destaque azul no cliente e a validação do servidor.
 	--
@@ -1999,6 +2095,38 @@ do
 		check("Zaro) a telemetria conta o ataque extra",
 			log.tally.extraAttacksFromWeakPoint == 1)
 
+		-- A REGRA DO SERVIDOR E A DO BOT NO MESMO LUGAR. O Ponto Fraco devolve o
+		-- ataque, e o AttackHero recusa o segundo golpe do mesmo Zaro no mesmo
+		-- inimigo ("JÁ ATINGIDO"). Enquanto o BotBrain nao sabia disso, ele
+		-- replanejava o golpe recusado a cada iteracao e o Zaro passava o turno
+		-- batendo no vazio. Este check falha se as duas regras se separarem.
+		local function PlanoDoZaro(jaAtingiu)
+			local zaro = FakeHero(ZARO_ID, "A", ladoCerto)
+			local alvo = FakeHero(6, "B", alvoHex)
+			alvo.weakPoint = 1
+
+			local board = FakeMatch({ zaro, alvo })
+			board.turn = { number = 3, moved = {}, attacked = {}, bonusMove = {}, weakChain = {} }
+			board.sides = { { index = 1, id = "A" }, { index = 2, id = "B" } }
+			board.sideIndexById = { A = 1, B = 2 }
+			if jaAtingiu then
+				board.turn.weakChain[zaro.uid] = { [alvo.uid] = true }
+			end
+
+			local ctx = BotBrain.BuildBoardContext(board, "A", { alvo })
+			return BotBrain.PlanFor(board, zaro, ctx), alvo
+		end
+
+		local planoLimpo, alvoLimpo = PlanoDoZaro(false)
+		check("Zaro) o bot mira o inimigo que ele ainda nao atingiu neste turno",
+			planoLimpo ~= nil and planoLimpo.target == alvoLimpo,
+			planoLimpo and planoLimpo.target and planoLimpo.target.name)
+
+		local planoRepetido = PlanoDoZaro(true)
+		check("Zaro) o bot NAO remira quem ele ja atingiu neste turno",
+			planoRepetido == nil or planoRepetido.target == nil,
+			planoRepetido and planoRepetido.target and planoRepetido.target.name)
+
 		local semRepeticao = true
 		for _ = 1, 200 do
 			if HexGrid.RandomDirection(3) == 3 then semRepeticao = false break end
@@ -2223,6 +2351,220 @@ do
 	for _, fight in ipairs(Campaign.FIGHTS) do everything[fight.hero] = true end
 	check("Campanha) campanha completa nao oferece proximo",
 		Campaign.NextOpen(everything) == nil)
+end
+
+do
+	local HeroChallenges = require(ReplicatedStorage.Modules.HeroChallenges)
+	local ChallengeService = require(ServerScriptService.Modules.ChallengeService)
+
+	local problems = ChallengeService.Validate()
+	check("Desafios) configuracao valida", #problems == 0, table.concat(problems, " | "))
+
+	local heroIds = HeroChallenges.HeroIds()
+	check("Desafios) existe ao menos um heroi com desafio", #heroIds > 0)
+
+	for _, heroId in ipairs(heroIds) do
+		local count = HeroChallenges.CountFor(heroId)
+		local name = HeroData.GetById(heroId).name
+
+		check(("Desafios) %s: o 1 abre com o heroi na mao"):format(name),
+			HeroChallenges.StateOf({}, true, 1) == "open")
+		check(("Desafios) %s: nada abre sem o heroi"):format(name),
+			HeroChallenges.StateOf({ 3, 3, 3 }, false, 1) == "locked")
+		check(("Desafios) %s: o 2 fica trancado sem o 1"):format(name),
+			HeroChallenges.StateOf({ 0 }, true, 2) == "locked")
+		check(("Desafios) %s: o 2 abre com uma estrela no 1"):format(name),
+			HeroChallenges.StateOf({ 1 }, true, 2) == "open")
+
+		local perfect = {}
+		for index = 1, count do perfect[index] = HeroChallenges.STARS_PER_CHALLENGE end
+		check(("Desafios) %s: %d estrelas em tudo é dominio"):format(name, count * 3),
+			HeroChallenges.IsMastered(perfect, heroId))
+
+		perfect[count] = HeroChallenges.STARS_PER_CHALLENGE - 1
+		check(("Desafios) %s: faltando uma estrela nao é dominio"):format(name),
+			not HeroChallenges.IsMastered(perfect, heroId))
+	end
+end
+
+-- ===== RYDER =====
+do
+	local ryderData = HeroData.GetByName("Ryder")
+
+	check("Ryder) ficha de partida", ryderData ~= nil
+		and ryderData.hp == 19 and ryderData.attack == 2
+		and ryderData.ability == GameConfig.ABILITIES.AGILITY,
+		ryderData and ("%d HP / %d ATK / %s"):format(ryderData.hp, ryderData.attack,
+			tostring(ryderData.ability)))
+	check("Ryder) e ranged pelo alcance, mesmo com a vaga de ability ocupada",
+		ryderData ~= nil
+			and HeroData.GetAttackRange(ryderData) == GameConfig.RANGED_ATTACK_RANGE
+			and GameConfig.IsRangedAttack(HeroData.GetAttackRange(ryderData)),
+		ryderData and HeroData.GetAttackRange(ryderData))
+	check("Ryder) herda a Agility do mesmo jeito que o Spyke",
+		ryderData ~= nil and GameConfig.HasAgility(ryderData))
+
+	local function Andar(hero, api, path)
+		Skills.gunCharge.apply({
+			hero = hero, movedHero = hero, api = api, trigger = "onMove", path = path,
+		})
+	end
+
+	local ryder = FakeHero(ryderData.id, "A", lineA)
+	local api, log = FakeApi()
+	local base = ryder.attack
+
+	Andar(ryder, api, { lineB })
+	check("Ryder) o passo carrega as pistolas",
+		ryder.attack == base + GameConfig.RYDER_IMPULSE_ATTACK, ryder.attack)
+	check("Ryder) a ativacao entra na telemetria", log.tally.impulseActivations == 1)
+
+	-- O ponto da habilidade: andar de novo NAO soma. Se esta linha cair, o Ryder
+	-- vira escada de ATK, que é exatamente o que a ficha promete que ele não é.
+	Andar(ryder, api, { lineC })
+	check("Ryder) andar de novo no mesmo turno nao acumula",
+		ryder.attack == base + GameConfig.RYDER_IMPULSE_ATTACK, ryder.attack)
+	check("Ryder) e nao repete o efeito das pistolas",
+		log.tally.impulseActivations == 1, log.tally.impulseActivations)
+
+	Skills.gunCharge.apply({ hero = ryder, api = api, trigger = "onAttack" })
+	check("Ryder) o golpe carregado conta como carregado", log.tally.boostedAttacks == 1)
+
+	Skills.gunCharge.apply({ hero = ryder, api = api, trigger = "onTurnEnd" })
+	check("Ryder) o fim do turno DELE devolve o ponto", ryder.attack == base, ryder.attack)
+	check("Ryder) e o golpe do turno seguinte sai de ficha", (function()
+		Skills.gunCharge.apply({ hero = ryder, api = api, trigger = "onAttack" })
+		return log.tally.baseAttacks == 1
+	end)())
+
+	-- Reposicionamento que NAO é passo dele: Troca do Shin, invocação e Casa de
+	-- Promoção chegam pelo mesmo onMove, só que sem caminho (ver AnnounceArrival).
+	local carona = FakeHero(ryderData.id, "A", lineA)
+	local caronaApi = FakeApi()
+	Andar(carona, caronaApi, nil)
+	check("Ryder) ser reposicionado por outra habilidade nao carrega",
+		carona.attack == carona.baseAttack, carona.attack)
+
+	Skills.gunCharge.apply({
+		hero = carona, movedHero = FakeHero(1, "A", lineB), api = caronaApi,
+		trigger = "onMove", path = { lineC },
+	})
+	check("Ryder) o passo de outro herói nao carrega",
+		carona.attack == carona.baseAttack, carona.attack)
+
+	-- ===== A IA ENXERGA A ORDEM =====
+	-- Casa vizinha que mantém a MESMA distância do inimigo: sem isso o teste
+	-- mediria a preferência de distância do ranged, não o Impulso. Com a
+	-- geometria neutra, o que sobra pra decidir é o abate que só o +1 entrega.
+	local alvoHex = lineC
+	local passoNeutro
+	for _, vizinho in ipairs(HexGrid.GetNeighbors(lineA)) do
+		local id = idOf(vizinho)
+		if id ~= alvoHex and HexGrid.Distance(id, alvoHex) == HexGrid.Distance(lineA, alvoHex) then
+			passoNeutro = id
+			break
+		end
+	end
+
+	if passoNeutro then
+		local atirador = FakeHero(ryderData.id, "A", lineA)
+		local alvo = FakeHero(1, "B", alvoHex)
+		alvo.currentHp = atirador.attack + GameConfig.RYDER_IMPULSE_ATTACK
+
+		local board = FakeMatch({ atirador, alvo })
+		board.turn = { number = 3, moved = {}, attacked = {}, bonusMove = {}, weakChain = {} }
+		board.sides = { { index = 1, id = "A" }, { index = 2, id = "B" } }
+		board.sideIndexById = { A = 1, B = 2 }
+
+		local ctx = BotBrain.BuildBoardContext(board, "A", { alvo })
+		local plano = BotBrain.PlanFor(board, atirador, ctx)
+
+		check("Ryder) o bot anda antes de atirar quando o +1 fecha o abate",
+			plano ~= nil and plano.target == alvo and plano.position ~= atirador.position,
+			plano and plano.position)
+	end
+end
+
+-- ===== ESTRELAS DA CAMPANHA =====
+-- A REGRA PEDIDA É EM DEGRAU e a soma das estrelas é aditiva. As duas só batem
+-- porque "sem promoção" aparece nas DUAS linhas de Campaign.DEFAULT_STARS. Esta
+-- tabela existe pra quebrar na hora em que alguém tirar essa repetição achando
+-- que é redundante: sem ela, vencer rápido com o time inteiro E promoção usada
+-- passa a valer 2 estrelas em vez de 1.
+do
+	local Objectives = require(ServerScriptService.Modules.Objectives)
+
+	local function Cenario(turno, vivos, usouPromocao, golemPartido)
+		local match = {
+			turn = { number = turno },
+			heroes = {},
+			sides = { { id = "A", promotionUsed = usouPromocao }, { id = "B" } },
+		}
+
+		for index = 1, 3 do
+			local vivo = index <= vivos
+			match.heroes["h" .. index] = {
+				uid = "h" .. index,
+				ownerId = "A",
+				isAlive = vivo,
+				-- O Golem estilhaçado: morto, mas com o túmulo pendente porque
+				-- ainda sobra pedaço em campo. Tem que contar como de pé.
+				gravePending = (not vivo) and golemPartido and index == vivos + 1 or false,
+			}
+		end
+
+		-- invocado do lado do jogador: nunca conta como herói da composição
+		match.heroes.caveira = {
+			uid = "caveira", ownerId = "A", isAlive = true, summoner = match.heroes.h1,
+		}
+
+		return match, { playerId = "A", enemyId = "B" }
+	end
+
+	local function Estrelas(turno, vivos, usouPromocao, golemPartido)
+		local match, run = Cenario(turno, vivos, usouPromocao, golemPartido)
+		local total = 1
+		for _, star in ipairs(Campaign.DEFAULT_STARS) do
+			if Objectives.Eval(match, run, star.check) == Objectives.DONE then
+				total += 1
+			end
+		end
+		return total
+	end
+
+	local limite = Campaign.STAR_TURN_LIMIT
+
+	local tabela = {
+		{ limite - 1, 3, false, 3, "rapido, time inteiro, sem promocao" },
+		{ limite - 1, 3, true,  1, "rapido, time inteiro, COM promocao" },
+		{ limite,     3, false, 2, "no turno do limite, time inteiro" },
+		{ limite,     3, true,  1, "no turno do limite, COM promocao" },
+		{ limite - 1, 2, false, 2, "rapido, dois de pe" },
+		{ limite - 1, 2, true,  1, "rapido, dois de pe, COM promocao" },
+		{ limite - 1, 1, false, 1, "rapido, um de pe" },
+		{ limite + 5, 1, true,  1, "lento, um de pe, COM promocao" },
+	}
+
+	for _, linha in ipairs(tabela) do
+		local turno, vivos, promo, esperado, nome = linha[1], linha[2], linha[3], linha[4], linha[5]
+		local obtido = Estrelas(turno, vivos, promo, false)
+		check(("Estrelas) %s = %d"):format(nome, esperado), obtido == esperado, obtido)
+	end
+
+	check("Estrelas) invocado nao conta como heroi de pe",
+		Estrelas(limite - 1, 2, false, false) == 2, Estrelas(limite - 1, 2, false, false))
+
+	-- O Golem só morre de vez quando o último mini-golem cai: partido, ele
+	-- continua valendo como herói de pé.
+	check("Estrelas) Golem partido ainda conta como de pe",
+		Estrelas(limite - 1, 2, false, true) == 3, Estrelas(limite - 1, 2, false, true))
+
+	check("Estrelas) o teto bate com o tamanho da regra",
+		Campaign.MAX_STARS == #Campaign.DEFAULT_STARS + 1, Campaign.MAX_STARS)
+	check("Estrelas) confronto sem regra propria usa a padrao",
+		Campaign.StarsFor(Campaign.FIGHTS[1]) == Campaign.DEFAULT_STARS)
+	check("Estrelas) confronto com regra propria sai do padrao",
+		Campaign.StarsFor({ stars = {} }) ~= Campaign.DEFAULT_STARS)
 end
 
 if #failures == 0 then

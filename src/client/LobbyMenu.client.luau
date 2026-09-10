@@ -30,6 +30,7 @@ local TweenService = game:GetService("TweenService")
 
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local HeroChallenges = require(ReplicatedStorage.Modules.HeroChallenges)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local Monetization = require(ReplicatedStorage.Modules.Monetization)
 local Progression = require(ReplicatedStorage.Modules.Progression)
@@ -92,6 +93,7 @@ local function paragraph(parent, text, color, size, order)
 	label.TextYAlignment = Enum.TextYAlignment.Top
 	label.TextWrapped = true
 	label.Font = Enum.Font.Gotham
+	label.FontFace.Weight = Enum.FontWeight.Medium
 	label.LayoutOrder = order or 0
 	label.Parent = parent
 	return label
@@ -250,6 +252,10 @@ local myCoins = 0
 -- apontariam pra Frames já destruídas.
 local myHeroes = {} -- [dataId] = true, só os COMPRADOS
 local heroRefreshers = {}
+
+local myChallenges = {} -- ["dataId"] = { stars = {...}, turns = {...} }
+local myFightStars = {} -- ["dataId"] = estrelas do confronto de campanha
+local challengeHeroId = nil
 
 local function refreshAllHeroRows()
 	for _, refresh in pairs(heroRefreshers) do
@@ -462,6 +468,7 @@ panelTitle.TextColor3 = GOLD
 panelTitle.TextXAlignment = Enum.TextXAlignment.Left
 panelTitle.TextScaled = true
 panelTitle.Font = Enum.Font.GothamBlack
+panelTitle.FontFace.Weight = Enum.FontWeight.Bold
 panelTitle.Parent = panel
 
 -- ===== ABAS DENTRO DO MODAL =====
@@ -515,9 +522,7 @@ end
 local function refreshTabs(activeKey)
 	for key, tab in pairs(tabs) do
 		local active = key == activeKey
-		tab.button.BackgroundColor3 = active and Color3.fromRGB(42, 48, 66) or CARD_BG
-		tab.button.TextColor3 = active and tab.accent or TEXT_SOFT
-		tab.edge.Transparency = active and 0 or 0.6
+		tab.button.BackgroundColor3 = active and Color3.fromHex("#2450ef") or CARD_BG
 	end
 end
 
@@ -544,7 +549,9 @@ bodyLayout.Parent = body
 
 local bodyPadding = Instance.new("UIPadding")
 bodyPadding.PaddingRight = UDim.new(0, 10)
+bodyPadding.PaddingLeft = UDim.new(0, 5)
 bodyPadding.PaddingBottom = UDim.new(0, 6)
+bodyPadding.PaddingTop = UDim.new(0, 10)
 bodyPadding.Parent = body
 
 local closeButton = buildCloseButton(panel)
@@ -558,7 +565,6 @@ local function closeModal()
 end
 
 closeButton.MouseButton1Click:Connect(closeModal)
-backdrop.MouseButton1Click:Connect(closeModal)
 
 -- ===================== DESBLOQUEIO DE HERÓI (REVEAL) =====================
 -- A comemoração NUNCA sai do RosterUpdate, que chega em plena partida: quem
@@ -763,6 +769,15 @@ local function clearBody()
 	body.CanvasPosition = Vector2.new()
 end
 
+local function keepScroll(build)
+	local position = body.CanvasPosition
+	clearBody()
+	build()
+	task.defer(function()
+		if body.Parent then body.CanvasPosition = position end
+	end)
+end
+
 -- ===================== CONTEÚDO: REGRAS =====================
 -- Os números saem do GameConfig e do Progression de propósito: se algum dia o
 -- alcance do Sprint ou o XP de vitória mudar, o mural muda junto em vez de
@@ -853,6 +868,13 @@ local function teamNames(fight)
 	return table.concat(names, ", ")
 end
 
+-- A pilha do quadrado, medida a partir da área ÚTIL (célula menos o padding de
+-- 8 de cada lado): retrato até 74, nome até 96, etiqueta até 109, time até 137.
+-- A faixa de estrelas começa em 140 e ocupa 18, então a célula precisa de 158 de
+-- área útil — e é daí que sai o 174 do CellSize.
+local FIGHT_STARS_TOP = 140
+local FIGHT_CARD_H = FIGHT_STARS_TOP + 18 + 16
+
 local function buildFightSquare(grid, fight, state, order)
 	local style = FIGHT_STYLE[state]
 	local data = HeroData.GetById(fight.hero)
@@ -915,7 +937,59 @@ local function buildFightSquare(grid, fight, state, order)
 
 	if state == "locked" then return end
 
+	-- A NOTA DO CONFRONTO, e não a dos desafios: acesa até a estrela conquistada,
+	-- apagada no que falta.
+	--
+	-- FAIXA PRÓPRIA NO RODAPÉ, em offset absoluto e não ancorada embaixo. Ancorar
+	-- em `1, -20` colocava a linha em cima do nome do time, que termina em 137 na
+	-- área útil de 142 — as estrelas ficavam sobrepostas e espremidas contra a
+	-- borda. A célula cresceu o bastante pra caber a faixa inteira (ver
+	-- gridLayout.CellSize), e este número é onde ela começa.
+	--
+	-- RichText porque a linha tem DUAS cores: conquistada em dourado, faltando em
+	-- cinza. Uma cor só pintava a estrela vazia de dourado também, e aí ★★☆ lia
+	-- como três. O espaço entre os glifos é o respiro que o TextLabel não dá.
+	local fightStars = myFightStars[tostring(fight.hero)] or 0
+	local marks = {}
+	for index = 1, Campaign.MAX_STARS do
+		local lit = index <= fightStars
+		table.insert(marks, ('<font color="#%s">%s</font>')
+			:format(lit and "FFCE68" or "3E4354", lit and "★" or "☆"))
+	end
+
+	local scoreLabel = Instance.new("TextLabel")
+	scoreLabel.Name = "FightStarScore"
+	scoreLabel.Position = UDim2.new(0, 0, 0, FIGHT_STARS_TOP)
+	scoreLabel.Size = UDim2.new(1, 0, 0, 18)
+	scoreLabel.BackgroundTransparency = 1
+	scoreLabel.RichText = true
+	scoreLabel.Text = table.concat(marks, " ")
+	scoreLabel.TextColor3 = GOLD
+	scoreLabel.TextSize = 15
+	scoreLabel.Font = Enum.Font.GothamBold
+	scoreLabel.Parent = card
+
+	local stars = (myChallenges[tostring(fight.hero)] or {}).stars or {}
+	local hasChallenges = state == "done" and HeroChallenges.CountFor(fight.hero) > 0
+
+	if hasChallenges then
+		local total = HeroChallenges.TotalStars(stars, fight.hero)
+		local maximum = HeroChallenges.MaxStarsFor(fight.hero)
+
+		tag.Text = ("★ %d/%d"):format(total, maximum)
+		tag.TextColor3 = total == maximum and GOLD or Color3.fromRGB(210, 200, 170)
+		tag.TextSize = 12
+		teamLabel.Text = "Toque para ver os desafios"
+		teamLabel.TextColor3 = Color3.fromRGB(150, 200, 240)
+	end
+
 	card.MouseButton1Click:Connect(function()
+		if hasChallenges then
+			challengeHeroId = fight.hero
+			rebuildBody(true)
+			return
+		end
+
 		-- O cliente só diz QUAL confronto. Quem confere a escada e monta o time
 		-- do bot é o servidor (GameStartTrigger/Campaign).
 		GameAction:FireServer("fight", fight.hero)
@@ -923,7 +997,189 @@ local function buildFightSquare(grid, fight, state, order)
 	end)
 end
 
+local CHALLENGE_STATE_COLOR = {
+	open   = Color3.fromRGB(150, 240, 180),
+	done   = GOLD,
+	locked = Color3.fromRGB(120, 126, 142),
+}
+
+local function starLine(earned)
+	return string.rep("★", earned)
+		.. string.rep("☆", HeroChallenges.STARS_PER_CHALLENGE - earned)
+end
+
+local function buildChallengeRow(parent, heroId, index, spec, state, stars, order)
+	local row = Instance.new("Frame")
+	row.Name = spec.id
+	row.Size = UDim2.new(1, 0, 0, 0)
+	row.AutomaticSize = Enum.AutomaticSize.Y
+	row.BackgroundColor3 = Color3.fromRGB(20, 23, 32)
+	row.BorderSizePixel = 0
+	row.LayoutOrder = order
+	row.Parent = parent
+	corner(row, 8)
+	padding(row, 10)
+
+	local list = Instance.new("UIListLayout")
+	list.Padding = UDim.new(0, 4)
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Parent = row
+
+	local header = Instance.new("Frame")
+	header.Size = UDim2.new(1, 0, 0, 20)
+	header.BackgroundTransparency = 1
+	header.LayoutOrder = 0
+	header.Parent = row
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -90, 1, 0)
+	title.BackgroundTransparency = 1
+	title.Text = ("%d. %s"):format(index, state == "locked" and "???" or spec.name)
+	title.TextColor3 = CHALLENGE_STATE_COLOR[state]
+	title.TextSize = 14
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.GothamBold
+	title.Parent = header
+
+	local badge = Instance.new("TextLabel")
+	badge.Size = UDim2.new(0, 86, 1, 0)
+	badge.Position = UDim2.new(1, -86, 0, 0)
+	badge.BackgroundTransparency = 1
+	badge.Text = state == "locked" and "BLOQUEADO" or starLine(stars)
+	badge.TextColor3 = state == "locked" and TEXT_SOFT or GOLD
+	badge.TextSize = state == "locked" and 10 or 15
+	badge.TextXAlignment = Enum.TextXAlignment.Right
+	badge.Font = Enum.Font.GothamBold
+	badge.Parent = header
+
+	if state == "locked" then
+		paragraph(row, "Conclua o desafio anterior para liberar.", TEXT_SOFT, 12, 1)
+		return
+	end
+
+	paragraph(row, spec.concept, Color3.fromRGB(200, 210, 230), 12, 1)
+	paragraph(row, spec.how, TEXT_SOFT, 12, 2)
+
+	for starIndex, star in ipairs(spec.stars) do
+		paragraph(row, ("★  %s"):format(star.text),
+			stars > starIndex and GOLD or TEXT_SOFT, 11, 2 + starIndex)
+	end
+
+	local gap = Instance.new("Frame")
+	gap.Size = UDim2.new(1, 0, 0, 12)
+	gap.BackgroundTransparency = 1
+	gap.LayoutOrder = 19
+	gap.Parent = row
+
+	local start = Instance.new("TextButton")
+	start.Size = UDim2.new(0, 130, 0, 32)
+	start.BackgroundColor3 = Color3.fromRGB(60, 150, 100)
+	start.Text = stars > 0 and "JOGAR DE NOVO" or "INICIAR"
+	start.TextColor3 = Color3.new(1, 1, 1)
+	start.TextSize = 13
+	start.Font = Enum.Font.GothamBold
+	start.BorderSizePixel = 0
+	start.LayoutOrder = 20
+	start.Parent = row
+	corner(start, 6)
+
+	start.MouseButton1Click:Connect(function()
+		GameAction:FireServer("challenge", "start", heroId, index)
+		closeModal()
+	end)
+end
+
+function buildChallengePage(heroId)
+	local data = HeroData.GetById(heroId)
+	local stars = (myChallenges[tostring(heroId)] or {}).stars or {}
+	local total = HeroChallenges.TotalStars(stars, heroId)
+	local maximum = HeroChallenges.MaxStarsFor(heroId)
+
+	local back = Instance.new("TextButton")
+	back.Size = UDim2.new(0, 130, 0, 28)
+	back.BackgroundColor3 = Color3.fromRGB(38, 44, 60)
+	back.Text = "VOLTAR"
+	back.TextColor3 = TEXT_MAIN
+	back.TextSize = 12
+	back.Font = Enum.Font.GothamBold
+	back.BorderSizePixel = 0
+	back.LayoutOrder = 0
+	back.Parent = body
+	corner(back, 6)
+
+	back.MouseButton1Click:Connect(function()
+		challengeHeroId = nil
+		rebuildBody(true)
+	end)
+
+	local head = Instance.new("Frame")
+	head.Size = UDim2.new(1, 0, 0, 62)
+	head.BackgroundColor3 = CARD_BG
+	head.BorderSizePixel = 0
+	head.LayoutOrder = 1
+	head.Parent = body
+	corner(head, 10)
+	padding(head, 10)
+	stroke(head, total == maximum and GOLD or ACCENT, 1, 0.5)
+
+	local portrait = buildHeroImage(head, data)
+	portrait.Size = UDim2.new(0, 36, 0, 42)
+	portrait.Position = UDim2.new(0, 0, 0, 0)
+
+	local name = Instance.new("TextLabel")
+	name.Size = UDim2.new(1, -150, 0, 22)
+	name.Position = UDim2.new(0, 46, 0, 0)
+	name.BackgroundTransparency = 1
+	name.Text = data.name:upper()
+	name.TextColor3 = TEXT_MAIN
+	name.TextSize = 17
+	name.TextXAlignment = Enum.TextXAlignment.Left
+	name.Font = Enum.Font.GothamBlack
+	name.Parent = head
+
+	local sub = Instance.new("TextLabel")
+	sub.Size = UDim2.new(1, -150, 0, 16)
+	sub.Position = UDim2.new(0, 46, 0, 24)
+	sub.BackgroundTransparency = 1
+	sub.Text = total == maximum
+		and ("HERÓI DOMINADO  ·  %d de %d estrelas"):format(total, maximum)
+		or ("%d de %d estrelas"):format(total, maximum)
+	sub.TextColor3 = total == maximum and GOLD or TEXT_SOFT
+	sub.TextSize = 12
+	sub.TextXAlignment = Enum.TextXAlignment.Left
+	sub.Font = Enum.Font.GothamBold
+	sub.Parent = head
+
+	local rematch = Instance.new("TextButton")
+	rematch.AnchorPoint = Vector2.new(1, 0.5)
+	rematch.Position = UDim2.new(1, 0, 0.5, 0)
+	rematch.Size = UDim2.new(0, 96, 0, 28)
+	rematch.BackgroundColor3 = Color3.fromRGB(48, 56, 74)
+	rematch.Text = "REVANCHE"
+	rematch.TextColor3 = TEXT_SOFT
+	rematch.TextSize = 11
+	rematch.Font = Enum.Font.GothamBold
+	rematch.BorderSizePixel = 0
+	rematch.Parent = head
+	corner(rematch, 6)
+
+	rematch.MouseButton1Click:Connect(function()
+		GameAction:FireServer("fight", heroId)
+		closeModal()
+	end)
+
+	for index, spec in ipairs(HeroChallenges.ListFor(heroId)) do
+		buildChallengeRow(body, heroId, index, spec,
+			HeroChallenges.StateOf(stars, true, index), stars[index] or 0, 1 + index)
+	end
+end
+
 local function buildCampaign()
+	if challengeHeroId then
+		buildChallengePage(challengeHeroId)
+		return
+	end
+
 	local owned = ownedSet()
 	local total = Campaign.CountOwned(owned)
 
@@ -936,16 +1192,21 @@ local function buildCampaign()
 		"daquele quadrado, de uma vez por todas. Você tem %d de %d heróis. %s")
 		:format(total, #HeroData.CATALOG, pvpLine), TEXT_SOFT, 14, 0)
 
+	paragraph(body, "Herói já conquistado mostra as estrelas dos desafios dele no quadrado. " ..
+		"Toque nesse quadrado para abrir os três desafios do personagem, puzzles preparados " ..
+		"que ensinam a habilidade dele do básico ao domínio. A revanche contra o bot fica " ..
+		"lá dentro.", Color3.fromRGB(150, 200, 240), 13, 1)
+
 	local grid = Instance.new("Frame")
 	grid.Name = "Fights"
 	grid.Size = UDim2.new(1, 0, 0, 0)
 	grid.AutomaticSize = Enum.AutomaticSize.Y
 	grid.BackgroundTransparency = 1
-	grid.LayoutOrder = 1
+	grid.LayoutOrder = 2
 	grid.Parent = body
 
 	local gridLayout = Instance.new("UIGridLayout")
-	gridLayout.CellSize = UDim2.new(0, 118, 0, 158)
+	gridLayout.CellSize = UDim2.new(0, 118, 0, FIGHT_CARD_H)
 	gridLayout.CellPadding = UDim2.new(0, 8, 0, 8)
 	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	gridLayout.Parent = grid
@@ -1083,11 +1344,16 @@ local PANELS = {
 -- Redesenha o painel ABERTO sem fechar nem reabrir o modal: é o que o
 -- RosterUpdate chama quando um herói novo chega, pra o quadrado recém-vencido
 -- virar "concluído" (e o grupo seguinte abrir) na mesma hora.
-function rebuildBody()
+function rebuildBody(toTop)
 	local entry = currentPanel and PANELS[currentPanel]
 	if not entry then return end
-	clearBody()
-	entry.build()
+
+	if toTop then
+		clearBody()
+		entry.build()
+	else
+		keepScroll(entry.build)
+	end
 end
 
 -- atribui ao local declarado lá em cima (as abas do modal já apontam pra ele)
@@ -1102,6 +1368,7 @@ function openModal(key)
 	-- você já está seria só confuso.)
 	if currentPanel == key then return end
 
+	challengeHeroId = nil
 	currentPanel = key
 	panelTitle.Text = entry.title
 	refreshTabs(key)
@@ -1179,6 +1446,18 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 end)
 
 GameAction.OnClientEvent:Connect(function(action, payload)
+	if action == "challenges" and type(payload) == "table" then
+		myChallenges = payload.heroes or {}
+		if currentPanel == "campaign" then rebuildBody() end
+		return
+	end
+
+	if action == "fightStars" and type(payload) == "table" then
+		myFightStars = payload
+		if currentPanel == "campaign" then rebuildBody() end
+		return
+	end
+
 	if action ~= "rewards" or type(payload) ~= "table" then return end
 
 	for _, dataId in ipairs(payload.heroes or {}) do
@@ -1199,4 +1478,5 @@ end)
 -- jogo) sem nenhum MatchUpdate de transição — aí o pedido acima nunca sairia.
 task.defer(function()
 	GameAction:FireServer("claimRewards")
+	GameAction:FireServer("challenge", "sync")
 end)

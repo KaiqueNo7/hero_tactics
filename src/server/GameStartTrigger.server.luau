@@ -27,6 +27,7 @@ local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local LobbyZones = require(ReplicatedStorage.Modules.LobbyZones)
 local Tutorial = require(ReplicatedStorage.Modules.Tutorial)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
+local ChallengeService = require(ServerScriptService.Modules.ChallengeService)
 local CoinService = require(ServerScriptService.Modules.CoinService)
 local ProgressionService = require(ServerScriptService.Modules.ProgressionService)
 local LobbyZoneBuilder = require(ServerScriptService.Modules.LobbyZoneBuilder)
@@ -443,28 +444,91 @@ end
 
 LobbyZoneBuilder.PlacePads()
 
-local ACTION_BUDGET = 12
+-- ===== ORÇAMENTO POR AÇÃO =====
+-- Era um teto único de 12/s cobrindo tudo, e o problema não era o número, era o
+-- "tudo": `matchLog` devolve até 400 entradas de registro, então doze pedidos
+-- por segundo por jogador viravam doze serializações do log inteiro. Jogada e
+-- leitura pesada não podem dividir a mesma bolsa.
+--
+-- Os tetos são folgados de propósito. Duplo clique, lag e uma rajada curta de
+-- reconexão têm que caber sem que ninguém legítimo sinta: quem barra jogada
+-- repetida é o estado do turno, não isto aqui. Este limitador existe pro caso
+-- do laço de 10 mil chamadas, e é só isso que ele precisa segurar.
+local ACTION_BUDGET = {
+	move = 8, attack = 8, allyChoice = 8, resurrect = 8, endTurn = 8,
+	place = 8,
+
+	queue = 2, cancelQueue = 2, fight = 2, challenge = 4,
+	leaveMatch = 2, replay = 2, sandbox = 8, tutorial = 4,
+
+	-- Medidos nos pedidos que o cliente realmente faz, não no que parecia
+	-- razoável: o MatchLogClient repede o log a CADA snapshot enquanto o painel
+	-- está aberto, e um turno movimentado gera vários por segundo. O LobbyMenu
+	-- pede as recompensas duas vezes na entrada (o `task.defer` do login e a
+	-- chegada ao lobby), e as duas caem na mesma janela. Teto de 1 aqui cortava
+	-- jogador legítimo em silêncio, que é o pior resultado possível.
+	matchLog = 6, claimRewards = 3,
+}
+local DEFAULT_BUDGET = 4
+local WINDOW = 1
+
 local windowStart, actionCount = {}, {}
 
-local function AllowAction(player)
-	local now = os.clock()
+-- ===== REGISTRO DE ABUSO =====
+-- Descarte silencioso continua sendo a resposta: latência e duplo clique não são
+-- ataque, e punir por isso é pior que o problema. O que faltava era SABER. Sem
+-- contador, sondagem sistemática era invisível.
+--
+-- Amostrado por potência de dez pra que um laço de 10 mil chamadas vire quatro
+-- linhas no output e não dez mil. Nada é gravado em DataStore: isto é sinal pra
+-- quem está olhando o servidor, não histórico do jogador.
+local refused = {}
 
-	if not windowStart[player] or now - windowStart[player] >= 1 then
+local function NoteRefusal(player, action)
+	local total = (refused[player] or 0) + 1
+	refused[player] = total
+
+	if total == 10 or total == 100 or total == 1000 or total == 10000 then
+		warn(("[Seguranca] %s teve %d pedidos recusados por limite (ultimo: %s)")
+			:format(player.Name, total, tostring(action)))
+	end
+end
+
+local function AllowAction(player, action)
+	local now = os.clock()
+	local window = windowStart[player]
+
+	if not window or now - window >= WINDOW then
 		windowStart[player] = now
-		actionCount[player] = 0
+		actionCount[player] = {}
 	end
 
-	actionCount[player] += 1
-	return actionCount[player] <= ACTION_BUDGET
+	-- Nome fora do catálogo entra todo no mesmo balde. O contador é indexado por
+	-- string vinda do cliente, e sem isto dez mil nomes aleatórios (ou um nome de
+	-- um megabyte) viravam dez mil chaves guardadas no servidor. Ação
+	-- desconhecida não faz nada mesmo — cai fora do if lá embaixo.
+	local counts = actionCount[player]
+	local key = ACTION_BUDGET[action] and action or "unknown"
+	local used = (counts[key] or 0) + 1
+	counts[key] = used
+
+	if used <= (ACTION_BUDGET[key] or DEFAULT_BUDGET) then return true end
+
+	NoteRefusal(player, key)
+	return false
 end
 
 PlaceHero.OnServerEvent:Connect(function(player, dataId, hexId)
-	if not AllowAction(player) then return end
+	if not AllowAction(player, "place") then return end
 	MatchManager.PlaceHero(player, dataId, hexId)
 end)
 
-GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
-	if not AllowAction(player) then return end
+GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2, arg3)
+	-- Tipo antes do orçamento: `action` chega como qualquer coisa, e uma table
+	-- gigante como chave do contador seria guardar lixo do atacante na memória
+	-- do servidor.
+	if type(action) ~= "string" then return end
+	if not AllowAction(player, action) then return end
 
 	if action == "move" then
 		MatchManager.MoveHero(player, arg1, arg2)
@@ -476,8 +540,8 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 		MatchManager.Replay(player)
 	elseif action == "resurrect" then
 		MatchManager.Resurrect(player, arg1)
-	elseif action == "shield" then
-		MatchManager.GrantShield(player, arg1)
+	elseif action == "allyChoice" then
+		MatchManager.ResolveAllyChoice(player, arg1)
 	elseif action == "leaveMatch" then
 		MatchManager.LeaveMatch(player)
 	elseif action == "matchLog" then
@@ -495,13 +559,15 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 		end
 	elseif action == "fight" then
 		OnFightRequested(player, arg1)
+	elseif action == "challenge" then
+		ChallengeService.Handle(player, arg1, arg2, arg3)
 	elseif action == "sandbox" then
 		SandboxService.Handle(player, arg1)
 	end
 end)
 
 ReplicatedStorage.Remotes[Tutorial.REMOTE_NAME].OnServerEvent:Connect(function(player, lessonId)
-	if not AllowAction(player) then return end
+	if not AllowAction(player, "tutorial") then return end
 	TutorialService.MarkSeen(player, lessonId)
 end)
 
@@ -516,6 +582,7 @@ Players.PlayerRemoving:Connect(function(player)
 
 	windowStart[player] = nil
 	actionCount[player] = nil
+	refused[player] = nil
 	LeaveQueue(player, false)
 	MatchManager.HandlePlayerLeft(player)
 end)

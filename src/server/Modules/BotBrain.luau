@@ -230,7 +230,60 @@ local function BuildBoardContext(match, botId, enemies)
 		end
 	end
 
+	-- ===== O MAPA DE AMEAÇA =====
+	-- Uma passada só, aqui, em vez de cada camada refazendo a mesma pergunta.
+	-- Guarda por CASA quanto dano chega nela no próximo turno inimigo e quantas
+	-- cabeças conseguem alcançá-la.
+	--
+	-- Alcance REAL: `MoveRangeOf` já desconta gelo e `AttackRangeOf` já lê a
+	-- postura atual (o Shin em Melee ameaça menos casas que em Ranged). Somar os
+	-- dois é a mesma conta que o `Threatens` sempre fez — o que muda é ela ser
+	-- resolvida uma vez e não por candidato.
+	--
+	-- Distância e não caminho: o inimigo vai poder ANDAR até lá, e obstáculo que
+	-- existe agora pode não existir depois que o tabuleiro mexer. Superestimar
+	-- ameaça é o erro barato; subestimar é o que mata o suporte.
+	ctx.threat = {}
+	ctx.threatHeads = {}
+
+	-- Quais abates o freio do estopim recusou nesta decisão. Só um recado: quem
+	-- grava telemetria é o MatchManager, porque este arquivo não escreve em
+	-- `match` (ver o cabeçalho).
+	ctx.unsafeKill = {}
+
+	for _, enemy in ipairs(enemies) do
+		local reach = MoveRangeOf(match, enemy) + AttackRangeOf(match, enemy)
+		for _, hex in ipairs(HexGrid.GetAllHexes()) do
+			local id = type(hex) == "table" and hex.id or hex
+			if HexGrid.Distance(enemy.position, id) <= reach then
+				ctx.threat[id] = (ctx.threat[id] or 0) + enemy.attack
+				ctx.threatHeads[id] = (ctx.threatHeads[id] or 0) + 1
+			end
+		end
+	end
+
+	-- Quem do outro lado castiga aglomeração. Serve pro time inteiro decidir se
+	-- vale terminar o turno colado: sem ninguém assim em campo, andar junto é de
+	-- graça, e o bot não deve inventar medo que não existe.
+	ctx.enemyAoe = 0
+	for _, enemy in ipairs(enemies) do
+		if HasSkill(enemy, "estopim") then
+			ctx.enemyAoe = math.max(ctx.enemyAoe, GameConfig.ESTOPIM_DAMAGE)
+		elseif HasSkill(enemy, "flameStrike") or HasSkill(enemy, "iceStorm") then
+			ctx.enemyAoe = math.max(ctx.enemyAoe, enemy.attack)
+		elseif HasSkill(enemy, "voltChain") then
+			ctx.enemyAoe = math.max(ctx.enemyAoe, GameConfig.VOLT_CHAIN_DAMAGE)
+		end
+	end
+
 	return ctx
+end
+
+-- Quanto dano chega nesta casa, e de quantas cabeças. Zero quando ninguém
+-- alcança — a tabela é esparsa de propósito, pra casa segura não custar memória.
+local function ThreatAt(ctx, hexId)
+	return ctx.threat and ctx.threat[hexId] or 0,
+		ctx.threatHeads and ctx.threatHeads[hexId] or 0
 end
 
 -- Alcance a partir de uma casa hipotética, já contando que o herói saiu da atual
@@ -306,6 +359,17 @@ local function EstimateDamage(match, attacker, target, fromPos)
 
 	if HasSkill(attacker, "momentum") then
 		damage += HexGrid.Distance(attacker.position, fromPos) * GameConfig.MOMENTUM_PER_HEX
+	end
+
+	-- IMPULSO: o +1 nasce do PASSO, então ele só existe no golpe que sai de uma
+	-- casa DIFERENTE da atual. É o que faz o PlanFor comparar sozinho as duas
+	-- ordens do Ryder — ficar e atirar por 2, ou andar e atirar por 3 — sem
+	-- ninguém escrever a comparação: as duas já são casas candidatas do mesmo
+	-- laço, e a nota decide. Carregado, não soma de novo: o bônus não acumula, e
+	-- prometer o dobro faria a IA andar atrás de um ponto que não vem.
+	if HasSkill(attacker, "gunCharge") and fromPos ~= attacker.position
+		and not FindStatusEffect(attacker, "gunCharge") then
+		damage += GameConfig.RYDER_IMPULSE_ATTACK
 	end
 
 	if HasSkill(attacker, "voltChain") and FindStatusEffect(target, "charge") then
@@ -491,9 +555,72 @@ local function ChainPotential(match, attacker, target, ctx)
 	return count
 end
 
+-- ===== O QUE CUSTA MATAR QUEM EXPLODE =====
+-- Só olha quem morre DE VERDADE ao cair: hoje é o estopim do Dr. Maluco, e a
+-- pergunta é feita pela skill e não pelo nome, então qualquer herói futuro com
+-- morte explosiva entra sozinho.
+--
+-- Conta cabeça a cabeça porque o preço não é linear. Vizinho que sobra em pé
+-- custa o dano; vizinho que MORRE custa muito mais, porque é uma peça inteira
+-- trocada por outra. O próprio atacante entra na conta quando o golpe sai de
+-- uma casa colada — ele também está no raio.
+-- CALIBRADO CONTRA A NOTA DO ABATE, que gira em torno de 166 pro Dr. Maluco.
+-- Com ESTOPIM_DAMAGE em 10, cada vizinho inteiro custa 80: um vizinho ainda
+-- deixa o golpe valer a pena (+86), dois ficam no fio (+6) e três seguram a mão
+-- (-74). Vizinho que MORRE no estouro custa uma peça, e por isso pesa como um
+-- abate inteiro — aí a conta vira negativa com um só.
+--
+-- Mexer nestes dois números é mexer no quão medroso o bot fica perto dele.
+local BLAST_PER_DAMAGE = 8
+local BLAST_PER_DEATH = 150
+
+local function BlastCost(match, attacker, target, fromPos)
+	if not HasSkill(target, "estopim") then return 0 end
+
+	-- ÚLTIMO INIMIGO DE PÉ: o estouro acontece, mas a partida acaba junto. Levar
+	-- dano numa vitória não é preço, é troco. Sem esta saída o bot ficava
+	-- rodeando o último herói inimigo sem conseguir fechar o jogo.
+	local remaining = 0
+	for _, hero in pairs(match.heroes) do
+		if hero.isAlive and hero.ownerId == target.ownerId and not hero.summoner then
+			remaining += 1
+		end
+	end
+	if remaining <= 1 then return 0 end
+
+	local damage = GameConfig.ESTOPIM_DAMAGE
+	local cost = 0
+
+	for _, hero in pairs(match.heroes) do
+		if hero.isAlive and hero.ownerId == attacker.ownerId then
+			-- o atacante é medido pela casa DE ONDE vai bater, não pela atual
+			local at = (hero == attacker) and fromPos or hero.position
+			if HexGrid.Distance(at, target.position) <= 1 then
+				cost += damage * BLAST_PER_DAMAGE
+				if hero.currentHp <= damage then cost += BLAST_PER_DEATH end
+			end
+		end
+	end
+
+	return cost
+end
+
 local function ScoreAttack(match, attacker, target, fromPos, ctx)
 	if TauntBlocks(match, attacker, target, fromPos) then return nil end
 	if HasSkill(target, "dodge") and MatchQuery.DodgeHexFor(match, target, attacker, fromPos) then return nil end
+
+	-- GOLPE JÁ GASTO NESTE ALVO. O Ponto Fraco devolve a ação ao acertar, e o
+	-- servidor recusa o segundo golpe do MESMO Zaro no MESMO inimigo no mesmo
+	-- turno (ver ChainHits, em MatchManager.AttackHero) — a corrente é pra
+	-- ENCADEAR em outro, não pra moer o mesmo. Sem esta linha o bot continuava
+	-- pontuando o alvo já atingido como o melhor golpe do turno: a ação voltava,
+	-- o plano saía igual, o servidor recusava calado e nada no tabuleiro mudava,
+	-- então o laço refazia o mesmo plano até o limite de iterações — o "JÁ
+	-- ATINGIDO" repetido em cima do mesmo inimigo.
+	--
+	-- `nil` e não nota baixa: é a mesma resposta do Taunt e do desvio logo acima,
+	-- e é o que faz o PlanFor descartar a jogada em vez de escolher a menos ruim.
+	if AlreadyChained(match, attacker, target) then return nil end
 
 	local damage = EstimateDamage(match, attacker, target, fromPos)
 	local score = math.min(damage, target.currentHp) * 10
@@ -503,6 +630,26 @@ local function ScoreAttack(match, attacker, target, fromPos, ctx)
 
 	if damage >= target.currentHp then
 		score += (target.summoner and 20 or 120) + ThreatScore(target) * 4
+
+		-- ===== O ESTOPIM DO DR. MALUCO =====
+		-- Matar ele DETONA ele: todo mundo colado leva ESTOPIM_DAMAGE e sai
+		-- envenenado. O bot vinha correndo pro abate porque o ThreatScore só
+		-- dizia que ele era um alvo valioso, e ninguém contava a conta do outro
+		-- lado — daí o time inteiro se agrupar em volta e explodir junto.
+		--
+		-- Não é proibição, é preço. Um vizinho cheio de vida que leva o estouro
+		-- é troca aceitável; três vizinhos, ou um que morre com ele, não é. A
+		-- nota do abate continua na mesa (+120 e o valor da ameaça), então o
+		-- golpe SAI quando o resto da conta justifica — vencer a partida agora,
+		-- ou o dano aliado ser pequeno.
+		local blast = BlastCost(match, attacker, target, fromPos)
+		score -= blast
+
+		-- Marca pro MatchManager contar quantas vezes o freio funcionou. Aqui
+		-- não se escreve em `match` (ver o cabeçalho): só se avisa.
+		if blast > 0 and ctx.unsafeKill then
+			ctx.unsafeKill[target.uid] = math.max(ctx.unsafeKill[target.uid] or 0, blast)
+		end
 	else
 		score += (target.maxHp - target.currentHp) * 2 -- concentra fogo no ferido
 		score += ThreatScore(target) * 2
@@ -554,8 +701,7 @@ local function ScoreAttack(match, attacker, target, fromPos, ctx)
 		end
 	end
 
-	if HasSkill(attacker, "weakPoint") and HitsWeakPoint(target, fromPos)
-		and not AlreadyChained(match, attacker, target) then
+	if HasSkill(attacker, "weakPoint") and HitsWeakPoint(target, fromPos) then
 		score += WEAK_POINT_ATTACK_VALUE
 		score += ChainPotential(match, attacker, target, ctx) * WEAK_POINT_CHAIN_VALUE
 	end
@@ -587,6 +733,41 @@ local function ScorePosition(match, hero, fromPos, ctx)
 
 		if isTank then
 			score -= math.abs(nearest - 1) * 8 -- tanque segura a linha de frente
+		end
+	end
+
+	-- ===== O QUE ME ESPERA NO PRÓXIMO TURNO =====
+	-- Duas casas que rendem o mesmo golpe não valem o mesmo se uma delas deixa
+	-- três inimigos com alcance em cima. Esta parcela é a diferença, e vale pro
+	-- elenco inteiro: era a conta que só o Spyke fazia, dentro da própria regra.
+	--
+	-- O PESO É A FRAGILIDADE, não um número fixo. Tanque na linha de frente é o
+	-- trabalho dele, e o `isTank` acima já paga por chegar lá; suporte no mesmo
+	-- lugar é peça perdida. Por isso a conta é sobre a vida DELE: dano que não
+	-- ameaça matar custa pouco, dano que mata custa caro.
+	local incoming, heads = ThreatAt(ctx, fromPos)
+	if incoming > 0 then
+		local lethal = incoming >= hero.currentHp
+		local weight = lethal and 9 or (isTank and 1 or 3)
+		score -= incoming * weight
+
+		-- Cercado é pior que ameaçado: contra várias cabeças não dá pra recuar
+		-- de todas, e o Taunt de um trava o revide no outro.
+		if heads > 1 and not isTank then score -= (heads - 1) * 6 end
+	end
+
+	-- ===== NÃO TERMINE O TURNO AMONTOADO =====
+	-- Só pesa quando existe alguém do outro lado que castiga aglomeração
+	-- (`ctx.enemyAoe`). Sem estopim, giro do Karo, corrente do Volt ou nevasca do
+	-- Kor em campo, andar junto não custa nada e o bot não deve inventar medo.
+	--
+	-- Fica FORA do trustInTeam e da aura do Spyke de propósito: os dois pagam por
+	-- encostar em aliado, e é justo que a conta do risco discorde deles. Quem
+	-- decide é a soma.
+	if ctx.enemyAoe > 0 then
+		local packed = #AlliesAdjacentTo(match, hero, fromPos)
+		if packed > 0 then
+			score -= packed * ctx.enemyAoe
 		end
 	end
 
@@ -939,6 +1120,19 @@ local function PlanFor(match, hero, ctx)
 		end
 	end
 
+	-- O freio funcionou? Só conta quando havia um abate explosivo na mesa E o
+	-- plano escolhido não é ele. Escolher outro alvo, recuar ou reposicionar
+	-- valem igual: o que importa é que o time não explodiu junto.
+	if best and next(ctx.unsafeKill) ~= nil then
+		local chosen = best.target and best.target.uid
+		for uid in pairs(ctx.unsafeKill) do
+			if uid ~= chosen then
+				best.avoidedUnsafeKill = true
+				break
+			end
+		end
+	end
+
 	return best
 end
 
@@ -947,7 +1141,7 @@ end
 -- herói?", é "quem morre se este turno correr mal?" — por isso o peso maior é a
 -- ameaça que JÁ alcança o aliado, e não a ficha dele.
 --
--- As opções chegam prontas do servidor (ShieldOptionsFor), então quem já tem
+-- As opções chegam prontas do servidor (AllyOptionsFor), então quem já tem
 -- escudo nem aparece aqui: o "nunca escolher quem já está protegido" é do filtro,
 -- não desta conta.
 function BotBrain.PickShieldTarget(match, ownerId, options)
@@ -979,6 +1173,81 @@ function BotBrain.PickShieldTarget(match, ownerId, options)
 
 			if score > bestScore then
 				best, bestScore = uid, score
+			end
+		end
+	end
+
+	return best
+end
+
+-- ===== A TROCA DO SHIN =====
+-- Duas peças mudam de casa de uma vez e o Shin ainda vira de postura, então a
+-- pergunta não é "essa casa é boa?", é "as DUAS ficam melhores do que estão, com
+-- a ficha que o Shin vai ter depois?".
+--
+-- A conta é a diferença entre o depois e o agora nas MESMAS camadas que o resto
+-- do bot usa — ScorePosition pro valor de estar na casa, ScoreAttack pro golpe
+-- que a casa nova abre. Nada de peso inventado pra esta habilidade: se a Troca
+-- coloca o Shin no alcance de um abate, quem diz isso é o mesmo ScoreAttack que
+-- decide todos os outros golpes do time.
+--
+-- A POSTURA ENTRA PELA FICHA, não por bônus. O `depois` é o próprio Shin com
+-- ataque e alcance da postura seguinte por cima (o __index devolve o resto),
+-- então o ScorePosition já sabe sozinho que um Shin que vai virar Melee quer
+-- casa colada e um que vai virar Ranged quer distância — é a mesma linha
+-- `IsRangedAttack(hero.attackRange)` que sempre existiu.
+local SWAP_MIN_GAIN = 6
+
+local function StanceAfterSwap(shin)
+	local current = GameConfig.SHIN_STANCES[shin.stance]
+	if not current then return nil end
+
+	local following = GameConfig.SHIN_STANCES[current.next]
+	return setmetatable({
+		ability = following.ability,
+		attackRange = following.attackRange,
+		baseAttack = following.attack,
+		attack = shin.attack + (following.attack - shin.baseAttack),
+	}, { __index = shin })
+end
+
+local function BestAttackFrom(match, hero, fromPos, ctx)
+	local best = 0
+	local reach = ReachFrom(match, hero, fromPos, AttackRangeOf(match, hero))
+	for _, enemy in ipairs(ctx.enemies) do
+		if reach[enemy.position] then
+			best = math.max(best, ScoreAttack(match, hero, enemy, fromPos, ctx) or 0)
+		end
+	end
+	return best
+end
+
+function BotBrain.PickSwapTarget(match, shin, options)
+	local depois = StanceAfterSwap(shin)
+	if not depois then return nil end
+
+	local enemies = {}
+	for _, enemy in ipairs(LivingHeroesOf(match, MatchQuery.OpponentSide(match, shin.ownerId).id)) do
+		if not enemy.stealth then table.insert(enemies, enemy) end
+	end
+
+	local ctx = BuildBoardContext(match, shin.ownerId, enemies)
+
+	local agora = ScorePosition(match, shin, shin.position, ctx)
+		+ BestAttackFrom(match, shin, shin.position, ctx)
+
+	local best, bestGain = nil, SWAP_MIN_GAIN
+	for _, uid in ipairs(options) do
+		local ally = match.heroes[uid]
+		if ally and ally.isAlive then
+			local gain = ScorePosition(match, depois, ally.position, ctx)
+				+ BestAttackFrom(match, depois, ally.position, ctx)
+				+ ScorePosition(match, ally, shin.position, ctx)
+				- agora
+				- ScorePosition(match, ally, ally.position, ctx)
+
+			if gain > bestGain then
+				best, bestGain = uid, gain
 			end
 		end
 	end
