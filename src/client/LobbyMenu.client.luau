@@ -29,6 +29,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
+local Orientation = require(ReplicatedStorage.Modules.Orientation)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroChallenges = require(ReplicatedStorage.Modules.HeroChallenges)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
@@ -477,8 +478,24 @@ panelTitle.Parent = panel
 -- toque em "HERÓIS" com as regras abertas ia parar no fundo e só fechava o
 -- painel. A troca de painel mudou de lugar: agora mora aqui dentro, onde
 -- nenhum fundo passa na frente.
+-- ===== A FILEIRA DE ABAS =====
+-- Deitada no Landscape e EM PÉ no Portrait. Duas razões, e as duas aparecem na
+-- tela estreita: três botões de 96px lado a lado não cabem, e a fileira encostava
+-- no nível e nas moedas, que são ancorados no canto de cima da TELA e passam por
+-- cima do painel.
+--
+-- Descer a fileira resolve a batida sem mexer nos crachás: eles ficam onde estão,
+-- e quem sai da frente é o menu. O `TAB_CLEARANCE` é a altura que os dois crachás
+-- ocupam a partir do topo (o de moedas começa em 58 e tem 28), com folga.
 local TAB_HEIGHT = 26
-local BODY_TOP = 36 + TAB_HEIGHT + 6
+local TAB_GAP = 6
+local TAB_WIDTH = 96
+local TAB_TOP = 36
+local TAB_CLEARANCE = 62
+local TAB_COUNT = 3
+
+local tabTop = TAB_TOP
+local BODY_TOP = TAB_TOP + TAB_HEIGHT + TAB_GAP
 
 local openModal -- definido mais abaixo; as abas precisam dele aqui
 
@@ -534,6 +551,42 @@ local body = Instance.new("ScrollingFrame")
 body.Name = "Body"
 body.Position = UDim2.new(0, 0, 0, BODY_TOP)
 body.Size = UDim2.new(1, 0, 1, -BODY_TOP)
+
+-- Chamado na entrada e a cada rotação. Reposiciona o que já existe em vez de
+-- montar uma segunda barra: os botões são os mesmos, muda direção, largura e
+-- onde a fileira começa.
+local function layoutTabs(orientation)
+	local vertical = orientation == Orientation.PORTRAIT
+
+	tabLayout.FillDirection = vertical
+		and Enum.FillDirection.Vertical
+		or Enum.FillDirection.Horizontal
+
+	tabTop = vertical and (TAB_TOP + TAB_CLEARANCE) or TAB_TOP
+	BODY_TOP = tabTop + TAB_HEIGHT + TAB_GAP
+
+	if vertical then
+		-- Empilhados, cada um ocupa a largura toda do painel e a fileira cresce
+		-- pra baixo. O corpo desce junto pra não ficar por baixo dos botões.
+		local altura = TAB_COUNT * TAB_HEIGHT + (TAB_COUNT - 1) * TAB_GAP
+		tabRow.Size = UDim2.new(1, 0, 0, altura)
+		BODY_TOP = tabTop + altura + TAB_GAP
+	else
+		tabRow.Size = UDim2.new(1, 0, 0, TAB_HEIGHT)
+	end
+
+	tabRow.Position = UDim2.new(0, 0, 0, tabTop)
+
+	for _, tab in pairs(tabs) do
+		tab.button.Size = vertical
+			and UDim2.new(1, 0, 0, TAB_HEIGHT)
+			or UDim2.new(0, TAB_WIDTH, 1, 0)
+	end
+
+	body.Position = UDim2.new(0, 0, 0, BODY_TOP)
+	body.Size = UDim2.new(1, 0, 1, -BODY_TOP)
+end
+
 body.BackgroundTransparency = 1
 body.BorderSizePixel = 0
 body.CanvasSize = UDim2.new()
@@ -541,6 +594,9 @@ body.AutomaticCanvasSize = Enum.AutomaticSize.Y
 body.ScrollBarThickness = 5
 body.ScrollBarImageColor3 = ACCENT
 body.Parent = panel
+
+layoutTabs(Orientation.Current())
+Orientation.OnChange(layoutTabs)
 
 local bodyLayout = Instance.new("UIListLayout")
 bodyLayout.Padding = UDim.new(0, 10)
@@ -1421,6 +1477,40 @@ buildMenuButton("REGRAS", "rules", 1)
 buildMenuButton("CAMPANHA", "campaign", 2, Color3.fromRGB(120, 220, 170))
 buildMenuButton("HERÓIS", "store", 3)
 
+-- ===== A BARRA EM PÉ NO PORTRAIT =====
+-- Deitada, os três botões ocupam 292px e o crachá de nível está ancorado no
+-- canto direito da TELA: numa tela de 375 eles se encontram, e "HERÓIS" some
+-- por baixo do nível. Empilhados, a barra ocupa 92px de largura e passa longe.
+--
+-- São os MESMOS botões, só mudam direção e largura — a barra não é remontada.
+local BAR_BUTTON_W = 92
+local BAR_BUTTON_H = 34
+local BAR_GAP = 6
+local BAR_COUNT = 3
+
+local function layoutMenuBar(orientation)
+	local vertical = orientation == Orientation.PORTRAIT
+
+	barLayout.FillDirection = vertical
+		and Enum.FillDirection.Vertical
+		or Enum.FillDirection.Horizontal
+
+	buttonBar.Size = vertical
+		and UDim2.new(0, BAR_BUTTON_W, 0, BAR_COUNT * BAR_BUTTON_H + (BAR_COUNT - 1) * BAR_GAP)
+		or UDim2.new(0, BAR_COUNT * BAR_BUTTON_W + (BAR_COUNT - 1) * BAR_GAP, 0, BAR_BUTTON_H)
+
+	for _, child in ipairs(buttonBar:GetChildren()) do
+		if child:IsA("TextButton") then
+			child.Size = vertical
+				and UDim2.new(1, 0, 0, BAR_BUTTON_H)
+				or UDim2.new(0, BAR_BUTTON_W, 1, 0)
+		end
+	end
+end
+
+layoutMenuBar(Orientation.Current())
+Orientation.OnChange(layoutMenuBar)
+
 -- ===================== VISIBILIDADE =====================
 -- Mesma regra do crachá de nível: fora do lobby isso tudo sai da frente.
 MatchUpdate.OnClientEvent:Connect(function(state)
@@ -1479,4 +1569,5 @@ end)
 task.defer(function()
 	GameAction:FireServer("claimRewards")
 	GameAction:FireServer("challenge", "sync")
+	GameAction:FireServer("fightStars")
 end)

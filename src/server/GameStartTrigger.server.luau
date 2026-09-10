@@ -29,6 +29,7 @@ local Tutorial = require(ReplicatedStorage.Modules.Tutorial)
 local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
 local ChallengeService = require(ServerScriptService.Modules.ChallengeService)
 local CoinService = require(ServerScriptService.Modules.CoinService)
+local FightStore = require(ServerScriptService.Modules.FightStore)
 local ProgressionService = require(ServerScriptService.Modules.ProgressionService)
 local LobbyZoneBuilder = require(ServerScriptService.Modules.LobbyZoneBuilder)
 local HeroUnlockService = require(ServerScriptService.Modules.HeroUnlockService)
@@ -458,7 +459,7 @@ local ACTION_BUDGET = {
 	move = 8, attack = 8, allyChoice = 8, resurrect = 8, endTurn = 8,
 	place = 8,
 
-	queue = 2, cancelQueue = 2, fight = 2, challenge = 4,
+	queue = 2, cancelQueue = 2, fight = 2, challenge = 4, fightStars = 3,
 	leaveMatch = 2, replay = 2, sandbox = 8, tutorial = 4,
 
 	-- Medidos nos pedidos que o cliente realmente faz, não no que parecia
@@ -541,7 +542,7 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2, arg3)
 	elseif action == "resurrect" then
 		MatchManager.Resurrect(player, arg1)
 	elseif action == "allyChoice" then
-		MatchManager.ResolveAllyChoice(player, arg1)
+		MatchManager.ResolveAllyChoice(player, arg1, arg2)
 	elseif action == "leaveMatch" then
 		MatchManager.LeaveMatch(player)
 	elseif action == "matchLog" then
@@ -559,6 +560,12 @@ GameAction.OnServerEvent:Connect(function(player, action, arg1, arg2, arg3)
 		end
 	elseif action == "fight" then
 		OnFightRequested(player, arg1)
+	elseif action == "fightStars" then
+		-- O cliente PEDE, e não só espera o empurrão do login: o Push do Preload
+		-- pode sair antes do LocalScript ter conectado o handler, e aí o lobby
+		-- ficava com zero estrela em cima de um save cheio. Mesmo arranjo do
+		-- "challenge sync", que já existia por este mesmo motivo.
+		FightStore.Push(player)
 	elseif action == "challenge" then
 		ChallengeService.Handle(player, arg1, arg2, arg3)
 	elseif action == "sandbox" then

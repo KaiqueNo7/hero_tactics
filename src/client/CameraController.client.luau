@@ -12,11 +12,14 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local StarterPlayer = game:GetService("StarterPlayer")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local CameraProfiles = require(ReplicatedStorage.Modules.CameraProfiles)
+local Orientation = require(ReplicatedStorage.Modules.Orientation)
 local BoardReady = ReplicatedStorage.Remotes:WaitForChild("BoardReady")
 local MatchUpdate = ReplicatedStorage.Remotes:WaitForChild("MatchUpdate")
 
@@ -26,14 +29,17 @@ local camera = workspace.CurrentCamera
 local DEFAULT_FOV = camera.FieldOfView
 local matchConnections = {}
 
--- ===== ENQUADRAMENTO (medido em jogo) =====
--- Calibrado no voo livre (F) e copiado do HUD: o log de lá usa a MESMA origem
--- (boardCenter) e a mesma convenção de ângulo do applyCamera, então os números
--- passam direto pra cá, sem conversão.
+-- ===== ENQUADRAMENTO =====
+-- Os quatro números deixaram de ser constantes e viraram ESTADO: quem escreve
+-- neles é o perfil ativo (ver ApplyProfile), e os valores por orientação moram
+-- no CameraProfiles. Começam no Landscape, que é o que o GameConfig guarda e o
+-- que o BoardSpawner e o SandboxClient também leem.
 --
--- O azimute saiu de 16° pra 91°: o tabuleiro passou a ser visto quase de lado,
--- não mais de frente. Com a câmera um pouco mais alta e bem mais perto
--- (95 -> 75) as casas pegam mais luz e o hexágono fica menos achatado.
+-- Continuam sendo medidos do mesmo jeito: voo livre (F) e copiar o HUD, que usa
+-- a MESMA origem (boardCenter) e a mesma convenção de ângulo do applyCamera.
+--
+-- Este script NÃO decide se o aparelho é celular. Ele recebe o perfil pronto do
+-- Orientation e aplica — a pergunta "que orientação vale" tem um dono só.
 local FIELD_OF_VIEW = GameConfig.CAMERA_FOV
 local ELEVATION = GameConfig.CAMERA_ELEVATION
 local AZIMUTH = GameConfig.CAMERA_AZIMUTH
@@ -47,6 +53,10 @@ local FRAMING = 1.12
 -- ia a 135 e a câmera saía ~73 studs além da borda — de fora, olhando o
 -- cenário de trás, com o vazio preto aparecendo por baixo e pelas laterais.
 -- 1.5 mantém ela dentro da margem nova do ArenaBuilder com folga.
+--
+-- Os dois fatores também viraram estado, pelo mesmo motivo do enquadramento: o
+-- Portrait parte de 126 em vez de 75, e repetir o teto de 1.5 lá levaria o raio
+-- a 189. Os limites de cada perfil moram no CameraProfiles.
 local ZOOM_STEP = 5
 local ZOOM_MIN_FACTOR, ZOOM_MAX_FACTOR = 0.45, 1.5
 
@@ -120,6 +130,94 @@ local function applyCamera()
 			:format(ELEVATION, radius, camera.FieldOfView, AZIMUTH)
 	end
 end
+
+-- ===== TROCA DE PERFIL =====
+-- Anima os quatro números e deixa o applyCamera montar o CFrame a cada passo.
+-- Interpolar os PARÂMETROS e não o CFrame é o que faz a câmera orbitar em volta
+-- do tabuleiro em vez de atravessar o cenário em linha reta entre dois pontos.
+--
+-- A CINEMÁTICA MANDA. O applyCamera incrementa o finishToken, que é como a
+-- câmera de finalização sabe que foi interrompida; animar por cima dela mataria
+-- o abate no meio. Quando há uma rodando, a troca fica guardada e sai depois —
+-- é o item 38, e é também o que impede este script de disputar a câmera quadro
+-- a quadro com a cinemática.
+local profileContext = CameraProfiles.MATCH
+local profileTween = nil
+local pendingProfile = nil
+local cinematicActive = false
+
+local function ApplyProfile(orientation, instant)
+	local profile = CameraProfiles.Get(profileContext, orientation)
+	if not (profile and activated and boardCenter) then return end
+
+	if profileTween then
+		profileTween:Cancel()
+		profileTween = nil
+	end
+
+	ZOOM_MIN_FACTOR, ZOOM_MAX_FACTOR = profile.zoomMin, profile.zoomMax
+
+	-- O raio guarda a proporção de zoom que o jogador tinha escolhido: quem
+	-- estava no máximo continua no máximo depois da troca, e não é jogado de
+	-- volta pro padrão do perfil novo.
+	local ratio = baseRadius > 0 and (radius / baseRadius) or 1
+	baseRadius = profile.distance
+	minRadius = baseRadius * ZOOM_MIN_FACTOR
+	maxRadius = baseRadius * ZOOM_MAX_FACTOR
+
+	local targetRadius = math.clamp(baseRadius * ratio, minRadius, maxRadius)
+
+	if instant then
+		ELEVATION, AZIMUTH, FIELD_OF_VIEW = profile.elevation, profile.azimuth, profile.fov
+		radius = targetRadius
+		camera.FieldOfView = FIELD_OF_VIEW
+		applyCamera()
+		return
+	end
+
+	-- Um Instance descartável só pra ter propriedades animáveis: os quatro
+	-- números são locais do script, e TweenService não anima local.
+	local carrier = Instance.new("NumberValue")
+	local fromElevation, fromAzimuth = ELEVATION, AZIMUTH
+	local fromFov, fromRadius = FIELD_OF_VIEW, radius
+
+	profileTween = TweenService:Create(carrier,
+		TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
+		{ Value = 1 })
+
+	carrier.Changed:Connect(function(alpha)
+		if freeFlying then return end
+
+		ELEVATION = fromElevation + (profile.elevation - fromElevation) * alpha
+		AZIMUTH = fromAzimuth + (profile.azimuth - fromAzimuth) * alpha
+		FIELD_OF_VIEW = fromFov + (profile.fov - fromFov) * alpha
+		radius = fromRadius + (targetRadius - fromRadius) * alpha
+
+		camera.FieldOfView = FIELD_OF_VIEW
+		applyCamera()
+	end)
+
+	profileTween.Completed:Connect(function()
+		carrier:Destroy()
+		profileTween = nil
+	end)
+
+	profileTween:Play()
+end
+
+local function RequestProfile(orientation, instant)
+	if cinematicActive then
+		pendingProfile = orientation
+		return
+	end
+
+	pendingProfile = nil
+	ApplyProfile(orientation, instant)
+end
+
+Orientation.OnChange(function(current)
+	RequestProfile(current)
+end)
 
 local function resetZoom()
 	radius = baseRadius
@@ -457,6 +555,11 @@ local function activateBoardCamera(hexSize, boardOffset, slot)
 	minRadius = baseRadius * ZOOM_MIN_FACTOR
 	maxRadius = baseRadius * ZOOM_MAX_FACTOR
 
+	-- O perfil entra ANTES do primeiro applyCamera e sem animação: entrar na
+	-- partida já com o enquadramento certo, em vez de aparecer em Landscape e
+	-- girar pro Portrait na frente do jogador.
+	RequestProfile(Orientation.Current(), true)
+
 	local groundY = boardOffset.Y
 	local standPos = HexGrid.GetStandPosition(slot or 1, groundY)
 	local lookAt = HexGrid.GetStandFacing(slot or 1, standPos)
@@ -544,6 +647,11 @@ RunService.RenderStepped:Connect(function(dt)
 		updateFreeFly(dt)
 	end
 end)
+
+-- Uma leitura só, na entrada, e depois o módulo se vira sozinho pelo evento de
+-- ViewportSize. Quem chama é este script porque hoje ele é o único cliente do
+-- Orientation; quando o HUD e o lobby entrarem, o Start continua idempotente.
+Orientation.Start()
 
 BoardReady.OnClientEvent:Connect(activateBoardCamera)
 
@@ -637,12 +745,21 @@ local function playFinishCam(info)
 		end
 	end
 
+	-- Solta o crachá E devolve a câmera ao controle do perfil. O token é a
+	-- passagem de bastão: se outra cinemática já assumiu, ela é a dona da marca e
+	-- esta não pode desligá-la.
 	local function dropName()
 		if plate then plate:Destroy() end
 		plate, label, outlines = nil, nil, {}
+
+		if finishToken == token then
+			cinematicActive = false
+			if pendingProfile then RequestProfile(pendingProfile) end
+		end
 	end
 
 	fadeName(1)
+	cinematicActive = true
 
 	task.spawn(function()
 		local elapsed = 0

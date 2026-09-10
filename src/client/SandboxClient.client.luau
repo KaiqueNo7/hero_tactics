@@ -273,7 +273,8 @@ local function SetCine(on)
 	cine.on = on
 	SetHud(not on)
 	SetCharacterVisible(not on)
-	if ui.panel then ui.panel.Visible = not on end
+	if ui.SetOpen then ui.SetOpen(not on and ui.panel.Visible) end
+	if ui.handle then ui.handle.Visible = not on end
 	if not on then SetSlowmo(false) end
 	ApplyCursor()
 end
@@ -294,7 +295,7 @@ LOCAL.cine = function(words)
 end
 
 LOCAL.panel = function()
-	if ui.panel then ui.panel.Visible = not ui.panel.Visible end
+	if ui.SetOpen then ui.SetOpen(not ui.panel.Visible) end
 	ApplyCursor()
 end
 
@@ -332,13 +333,61 @@ local function BuildUi()
 	ui.gui.IgnoreGuiInset = true
 	ui.gui.Parent = player:WaitForChild("PlayerGui")
 
+	-- ===== PUXADOR =====
+	-- O painel de 470x250 come metade da tela de um celular em pé, e ele é
+	-- ferramenta de autor: fica fechado por padrão e abre no toque. O F2 continua
+	-- valendo pra quem está no teclado.
+	--
+	-- Fora do Studio este arquivo inteiro nem chega aqui (o SandboxService devolve
+	-- no-op), então o puxador só existe pra quem está desenvolvendo.
+	ui.handle = Instance.new("TextButton")
+	ui.handle.Name = "SandboxHandle"
+	ui.handle.AnchorPoint = Vector2.new(0, 1)
+	ui.handle.Position = UDim2.new(0, 12, 1, -12)
+	ui.handle.Size = UDim2.fromOffset(104, 30)
+	ui.handle.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
+	ui.handle.BackgroundTransparency = 0.1
+	ui.handle.BorderSizePixel = 0
+	ui.handle.Text = "SANDBOX ▲"
+	ui.handle.TextColor3 = Color3.fromRGB(150, 200, 240)
+	ui.handle.TextSize = 12
+	ui.handle.Font = Enum.Font.GothamBold
+	ui.handle.ZIndex = 3
+	ui.handle.Parent = ui.gui
+
+	local handleCorner = Instance.new("UICorner")
+	handleCorner.Name = "HandleCorner"
+	handleCorner.CornerRadius = UDim.new(0, 8)
+	handleCorner.Parent = ui.handle
+
 	ui.panel = Instance.new("Frame")
-	ui.panel.Size = UDim2.fromOffset(470, 250)
-	ui.panel.Position = UDim2.new(0, 12, 1, -262)
+	ui.panel.Name = "SandboxPanel"
+	-- Escala com teto: numa tela estreita ele encolhe junto em vez de sair pela
+	-- direita, e numa tela larga para de crescer no tamanho que sempre teve.
+	ui.panel.Size = UDim2.new(0.94, 0, 0, 250)
+	ui.panel.Position = UDim2.new(0, 12, 1, -50)
+	ui.panel.AnchorPoint = Vector2.new(0, 1)
 	ui.panel.BackgroundColor3 = Color3.fromRGB(14, 16, 22)
 	ui.panel.BackgroundTransparency = 0.15
 	ui.panel.BorderSizePixel = 0
+	ui.panel.Visible = false
 	ui.panel.Parent = ui.gui
+
+	local panelSize = Instance.new("UISizeConstraint")
+	panelSize.Name = "PanelSize"
+	panelSize.MaxSize = Vector2.new(470, math.huge)
+	panelSize.Parent = ui.panel
+
+	local function SetOpen(open)
+		ui.panel.Visible = open
+		ui.handle.Text = open and "SANDBOX ▼" or "SANDBOX ▲"
+	end
+
+	ui.handle.Activated:Connect(function()
+		SetOpen(not ui.panel.Visible)
+	end)
+
+	ui.SetOpen = SetOpen
 
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 8)
@@ -348,7 +397,7 @@ local function BuildUi()
 	title.Size = UDim2.new(1, -16, 0, 20)
 	title.Position = UDim2.fromOffset(8, 6)
 	title.BackgroundTransparency = 1
-	title.Text = "SANDBOX — F2 esconde o painel, F voa a câmera"
+	title.Text = "SANDBOX — toque no puxador ou F2 pra fechar, F voa a câmera"
 	title.TextColor3 = Color3.fromRGB(120, 200, 255)
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.TextSize = 12

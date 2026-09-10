@@ -838,9 +838,17 @@ local function AllyOptionsFor(match, hero, kind)
 	return options
 end
 
+-- UMA OFERTA POR HERÓI, e não uma por partida. Era um slot só, e como a Égide
+-- da Kira e a Troca do Shin abrem as duas no mesmo onTurnStart, quem disparasse
+-- primeiro tomava o lugar e a habilidade do outro sumia sem aviso naquele turno.
+--
+-- A infraestrutura continua compartilhada (mesma lista de alvos, mesmo destaque,
+-- mesmo clique, mesma limpeza no BeginTurn); o que deixou de ser compartilhado é
+-- o ESTADO. Cada herói tem a própria entrada, some sozinha quando é usada, e o
+-- uso de uma não encosta na outra.
 local function OfferAllyChoice(match, hero, kind)
 	if not match.turn or match.turn.ownerId ~= hero.ownerId then return end
-	if match.pendingAlly then return end
+	if match.pendingAlly[hero.uid] then return end
 
 	local spec = ALLY_CHOICE[kind]
 	if not spec then return end
@@ -854,7 +862,7 @@ local function OfferAllyChoice(match, hero, kind)
 		end
 	end
 
-	match.pendingAlly = {
+	match.pendingAlly[hero.uid] = {
 		ownerId = hero.ownerId,
 		sourceUid = hero.uid,
 		kind = kind,
@@ -1333,17 +1341,19 @@ local function Snapshot(match, viewerId)
 		pendingPromotion = { options = match.pendingPromotion.options }
 	end
 
+	-- Um mapa por uid do dono da oferta, e não uma oferta só: com Kira e Shin no
+	-- mesmo time as duas ficam abertas ao mesmo tempo, e o cliente acende a do
+	-- herói que estiver selecionado.
 	local pendingAlly = nil
-	if match.pendingAlly and match.pendingAlly.ownerId == viewerId then
-		local source = match.heroes[match.pendingAlly.sourceUid]
-		local options = AllyOptionsFor(match, source, match.pendingAlly.kind)
+	for sourceUid, pending in pairs(match.pendingAlly) do
+		if pending.ownerId == viewerId then
+			local source = match.heroes[sourceUid]
+			local options = AllyOptionsFor(match, source, pending.kind)
 
-		if #options > 0 then
-			pendingAlly = {
-				sourceUid = match.pendingAlly.sourceUid,
-				kind = match.pendingAlly.kind,
-				options = options,
-			}
+			if #options > 0 then
+				pendingAlly = pendingAlly or {}
+				pendingAlly[sourceUid] = { kind = pending.kind, options = options }
+			end
 		end
 	end
 
@@ -1660,12 +1670,10 @@ local function AwardFightStars(match, winningSide)
 	-- Uma pela vitória, mais uma por linha cumprida. A soma reproduz a regra em
 	-- degrau porque "sem promoção" está nas duas linhas (ver Campaign).
 	local earned = 1
-	local reasons = { { text = "Vitória", done = true } }
-
 	for _, star in ipairs(rules) do
-		local done = Objectives.Eval(match, run, star.check) == Objectives.DONE
-		if done then earned += 1 end
-		table.insert(reasons, { text = star.text, done = done })
+		if Objectives.Eval(match, run, star.check) == Objectives.DONE then
+			earned += 1
+		end
 	end
 
 	local gained = FightStore.Record(winningSide.player, match.fight.hero, earned)
@@ -1676,7 +1684,6 @@ local function AwardFightStars(match, winningSide)
 		max = Campaign.MAX_STARS,
 		gained = gained,
 		xp = gained * Campaign.XP_PER_STAR,
-		reasons = reasons,
 		ownerId = winningSide.id,
 	}
 
@@ -2033,25 +2040,35 @@ function BotPlayTurn(match, botId)
 		-- tabuleiro que o laço vai ler: a Troca do Shin reposiciona dois heróis e
 		-- vira a postura dele, e planejar o passo com as casas antigas seria
 		-- decidir com um tabuleiro que já não existe.
+		-- Uma passada por oferta aberta: com Kira e Shin no mesmo time o bot
+		-- resolve as duas, e a lista é copiada antes porque resolver mexe no mapa.
 		local function TentarEscolhaAliada()
-			if not (MatchIsLive(match) and match.pendingAlly
-				and match.pendingAlly.ownerId == botId) then return end
+			if not MatchIsLive(match) then return end
 
-			local source = match.heroes[match.pendingAlly.sourceUid]
-			local kind = match.pendingAlly.kind
-			local options = AllyOptionsFor(match, source, kind)
-			if #options == 0 then return end
+			local abertas = {}
+			for sourceUid, pending in pairs(match.pendingAlly) do
+				if pending.ownerId == botId then table.insert(abertas, sourceUid) end
+			end
 
-			local pick = kind == "swap"
-				and BotBrain.PickSwapTarget(match, source, options)
-				or BotBrain.PickShieldTarget(match, botId, options)
+			for _, sourceUid in ipairs(abertas) do
+				local pending = match.pendingAlly[sourceUid]
+				local source = pending and match.heroes[sourceUid]
 
-			-- Recusar é jogada válida na Troca: sem ganho, o Shin fica onde está
-			-- e guarda a postura. O escudo nunca devolve nil — ele sempre vale.
-			if not pick then return end
+				if source then
+					local options = AllyOptionsFor(match, source, pending.kind)
+					local pick = #options > 0 and (pending.kind == "swap"
+						and BotBrain.PickSwapTarget(match, source, options)
+						or BotBrain.PickShieldTarget(match, botId, options)) or nil
 
-			MatchManager.ResolveAllyChoice(nil, pick, match)
-			task.wait(BOT_ACTION_DELAY)
+					-- Recusar é jogada válida na Troca: sem ganho, o Shin fica
+					-- onde está e guarda a postura. O escudo sempre vale.
+					if pick then
+						MatchManager.ResolveAllyChoice(nil, sourceUid, pick, match)
+						task.wait(BOT_ACTION_DELAY)
+						if not MatchIsLive(match) then return end
+					end
+				end
+			end
 		end
 
 		TentarEscolhaAliada()
@@ -2234,7 +2251,7 @@ function BeginTurn(match, ownerId, number)
 	-- quem abre a oferta (quem ganhou escudo no turno passado some das opções
 	-- sozinho), o que fecha a oferta que o jogador escolheu ignorar, e o que
 	-- limita a Troca do Shin a uma por turno sem inventar contador de ação.
-	match.pendingAlly = nil
+	match.pendingAlly = {}
 
 	-- onTurnStart dispara pros heróis dos DOIS lados (igual ao Phaser)
 	for _, hero in pairs(match.heroes) do
@@ -2725,9 +2742,13 @@ local ALLY_RESOLVE = {
 	end,
 }
 
-function MatchManager.ResolveAllyChoice(player, heroUid, match)
+-- O CLIENTE DIZ DE QUEM É A JOGADA. Com duas ofertas abertas ao mesmo tempo,
+-- só o alvo não basta pra saber se aquele clique era escudo da Kira ou Troca do
+-- Shin — a fonte é o herói que o jogador tem selecionado. O servidor não confia
+-- nela: só usa pra achar a oferta, e a oferta é que diz o que fazer.
+function MatchManager.ResolveAllyChoice(player, sourceUid, heroUid, match)
 	match = match or MatchOfPlayer(player)
-	local pending = match and match.pendingAlly
+	local pending = match and match.pendingAlly[sourceUid]
 	if not pending then return end
 	if match.phase ~= "battle" or not match.turn then return end
 	if match.turn.ownerId ~= pending.ownerId then return end
@@ -2753,7 +2774,9 @@ function MatchManager.ResolveAllyChoice(player, heroUid, match)
 		ALLY_RESOLVE[pending.kind](match, source, target)
 	end
 
-	match.pendingAlly = nil
+	-- Fecha SÓ a oferta usada. A do outro herói segue de pé: usar a Égide não
+	-- pode gastar a Troca, nem o contrário.
+	match.pendingAlly[sourceUid] = nil
 
 	-- A Troca passa por casa em chamas, e fogo mata: sem esta checagem o último
 	-- herói podia cair aqui e a partida seguir aberta até a ação seguinte. Mesma
@@ -3114,7 +3137,7 @@ function MatchManager.StartMatch(playerOne, playerTwo, slot, fight, options)
 		lastSeen = {},
 		busy = false,
 		pendingPromotion = nil, -- ver TryTriggerPromotion/MatchManager.Resurrect
-		pendingAlly = nil, -- ver OfferAllyChoice/MatchManager.ResolveAllyChoice
+		pendingAlly = {}, -- ver OfferAllyChoice/MatchManager.ResolveAllyChoice
 	}
 
 	match.skillApi = BuildSkillApi(match)
@@ -3182,7 +3205,7 @@ local function ClearScene(match)
 	match.lastSeen = {}
 	match.log = {}
 	match.pendingPromotion = nil
-	match.pendingAlly = nil
+	match.pendingAlly = {}
 	match.finisher = nil
 	match.lastDeath = nil
 	match.winner = nil

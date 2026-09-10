@@ -1726,21 +1726,47 @@ resultTeamLayout.Parent = resultTeam
 -- só existem quando o snapshot traz `fightStars` — em PvP e em treino livre o
 -- painel continua exatamente como era, incluindo a altura.
 local starFx = {
-	SIZE = 46,
-	GAP = 8,
-	ROW_TOP = 74,
-	REASON_TOP = 126,
-	BLOCK_H = 104,
+	-- A ESTRELA MEDE POR ESCALA, não por pixel. Era 46 fixo mais uma lista de
+	-- motivos embaixo, e no celular isso estourava o painel: o texto quebrava em
+	-- duas linhas, empurrava os cards e cortava o que sobrava. A lista saiu, e o
+	-- tamanho passou a sair da LARGURA disponível, com teto e piso — telas largas
+	-- não ganham estrela gigante, telas estreitas não ganham estrela ilegível.
+	SIZE_SCALE = 0.11,
+	SIZE_MIN = 26,
+	SIZE_MAX = 46,
+	GAP_RATIO = 0.18,
+	ROW_TOP = 70,
+	PAD = 10,
 	ON = Color3.fromRGB(255, 206, 104),
 	OFF = Color3.fromRGB(58, 62, 76),
 	GLOW = Color3.fromRGB(255, 246, 214),
 	token = 0,
 }
 
+-- Quanto cabe: o painel já foi dimensionado quando isto roda, então a conta usa
+-- a largura REAL dele e não a da tela. Devolve o lado da estrela e o vão.
+function starFx.Metrics(count)
+	local width = resultPanel.AbsoluteSize.X
+	if width <= 0 then width = 460 end
+
+	local side = math.clamp(width * starFx.SIZE_SCALE, starFx.SIZE_MIN, starFx.SIZE_MAX)
+	local gap = side * starFx.GAP_RATIO
+
+	-- Não deixa a fileira passar da largura útil nem em tela muito estreita.
+	local total = count * side + math.max(0, count - 1) * gap
+	local usable = width - starFx.PAD * 2
+	if total > usable and total > 0 then
+		local shrink = usable / total
+		side, gap = side * shrink, gap * shrink
+	end
+
+	return math.floor(side), math.floor(gap)
+end
+
 starFx.row = Instance.new("Frame")
 starFx.row.Name = "FightStarsRow"
 starFx.row.Position = UDim2.new(0, 0, 0, starFx.ROW_TOP)
-starFx.row.Size = UDim2.new(1, 0, 0, starFx.SIZE)
+starFx.row.Size = UDim2.new(1, 0, 0, starFx.SIZE_MAX)
 starFx.row.BackgroundTransparency = 1
 starFx.row.Visible = false
 starFx.row.Parent = resultPanel
@@ -1750,35 +1776,18 @@ starFx.rowLayout.Name = "FightStarsLayout"
 starFx.rowLayout.FillDirection = Enum.FillDirection.Horizontal
 starFx.rowLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 starFx.rowLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-starFx.rowLayout.Padding = UDim.new(0, starFx.GAP)
 starFx.rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
 starFx.rowLayout.Parent = starFx.row
-
-starFx.reasons = Instance.new("Frame")
-starFx.reasons.Name = "FightStarReasons"
-starFx.reasons.Position = UDim2.new(0, 0, 0, starFx.REASON_TOP)
-starFx.reasons.Size = UDim2.new(1, 0, 0, starFx.BLOCK_H - (starFx.REASON_TOP - starFx.ROW_TOP))
-starFx.reasons.BackgroundTransparency = 1
-starFx.reasons.Visible = false
-starFx.reasons.Parent = resultPanel
-
-starFx.reasonsLayout = Instance.new("UIListLayout")
-starFx.reasonsLayout.Name = "FightStarReasonsLayout"
-starFx.reasonsLayout.FillDirection = Enum.FillDirection.Vertical
-starFx.reasonsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-starFx.reasonsLayout.Padding = UDim.new(0, 2)
-starFx.reasonsLayout.SortOrder = Enum.SortOrder.LayoutOrder
-starFx.reasonsLayout.Parent = starFx.reasons
 
 -- A estrela é o glifo com gradiente dourado e contorno escuro, e não um asset:
 -- o projeto ainda não tem imagem de estrela, e o glifo com essas três camadas
 -- lê bem em qualquer fundo de arena. Trocar por ImageLabel depois não muda a
 -- animação, que mexe em tamanho, rotação e transparência.
-function starFx.Build(index, lit)
+function starFx.Build(index, lit, side)
 	local star = Instance.new("TextLabel")
 	star.Name = ("Star%d"):format(index)
 	star.LayoutOrder = index
-	star.Size = UDim2.fromOffset(starFx.SIZE, starFx.SIZE)
+	star.Size = UDim2.fromOffset(side, side)
 	star.BackgroundTransparency = 1
 	star.Text = "★"
 	star.TextScaled = true
@@ -1809,45 +1818,36 @@ function starFx.Build(index, lit)
 	return star, stroke
 end
 
-function starFx.Reason(entry, order)
-	local line = Instance.new("TextLabel")
-	line.Name = entry.done and ("ReasonDone%d"):format(order) or ("ReasonMissed%d"):format(order)
-	line.LayoutOrder = order
-	line.Size = UDim2.new(1, -24, 0, 15)
-	line.BackgroundTransparency = 1
-	line.Font = GameConfig.UI_FONT_BODY
-	line.TextSize = 12
-	line.TextXAlignment = Enum.TextXAlignment.Center
-	line.Text = (entry.done and "✓  " or "✗  ") .. entry.text
-	line.TextColor3 = entry.done and Color3.fromRGB(150, 225, 175) or Color3.fromRGB(150, 160, 182)
-	line.TextTransparency = 1
-	line.Parent = starFx.reasons
-	return line
-end
-
 -- Uma de cada vez, com atraso entre elas: três estrelas aparecendo juntas viram
 -- um borrão só, e o que dá peso é a contagem. A conquistada entra grande e
 -- encolhe com Back (o estalo); a perdida entra sem estalo e sem brilho, porque
 -- comemorar o que faltou é confuso.
-function starFx.Play(entries, earned)
+--
+-- Sem lista de motivos: as estrelas cheias e vazias já contam a história, e o
+-- texto era o que estourava o painel no celular.
+function starFx.Play(count, earned)
 	starFx.token += 1
 	local token = starFx.token
 
-	for index = 1, #entries do
+	local side, gap = starFx.Metrics(count)
+	starFx.rowLayout.Padding = UDim.new(0, gap)
+	starFx.row.Size = UDim2.new(1, 0, 0, side)
+
+	for index = 1, count do
 		local lit = index <= earned
-		local star, stroke = starFx.Build(index, lit)
+		local star, stroke = starFx.Build(index, lit, side)
 
 		task.delay(0.18 + (index - 1) * 0.22, function()
 			if starFx.token ~= token or not star.Parent then return end
 
-			star.Size = UDim2.fromOffset(starFx.SIZE * (lit and 2.1 or 1.25),
-				starFx.SIZE * (lit and 2.1 or 1.25))
+			local burst = side * (lit and 2.1 or 1.25)
+			star.Size = UDim2.fromOffset(burst, burst)
 			star.Rotation = lit and -28 or -8
 
 			local style = lit and Enum.EasingStyle.Back or Enum.EasingStyle.Quad
 			TweenService:Create(star, TweenInfo.new(lit and 0.34 or 0.22, style,
 				Enum.EasingDirection.Out), {
-				Size = UDim2.fromOffset(starFx.SIZE, starFx.SIZE),
+				Size = UDim2.fromOffset(side, side),
 				Rotation = 0,
 				TextTransparency = lit and 0 or 0.45,
 			}):Play()
@@ -1860,13 +1860,7 @@ function starFx.Play(entries, earned)
 		end)
 	end
 
-	for order, entry in ipairs(entries) do
-		local line = starFx.Reason(entry, order)
-		task.delay(0.18 + #entries * 0.22 + order * 0.08, function()
-			if starFx.token ~= token or not line.Parent then return end
-			TweenService:Create(line, TweenInfo.new(0.25), { TextTransparency = 0 }):Play()
-		end)
-	end
+	return side
 end
 
 function starFx.Clear()
@@ -1874,26 +1868,23 @@ function starFx.Clear()
 	for _, child in ipairs(starFx.row:GetChildren()) do
 		if child:IsA("GuiObject") then child:Destroy() end
 	end
-	for _, child in ipairs(starFx.reasons:GetChildren()) do
-		if child:IsA("GuiObject") then child:Destroy() end
-	end
 	starFx.row.Visible = false
-	starFx.reasons.Visible = false
 end
 
--- Devolve quanto o resto do painel precisa descer. Zero quando não há estrelas,
--- e é o que mantém PvP e treino livre com o layout de sempre.
+-- Devolve quanto o resto do painel precisa descer, MEDIDO na fileira que acabou
+-- de ser montada em vez de um bloco fixo: em tela estreita a estrela encolhe e o
+-- painel desce menos, que é o que impede os cards de saírem embaixo.
 function starFx.Render(state)
 	starFx.Clear()
 
 	local info = state and state.fightStars
-	if not (info and info.reasons) then return 0 end
+	local count = info and info.max
+	if not (info and count and count > 0) then return 0 end
 
 	starFx.row.Visible = true
-	starFx.reasons.Visible = true
-	starFx.Play(info.reasons, info.earned or 0)
+	local side = starFx.Play(count, info.earned or 0)
 
-	return starFx.BLOCK_H
+	return side + starFx.PAD
 end
 
 local resultPage = "mine"
@@ -2412,6 +2403,13 @@ function renderResultTeam(state)
 	-- As estrelas entram entre o subtítulo e a fileira, então o painel cresce e a
 	-- fileira desce pelo MESMO número. Sem `fightStars` no snapshot o deslocamento
 	-- é zero e o painel fica idêntico ao que sempre foi.
+	-- A LARGURA VEM PRIMEIRO. O tamanho da estrela é medido no painel, então
+	-- desenhá-la antes de o painel ter o tamanho desta rodada media o da rodada
+	-- anterior — e na primeira vitória mede o valor inicial, que não é o real.
+	local count = math.max(#mine, 1)
+	local width = 24 + count * RESULT_CARD_W + (count - 1) * RESULT_CARD_GAP
+	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412)
+
 	local starBlock = showingMine and starFx.Render(state) or 0
 	resultTeam.Position = UDim2.new(0, 0, 0, RESULT_ROW_TOP + starBlock)
 
@@ -2422,8 +2420,6 @@ function renderResultTeam(state)
 			0, RESULT_ROW_TOP + starBlock + RESULT_CARD_H / 2)
 	end
 
-	local count = math.max(#mine, 1)
-	local width = 24 + count * RESULT_CARD_W + (count - 1) * RESULT_CARD_GAP
 	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412 + starBlock)
 
 	-- O selo é por uid, e um PEDAÇO pode ter sido o destaque da partida. Sem
@@ -2922,11 +2918,14 @@ local ALLY_CHOICE_COLOR = {
 -- dela está na mão do jogador: ela não é um modo à parte que nasce no início do
 -- turno, é mais uma coisa que a seleção do herói revela, junto das casas de
 -- passo e dos inimigos no alcance.
+-- O snapshot traz um mapa de ofertas abertas, uma por herói: Kira e Shin no
+-- mesmo time abrem as duas no mesmo turno. Acende a do herói selecionado AGORA,
+-- e é isso que mantém as duas habilidades independentes na tela.
 local function renderAllyChoice(state, selectedUid)
 	allyOptionUids = {}
 
-	local pending = state and state.pendingAlly
-	if not pending or pending.sourceUid ~= selectedUid then return end
+	local pending = state and state.pendingAlly and state.pendingAlly[selectedUid]
+	if not pending then return end
 
 	local color = ALLY_CHOICE_COLOR[pending.kind]
 	if not color then return end
@@ -3159,7 +3158,9 @@ mouse.Button1Down:Connect(function()
 		-- e deixar o azul aceso até a resposta chegar convidava a um segundo
 		-- clique que não faria nada
 		clearHighlights()
-		GameAction:FireServer("allyChoice", allyUid)
+		-- A fonte vai junto: com duas ofertas abertas, só o alvo não diria se o
+		-- clique era escudo da Kira ou Troca do Shin.
+		GameAction:FireServer("allyChoice", selectedUid, allyUid)
 		return
 	end
 
