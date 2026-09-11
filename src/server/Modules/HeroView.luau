@@ -21,7 +21,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
-local SoundService = game:GetService("SoundService")
 local InsertService = game:GetService("InsertService")
 local CollectionService = game:GetService("CollectionService")
 
@@ -1227,30 +1226,86 @@ local function TemplateVisual(template, height, skin, rotation)
 end
 
 local function ObjectVisual(view)
-	local spec = ObjectSpec(view)
-	if not spec then return nil end
+    local spec = ObjectSpec(view)
 
-	-- O que o place tem à mão ganha do catálogo: `instance` é escolha de quem
-	-- editou a arena no Studio, `asset` é o padrão de fábrica.
-	local visual = spec.instance
-		and TemplateVisual(ModelFromInstance(spec.instance), spec.height, spec.skin, spec.rotation)
-	if visual then return visual end
+    if not spec then
+        return nil
+    end
 
-	if spec.asset then
-		visual = TemplateVisual(ModelFromAsset(spec.asset), spec.height, spec.skin, spec.rotation)
-		if visual then return visual end
-	end
+    local function FinishVisual(visual, sourceSpec)
+        if not visual then
+            return nil
+        end
 
-	local fallback = Arenas.DEFAULT_OBJECT
-	if fallback and fallback.asset then
-		visual = TemplateVisual(ModelFromAsset(fallback.asset),
-			spec.height or fallback.height, spec.skin or fallback.skin, spec.rotation)
-		if visual then return visual end
-	end
+        visual.rotationX = sourceSpec.rotationX
+        visual.rotationZ = sourceSpec.rotationZ
 
-	if spec.mesh then return { mesh = spec.mesh } end
-	if spec.part then return { part = spec.part } end
-	return nil
+        return visual
+    end
+
+    local visual
+
+    if spec.instance then
+        visual = TemplateVisual(
+            ModelFromInstance(spec.instance),
+            spec.height,
+            spec.skin,
+            spec.rotation
+        )
+
+        visual = FinishVisual(visual, spec)
+
+        if visual then
+            return visual
+        end
+    end
+
+    if spec.asset then
+        visual = TemplateVisual(
+            ModelFromAsset(spec.asset),
+            spec.height,
+            spec.skin,
+            spec.rotation
+        )
+
+        visual = FinishVisual(visual, spec)
+
+        if visual then
+            return visual
+        end
+    end
+
+    local fallback = Arenas.DEFAULT_OBJECT
+
+    if fallback and fallback.asset then
+        visual = TemplateVisual(
+            ModelFromAsset(fallback.asset),
+            spec.height or fallback.height,
+            spec.skin or fallback.skin,
+            spec.rotation or fallback.rotation
+        )
+
+        if visual then
+            visual.rotationX = spec.rotationX or fallback.rotationX
+            visual.rotationZ = spec.rotationZ or fallback.rotationZ
+
+            return visual
+        end
+    end
+
+    if spec.mesh then
+        return {
+            mesh = spec.mesh
+        }
+    end
+
+    if spec.part then
+        return {
+            part = spec.part
+        }
+    end
+
+    return nil
 end
 
 local function ObjectSize(barrel)
@@ -1451,50 +1506,77 @@ end
 -- recebe o clique é a caixa, senão o golpe acertaria uma quina do cristal e o
 -- cliente não acharia o BarrelUid.
 local function AttachObjectModel(part, visual)
-	local model = visual.model:Clone()
-	model.Name = "ObjectModel"
-	model.Parent = part
+		print(
+			"OBJECT ROTATION:",
+			visual.rotation,
+			visual.rotationX,
+			visual.rotationZ
+	)
 
-	if math.abs(visual.scale - 1) > 0.01 then
-		model:ScaleTo(visual.scale)
-	end
+    local model = visual.model:Clone()
 
-	-- leva o CENTRO da caixa delimitadora até a caixa de clique; o pivô do
-	-- modelo pode estar em qualquer canto, e usá-lo direto enterraria metade do
-	-- cristal no chão
-	--
-	-- `rotation` (graus, giro em Y) é a ÚNICA forma de virar o objeto: este
-	-- encaixe cola a caixa delimitadora exatamente em part.CFrame, orientação
-	-- inclusive, então girar a fonte no Studio não sobrevive à montagem. Gira só
-	-- o modelo — a caixa de clique continua alinhada com a casa, senão a área
-	-- clicável passaria a cobrir hexágonos vizinhos.
-	local anchor = part.CFrame
-	if visual.rotation then
-		anchor = anchor * CFrame.Angles(0, math.rad(visual.rotation), 0)
-	end
+    model.Name = "ObjectModel"
+    model.Parent = part
 
-	local boxCFrame = model:GetBoundingBox()
-	model:PivotTo((anchor * boxCFrame:Inverse()) * model:GetPivot())
+    if math.abs(visual.scale - 1) > 0.01 then
+        model:ScaleTo(visual.scale)
+    end
 
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			descendant.Anchored = false
-			descendant.CanCollide = false
-			descendant.CanQuery = false
-			descendant.CanTouch = false
-			descendant.Massless = true
-			descendant.CastShadow = false
+    local anchor = part.CFrame
 
-			if visual.skin then PaintSkin(descendant, visual.skin) end
+    -- Mantém a rotação Y que o sistema já utilizava.
+    if visual.rotation then
+        anchor = anchor * CFrame.Angles(
+            0,
+            math.rad(visual.rotation),
+            0
+        )
+    end
 
-			local weld = Instance.new("WeldConstraint")
-			weld.Part0 = part
-			weld.Part1 = descendant
-			weld.Parent = descendant
-		end
-	end
+    -- Primeiro posiciona o modelo normalmente.
+    local boxCFrame = model:GetBoundingBox()
 
-	return model
+    model:PivotTo(
+        (anchor * boxCFrame:Inverse()) * model:GetPivot()
+    )
+
+    -- Depois aplica a correção de orientação diretamente
+    -- no pivot do ObjectModel.
+    local rotationX = visual.rotationX or 0
+    local rotationZ = visual.rotationZ or 0
+
+    if rotationX ~= 0 or rotationZ ~= 0 then
+        model:PivotTo(
+            model:GetPivot()
+            * CFrame.Angles(
+                math.rad(rotationX),
+                0,
+                math.rad(rotationZ)
+            )
+        )
+    end
+
+    for _, descendant in ipairs(model:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            descendant.Anchored = false
+            descendant.CanCollide = false
+            descendant.CanQuery = false
+            descendant.CanTouch = false
+            descendant.Massless = true
+            descendant.CastShadow = false
+
+            if visual.skin then
+                PaintSkin(descendant, visual.skin)
+            end
+
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = part
+            weld.Part1 = descendant
+            weld.Parent = descendant
+        end
+    end
+
+    return model
 end
 
 function HeroView.CreateBarrel(barrel)

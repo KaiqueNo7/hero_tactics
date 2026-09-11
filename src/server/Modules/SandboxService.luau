@@ -16,6 +16,7 @@ if not RunService:IsStudio() then
 end
 
 local Arenas = require(ReplicatedStorage.Modules.Arenas)
+local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
@@ -116,6 +117,14 @@ local PRESETS = {
 		"spawn Merlin 1 C4 hp=9", "spawn Kira 1 B4", "spawn Nash 1 D4",
 		"spawn Vic 2 C2", "kill Vic",
 		"finish win",
+	},
+	-- Duas de três: é o caso que mostra a estrela acesa E a apagada lado a lado,
+	-- que é o que interessa pra ajustar tamanho, vão e alinhamento da faixa.
+	Victory_Stars_Test = {
+		"arena Florest", "clear",
+		"spawn Merlin 1 C4 hp=9", "spawn Kira 1 B4", "spawn Nash 1 D4",
+		"spawn Vic 2 C2", "kill Vic",
+		"finish win stars=2",
 	},
 	Defeat_Screen_Test = {
 		"arena Rocky", "clear",
@@ -920,7 +929,15 @@ COMMANDS.finisher = function(_player, match, words)
 	Internal.Broadcast(match)
 end
 
-COMMANDS.finish = function(player, match, words)
+-- `finish win stars=2` monta a faixa de estrelas do confronto na tela de
+-- vitória sem precisar jogar uma campanha inteira até o fim. É a única forma
+-- prática de mexer no layout: em partida de verdade o painel só aparece uma vez
+-- por vitória, e refazer o confronto pra ver de novo custa minutos.
+--
+-- NADA DISSO É GRAVADO. O sandbox roda com `progression = false`, então o
+-- AwardFightStars nem é chamado — o que se monta aqui é só a vitrine, e as
+-- estrelas de verdade do jogador não se mexem.
+COMMANDS.finish = function(player, match, words, named)
 	local result = string.lower(words[1] or "win")
 
 	match.phase = "finished"
@@ -932,8 +949,24 @@ COMMANDS.finish = function(player, match, words)
 		match.winner = match.sides[1].id
 	end
 
+	local stars = tonumber(named.stars)
+	if stars and match.winner == match.sides[1].id then
+		local ganhas = math.clamp(math.floor(stars), 0, Campaign.MAX_STARS)
+		match.fightStars = {
+			earned = ganhas,
+			best = ganhas,
+			max = Campaign.MAX_STARS,
+			gained = ganhas,
+			xp = ganhas * Campaign.XP_PER_STAR,
+			ownerId = match.sides[1].id,
+		}
+	else
+		match.fightStars = nil
+	end
+
 	Internal.Broadcast(match)
-	Log(player, "tela final: " .. result)
+	Log(player, ("tela final: %s%s"):format(result,
+		stars and (" com " .. tostring(math.floor(stars)) .. " estrela(s)") or ""))
 end
 
 COMMANDS.rewards = function(player, _match, _words, named)

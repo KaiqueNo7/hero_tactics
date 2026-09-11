@@ -13,7 +13,6 @@ local Arenas = require(ReplicatedStorage.Modules.Arenas)
 local LightingSetup = require(script.Parent.LightingSetup)
 local ArenaBuilder = require(script.Parent.ArenaBuilder)
 
-local ServerStorage = game:GetService("ServerStorage")
 local RunService = game:GetService("RunService")
 
 local BoardSpawner = {}
@@ -34,7 +33,6 @@ local TILE_THICKNESS = 1
 -- primeira versão e sai da frente.
 local ARENA_SLOT_PREFIX = "ArenaSlot_"
 local ARENA_MASTER_PREFIX = "Arena_"
-local LEGACY_STORE = "LegacyArenas"
 
 local function ArenaFolderName(slot)
 	return ARENA_SLOT_PREFIX .. slot
@@ -104,35 +102,7 @@ local function CreateHexTile(template, worldPos, color, hexId)
 	clone:SetAttribute("BaseColor", color)
 	ApplyColor(clone, color)
 
-	-- Aqui existiam duas sobras de depuração, uma por casa: um BillboardGui
-	-- "HexLabel" SEM NENHUM FILHO e um ClickDetector cujo único handler era um
-	-- print. Nenhum código lia os dois.
-	--
-	-- Não era inofensivo: BillboardGui é reprojetado todo quadro mesmo vazio, e
-	-- ClickDetector entra no teste de mouse do engine. Com 61 casas por arena e
-	-- até 6 arenas simultâneas, dava ~366 BillboardGui vazios e ~366
-	-- ClickDetectors sendo processados por quadro, sem desenhar nada.
-	--
-	-- Quem lê o clique é o cliente, pelo atributo HexId em mouse.Target — nunca
-	-- foi por ClickDetector.
-
 	return clone
-end
-
-local function ParkLegacyArena(slot)
-	local legacy = Workspace:FindFirstChild(slot <= 1 and "Arena" or ("Arena_" .. slot))
-	if not legacy or legacy:GetAttribute("Theme") then return end
-
-	local store = ServerStorage:FindFirstChild(LEGACY_STORE)
-	if not store then
-		store = Instance.new("Folder")
-		store.Name = LEGACY_STORE
-		store.Parent = ServerStorage
-	end
-
-	legacy.Parent = store
-	print(("BoardSpawner: %s guardada em ServerStorage.%s — as arenas agora vêm de Arenas.THEMES. Pra usá-la como cenário de uma região, renomeie pra ArenaMaster_<tema> e devolva ao Workspace.")
-		:format(legacy.Name, LEGACY_STORE))
 end
 
 function BoardSpawner.MasterFor(theme)
@@ -149,11 +119,12 @@ function BoardSpawner.EnsureArena(slot, theme)
 	HexGrid.SetHexSize(HEX_RADIUS)
 	HexGrid.Generate()
 
-	ParkLegacyArena(slot)
-
 	local name = ArenaFolderName(slot)
 	local existing = Workspace:FindFirstChild(name)
-	if existing then existing:Destroy() end
+
+	if existing then
+		existing:Destroy()
+	end
 
 	local origin = GameConfig.ArenaOrigin(slot)
 	local master, masterName = BoardSpawner.MasterFor(theme)

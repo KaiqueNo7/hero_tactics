@@ -956,7 +956,7 @@ MatchUpdate.OnClientEvent:Connect(function(state)
 		titleColor = Color3.new(1, 1, 1)
 	else
 		titleBase = ("%s escolhendo..."):format(state.opponentName or "Adversário")
-		titleColor = Color3.fromRGB(255, 175, 175)
+		titleColor = Color3.fromRGB(255, 243, 243)
 	end
 
 	placementDeadline = state.placementSecondsLeft and (os.clock() + state.placementSecondsLeft) or nil

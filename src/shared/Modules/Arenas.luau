@@ -295,20 +295,23 @@ Arenas.THEMES = {
 		lights = {
 			{ class = "PointLight", color = Color3.fromRGB(255, 226, 186), brightness = 1.2, range = 80, height = 28 },
 		},
-		object = {
-			label = "Cactos",
-			hitSound = "WoodHit",
-			breakSound = "WoodBreak",
-			instance = "Cactos",
-			height = 7,
-			rotation = 60,
-			part = {
+	object = {
+		label = "Cactos",
+		hitSound = "WoodHit",
+		breakSound = "WoodBreak",
+		instance = "Cactos",
+		height = 7,
+
+		rotation = 0,
+		rotationX = 180,
+		part = {
 				size = Vector3.new(4.4, 5, 4.4),
 				color = Color3.fromRGB(198, 168, 138),
 				material = Enum.Material.Sandstone,
 				shape = Enum.PartType.Cylinder,
-			},
-			dust = Color3.fromRGB(230, 202, 166),
+		},
+
+		dust = Color3.fromRGB(230, 202, 166),
 		},
 		objectHexes = { "B4", "C3", "C4", "D4" },
 	},

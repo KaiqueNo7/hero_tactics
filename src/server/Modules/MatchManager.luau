@@ -83,6 +83,9 @@ local DEFAULT_RULES = {
 	progression = true,
 	resolve = "elimination",
 	botPolicy = "brain",
+	-- nil = usa o GameConfig.TURN_TIME_LIMIT. A ranqueada vai passar
+	-- GameConfig.RANKED_TURN_TIME_LIMIT aqui; ninguém mais muda o ritmo.
+	turnSeconds = nil,
 }
 
 local function BuildRules(overrides)
@@ -1160,8 +1163,16 @@ local function RematchWantedByOther(match, viewerId)
 	return false
 end
 
+-- O relógio do turno é POR PARTIDA. Era uma constante global lida em cinco
+-- lugares, e com isso o casual e a ranqueada não podiam ter ritmos diferentes.
+-- O valor mora no `rules`, que já carrega o resto do que muda de modo pra modo
+-- (draft, promoção, morte súbita, quem resolve o fim).
+local function TurnLimit(match)
+	return (match.rules and match.rules.turnSeconds) or GameConfig.TURN_TIME_LIMIT
+end
+
 local function TurnIsTimed(match)
-	if GameConfig.TURN_TIME_LIMIT <= 0 or not match.turn then return false end
+	if TurnLimit(match) <= 0 or not match.turn then return false end
 	if not match.vsBot then return true end
 
 	local side = SideOf(match, match.turn.ownerId)
@@ -1173,7 +1184,7 @@ local function TurnSecondsLeft(match)
 	if match.turn.pausedLeft then return match.turn.pausedLeft end
 
 	local elapsed = os.clock() - match.turn.startedAt
-	return math.max(0, math.floor(GameConfig.TURN_TIME_LIMIT - elapsed))
+	return math.max(0, math.floor(TurnLimit(match) - elapsed))
 end
 
 local function ReconnectSecondsLeft(match)
@@ -1395,7 +1406,7 @@ local function Snapshot(match, viewerId)
 		turnNumber = match.turn and match.turn.number or 0,
 		isMyTurn = match.turn and match.turn.ownerId == viewerId or false,
 		turnSecondsLeft = TurnSecondsLeft(match),
-		turnTimeLimit = GameConfig.TURN_TIME_LIMIT,
+		turnTimeLimit = TurnLimit(match),
 
 		reconnect = match.suspendedAt and {
 			secondsLeft = ReconnectSecondsLeft(match),
@@ -2199,7 +2210,7 @@ end
 function ArmTurnClock(match, token)
 	if not TurnIsTimed(match) then return end
 
-	local left = TurnSecondsLeft(match) or GameConfig.TURN_TIME_LIMIT
+	local left = TurnSecondsLeft(match) or TurnLimit(match)
 
 	task.delay(math.max(left, 0.1), function()
 		if not (MatchIsLive(match) and match.turn and match.turn.token == token
@@ -2300,12 +2311,32 @@ function MatchManager.EndTurn(player, match)
 	if not match or match.phase ~= "battle" then return end
 	if match.busy then return end
 	if match.suspendedAt then return end
+	-- ESCOLHA ABERTA NA VIRADA DO TURNO. A decisão é feita com o relógio do turno
+	-- correndo, sem prazo próprio: são dois túmulos, não uma deliberação.
+	--
+	-- Quem não escolheu perde a escolha, não o uso: deixar a Casa de Promoção
+	-- passar em branco custaria ao jogador um recurso de uma vez por partida por
+	-- ter demorado. O SORTEIO é de propósito — usar a conta tática do bot daria
+	-- ao jogador que estourou o tempo a mesma qualidade de quem decidiu, e isso
+	-- premia estourar. Bot continua com a conta dele, que é o turno dele.
 	if match.pendingPromotion then
 		if player then return end
-		MatchManager.Resurrect(nil,
-			BotPickResurrection(match, match.pendingPromotion.ownerId,
-				match.pendingPromotion.options),
-			match)
+
+		local dono = SideOf(match, match.pendingPromotion.ownerId)
+		local opcoes = match.pendingPromotion.options
+
+		-- A lista nasce com pelo menos um túmulo (o TryTriggerPromotion nem abre
+		-- a escolha sem isso), mas ela é guardada e lida um turno depois. Vazia,
+		-- `math.random(0)` estoura — e estourar aqui trava a virada de turno.
+		if #opcoes == 0 then
+			match.pendingPromotion = nil
+		else
+			local escolhido = (dono and dono.isBot)
+				and BotPickResurrection(match, match.pendingPromotion.ownerId, opcoes)
+				or opcoes[math.random(#opcoes)]
+
+			MatchManager.Resurrect(nil, escolhido, match)
+		end
 	end
 
 	local currentSide = SideOf(match, match.turn.ownerId)
@@ -2900,6 +2931,7 @@ local function AllPlaced(match)
 	return true
 end
 
+
 local function StartPlacementClock(match)
 	match.placementToken += 1
 	match.placementStartedAt = os.clock()
@@ -3361,8 +3393,8 @@ function MatchManager.ResumeFromReconnect(match, side, player)
 	if match.phase == "placement" then
 		StartPlacementClock(match)
 	elseif match.turn then
-		match.turn.startedAt = os.clock()
-			- (GameConfig.TURN_TIME_LIMIT - (match.turn.pausedLeft or GameConfig.TURN_TIME_LIMIT))
+		local limite = TurnLimit(match)
+		match.turn.startedAt = os.clock() - (limite - (match.turn.pausedLeft or limite))
 		match.turn.pausedLeft = nil
 		ArmTurnClock(match, match.turn.token)
 	end

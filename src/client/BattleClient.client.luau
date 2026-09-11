@@ -811,18 +811,23 @@ local PROMOTION_RESURRECT_COLOR_HIGH = Color3.fromRGB(120, 190, 255)
 -- limpo toda vez que o jogador seleciona/desseleciona um herói, e o túmulo
 -- azul precisa sobreviver a isso — ele reflete o estado do SERVIDOR
 -- (pendingPromotion), não a seleção local.
-local promotionHighlighted = {} -- [tile Part] = tween
-local promotionOptionUids = {} -- [uid] = true, lido pelo clique
+--
+-- Os dois numa tabela só: este arquivo trabalha perto do teto de 200 locais de
+-- módulo do Luau, e agrupar é o que devolve folga sem esconder nada.
+local promo = {
+	highlighted = {}, -- [tile Part] = tween
+	optionUids = {}, -- [uid] = true, lido pelo clique
+}
 
 local function clearPromotionHighlights()
-	for tile, tween in pairs(promotionHighlighted) do
+	for tile, tween in pairs(promo.highlighted) do
 		tween:Cancel()
 		if tile.Parent then
 			tile.Color = tile:GetAttribute("BaseColor") or fallbackColor(tile)
 		end
 	end
-	promotionHighlighted = {}
-	promotionOptionUids = {}
+	promo.highlighted = {}
+	promo.optionUids = {}
 end
 
 -- ===== "SELECIONE O HERÓI PARA REVIVER" =====
@@ -830,7 +835,7 @@ end
 -- fica na tela o tempo INTEIRO em que a escolha está pendente, não alguns
 -- segundos e some.
 local promotionPrompt = Instance.new("TextLabel")
-promotionPrompt.Name = "PromotionPrompt"
+promotionPrompt.Name = "PromotionChoicePrompt"
 promotionPrompt.AnchorPoint = Vector2.new(0.5, 0)
 promotionPrompt.Position = UDim2.new(0.5, 0, 0, 58)
 promotionPrompt.Size = UDim2.new(0, 460, 0, 30)
@@ -856,7 +861,7 @@ local function renderPromotionResurrect(state)
 	if not options or #options == 0 or not board then return end
 
 	for _, uid in ipairs(options) do
-		promotionOptionUids[uid] = true
+		promo.optionUids[uid] = true
 
 		local hero = heroByUid(uid)
 		local tile = hero and board:FindFirstChild(hero.position)
@@ -870,7 +875,7 @@ local function renderPromotionResurrect(state)
 				TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
 				{ Color = PROMOTION_RESURRECT_COLOR_HIGH })
 			tween:Play()
-			promotionHighlighted[tile] = tween
+			promo.highlighted[tile] = tween
 		end
 	end
 end
@@ -1504,7 +1509,11 @@ local RESULT_CARD_GAP = 10
 local RESULT_PAGE_TOP = 76
 local RESULT_ROW_TOP = 98
 
-local resultFx = { introToken = 0, scene = { token = 0, mode = nil } }
+-- `labelY` é a ÚNICA dona da altura do título. A animação de entrada e o tremor
+-- da derrota também escrevem na posição dele, e os dois fixavam 10 na mão: com
+-- as estrelas abrindo o cabeçalho, isso jogava o título por cima delas toda vez
+-- que o painel reanimava.
+local resultFx = { introToken = 0, scene = { token = 0, mode = nil }, labelY = 10 }
 
 resultFx.tones = {
 	win = {
@@ -1689,18 +1698,6 @@ do
 	resultFx.labelScale.Parent = resultLabel
 end
 
--- Linha de contexto embaixo do título: quantos turnos e o maior golpe da
--- partida. É o "resumo em uma frase" antes dos cards detalharem por herói.
-local resultSubtitle = Instance.new("TextLabel")
-resultSubtitle.Size = UDim2.new(1, -20, 0, 16)
-resultSubtitle.Position = UDim2.new(0, 10, 0, 58)
-resultSubtitle.BackgroundTransparency = 1
-resultSubtitle.TextColor3 = Color3.fromRGB(150, 160, 182)
-resultSubtitle.TextSize = 13
-resultSubtitle.Font = GameConfig.UI_FONT_BODY
-resultSubtitle.Text = ""
-resultSubtitle.Parent = resultPanel
-
 -- Onde os cards dos heróis entram. Centralizado por UIListLayout horizontal, pra
 -- 3 heróis ou 4 (o Golem estilhaçado vira dois) caberem sem recalcular posição.
 local resultTeam = Instance.new("Frame")
@@ -1735,11 +1732,20 @@ local starFx = {
 	SIZE_MIN = 26,
 	SIZE_MAX = 46,
 	GAP_RATIO = 0.18,
-	ROW_TOP = 70,
+	-- As estrelas abrem o cabeçalho, ACIMA do título: é a ordem que o resultado
+	-- pede (nota, resultado, contexto) e é o que tira a faixa de cima do rótulo
+	-- do time, que ficava parado enquanto os cards desciam.
+	ROW_TOP = 8,
 	PAD = 10,
-	ON = Color3.fromRGB(255, 206, 104),
+	-- AS CORES SAEM DO TOM DA VITÓRIA, não de cópias parecidas. O UIGradient
+	-- MULTIPLICA a cor base do texto, então igualar só o gradiente não bastava:
+	-- a estrela tinha base dourada e gradiente dourado, e o produto virava um
+	-- laranja queimado enquanto o título, de base clara, ficava pálido.
+	--
+	-- Mesma base e mesmo gradiente do resultLabel = mesma cor na tela.
+	ON = resultFx.tones.win.key,
 	OFF = Color3.fromRGB(58, 62, 76),
-	GLOW = Color3.fromRGB(255, 246, 214),
+	GLOW = resultFx.tones.win.glow,
 	token = 0,
 }
 
@@ -1765,7 +1771,7 @@ end
 
 starFx.row = Instance.new("Frame")
 starFx.row.Name = "FightStarsRow"
-starFx.row.Position = UDim2.new(0, 0, 0, starFx.ROW_TOP)
+starFx.row.Position = UDim2.fromOffset(0, 315)
 starFx.row.Size = UDim2.new(1, 0, 0, starFx.SIZE_MAX)
 starFx.row.BackgroundTransparency = 1
 starFx.row.Visible = false
@@ -1792,7 +1798,8 @@ function starFx.Build(index, lit, side)
 	star.Text = "★"
 	star.TextScaled = true
 	star.Font = Enum.Font.GothamBlack
-	star.TextColor3 = lit and starFx.ON or starFx.OFF
+	-- base clara como a do título; quem dá o dourado é o gradiente por cima
+	star.TextColor3 = lit and starFx.GLOW or starFx.OFF
 	star.TextTransparency = 1
 	star.Parent = starFx.row
 
@@ -1804,13 +1811,13 @@ function starFx.Build(index, lit, side)
 	stroke.Parent = star
 
 	if lit then
+		-- O MESMO gradiente do título, e não um parecido: duas paradas, do glow
+		-- pro dourado, exatamente como o resultFx.labelGradient monta a palavra
+		-- VITÓRIA. A terceira parada escura que estava aqui puxava a estrela pro
+		-- laranja e fazia ela destoar do texto logo abaixo.
 		local shine = Instance.new("UIGradient")
 		shine.Name = "StarShine"
-		shine.Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, starFx.GLOW),
-			ColorSequenceKeypoint.new(0.5, starFx.ON),
-			ColorSequenceKeypoint.new(1, Color3.fromRGB(214, 150, 44)),
-		})
+		shine.Color = ColorSequence.new(starFx.GLOW, starFx.ON)
 		shine.Rotation = 90
 		shine.Parent = star
 	end
@@ -1840,7 +1847,12 @@ function starFx.Play(count, earned)
 		task.delay(0.18 + (index - 1) * 0.22, function()
 			if starFx.token ~= token or not star.Parent then return end
 
-			local burst = side * (lit and 2.1 or 1.25)
+			-- O ESTALO NÃO PODE SAIR DA FAIXA. A estrela é centralizada numa
+			-- fileira de `side` de altura, então crescer 2.1x a fazia
+			-- transbordar 55% do próprio lado pra cima e pra baixo — e pra baixo
+			-- ela alcançava o título, que começa logo ali. Em 1.3 o estalo
+			-- continua visível e cabe no espaço reservado.
+			local burst = side * (lit and 1.3 or 1.15)
 			star.Size = UDim2.fromOffset(burst, burst)
 			star.Rotation = lit and -28 or -8
 
@@ -1934,18 +1946,46 @@ end
 resultPrev.MouseButton1Click:Connect(flipResultPage)
 resultNext.MouseButton1Click:Connect(flipResultPage)
 
-resultFx.buildButton = function(text, color, offsetY)
+-- ===== BOTÕES DO RODAPÉ =====
+-- Os dois eram do mesmo tamanho e ocupavam a largura quase toda do painel, e
+-- com isso a ação principal não se distinguia da secundária: dois retângulos
+-- iguais, um verde e um cinza.
+--
+-- Agora a largura é por ESCALA com teto, e a secundária é menor que a principal.
+-- A hierarquia aparece no tamanho antes de aparecer na cor, que é o que funciona
+-- mesmo pra quem não distingue verde de cinza.
+--
+-- `share` é a fatia da largura do painel; `height` separa a principal (46) da
+-- secundária (38).
+-- ===== RODAPÉ: DUAS AÇÕES LADO A LADO =====
+-- Metade da largura útil cada uma, empilhadas na horizontal em vez da vertical.
+-- `side` diz de que lado: -1 é a esquerda (principal), 1 é a direita.
+--
+-- A hierarquia deixou de ser tamanho e passou a ser COR e peso: mesmo retângulo,
+-- verde cheio contra azul quase transparente. Com os dois na mesma linha, tamanhos
+-- diferentes ficariam tortos.
+resultFx.buildButton = function(text, color, offsetY, side, height)
 	local button = Instance.new("TextButton")
-	button.Size = UDim2.new(1, -60, 0, 46)
-	button.Position = UDim2.new(0, 30, 1, offsetY)
+	button.Name = side < 0 and "PrimaryAction" or "SecondaryAction"
+	button.AnchorPoint = Vector2.new(side < 0 and 1 or 0, 0)
+	button.Size = UDim2.new(0.46, 0, 0, height or 46)
+	button.Position = UDim2.new(0.5, side * 6, 1, offsetY)
 	button.BackgroundColor3 = color
 	button.TextColor3 = Color3.fromRGB(244, 248, 255)
 	button.Font = GameConfig.UI_FONT_BODY
-	button.TextSize = 20
+	button.TextSize = 18
 	button.Text = text
 	button.BorderSizePixel = 0
 	button.AutoButtonColor = false
 	button.Parent = resultPanel
+
+	-- Teto e piso em pixel: numa tela larga ele para de crescer, numa estreita
+	-- não vira um botão ilegível de dois centímetros.
+	local limite = Instance.new("UISizeConstraint")
+	limite.Name = "ActionSize"
+	limite.MaxSize = Vector2.new(230, math.huge)
+	limite.MinSize = Vector2.new(120, 0)
+	limite.Parent = button
 
 	local buttonCorner = Instance.new("UICorner")
 	buttonCorner.CornerRadius = UDim.new(0, 10)
@@ -1988,9 +2028,9 @@ local replayButton, lobbyButton
 do
 	local replayScale, lobbyScale
 	replayButton, replayScale = resultFx.buildButton(
-		"Jogar novamente", Color3.fromRGB(70, 150, 90), -122)
+		"↻   Jogar novamente", Color3.fromRGB(46, 112, 72), -74, -1, 44)
 	lobbyButton, lobbyScale = resultFx.buildButton(
-		"Voltar pro lobby", Color3.fromRGB(60, 70, 90), -66)
+		"Voltar pro lobby", Color3.fromRGB(42, 50, 68), -74, 1, 44)
 
 	resultFx.buttons = {
 		{ button = replayButton, scale = replayScale },
@@ -2105,15 +2145,15 @@ resultFx.playIntro = function(kind)
 		for step = 1, 6 do
 			if resultFx.introToken ~= token then return end
 			local sway = (7 - step) * 1.6
-			resultLabel.Position = UDim2.new(0, 10 + (step % 2 == 0 and sway or -sway), 0, 10)
+			resultLabel.Position = UDim2.new(0, 10 + (step % 2 == 0 and sway or -sway), 0, resultFx.labelY)
 			task.wait(0.035)
 		end
-		resultLabel.Position = UDim2.new(0, 10, 0, 10)
+		resultLabel.Position = UDim2.new(0, 10, 0, resultFx.labelY)
 	end
 
 	resultLabel.Text = tone.word
 	resultLabel.TextColor3 = tone.glow
-	resultLabel.Position = UDim2.new(0, 10, 0, 10)
+	resultLabel.Position = UDim2.new(0, 10, 0, resultFx.labelY)
 	resultLabel.TextTransparency = 1
 	resultFx.labelGradient.Color = ColorSequence.new(tone.glow, tone.key)
 	resultFx.labelStroke.Transparency = 1
@@ -2343,23 +2383,6 @@ local function buildResultCard(hero, badgeKey, order)
 		if piece.isAlive and piece.sameBody then pecasVivas += 1 end
 	end
 
-	local statusLabel = Instance.new("TextLabel")
-	statusLabel.Position = UDim2.new(0, 4, 0, 100)
-	statusLabel.Size = UDim2.new(1, -8, 0, 12)
-	statusLabel.BackgroundTransparency = 1
-	if hero.isAlive then
-		statusLabel.Text = ""
-	elseif pecasVivas > 0 then
-		statusLabel.Text = ("em pedaços · %d de pé"):format(pecasVivas)
-	else
-		statusLabel.Text = "caiu em combate"
-	end
-	statusLabel.TextColor3 = standing
-		and Color3.fromRGB(130, 200, 150) or Color3.fromRGB(198, 116, 116)
-	statusLabel.TextSize = 10
-	statusLabel.Font = GameConfig.UI_FONT_BODY
-	statusLabel.Parent = card
-
 	buildResultStat(card, 0, "Dano causado", stats.dealt or 0, Color3.fromRGB(255, 186, 120))
 	buildResultStat(card, 1, "Dano recebido", stats.taken or 0, Color3.fromRGB(150, 190, 245))
 
@@ -2410,17 +2433,45 @@ function renderResultTeam(state)
 	local width = 24 + count * RESULT_CARD_W + (count - 1) * RESULT_CARD_GAP
 	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412)
 
-	local starBlock = showingMine and starFx.Render(state) or 0
-	resultTeam.Position = UDim2.new(0, 0, 0, RESULT_ROW_TOP + starBlock)
+	-- ===== O CABEÇALHO DESCE JUNTO =====
+	-- Tudo daqui pra baixo é posicionado por um CURSOR que acumula altura, em
+	-- vez de cada peça ter um `y` fixo. Era assim que a faixa de estrelas caía em
+	-- cima do rótulo do time: os cards e as setas desciam pelo bloco das
+	-- estrelas, o rótulo não, e ninguém percebia até uma vitória com estrelas.
+	--
+	-- Com o cursor, peça nova entra numa linha só e empurra o resto sozinha.
+	-- SEMPRE renderiza, nas duas páginas. A nota é do JOGADOR, não do time que
+	-- está sendo mostrado, então ela fica de pé ao trocar pro adversário — e,
+	-- mais importante, era pular esta chamada que quebrava o template: sem ela o
+	-- Clear não rodava, a faixa continuava desenhada na tela e o cursor abaixo
+	-- calculava tudo como se ela não existisse.
+	local starBlock = starFx.Render(state)
+	local cursor = starBlock
 
-	-- As setas são posicionadas na altura do MEIO dos cards, então elas descem
-	-- junto. Sem isto elas ficavam boiando na altura das estrelas.
+	resultFx.labelY = cursor + 6
+	resultLabel.Position = UDim2.new(0, 10, 0, resultFx.labelY)
+	-- 54, que e a altura REAL do resultLabel. Eu avancava 48 aqui, entao tudo
+	-- abaixo do titulo subia 6 pixels e encostava nele.
+	cursor += 6 + 54
+
+	resultPageLabel.Position = UDim2.new(0.5, 0, 0, cursor)
+	cursor += 18 + 8
+
+	resultTeam.Position = UDim2.new(0, 0, 0, cursor)
+
 	for _, arrow in ipairs({ resultPrev, resultNext }) do
 		arrow.Position = UDim2.new(arrow.Position.X.Scale, arrow.Position.X.Offset,
-			0, RESULT_ROW_TOP + starBlock + RESULT_CARD_H / 2)
+			0, cursor + RESULT_CARD_H / 2)
 	end
 
-	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840), 0, 412 + starBlock)
+	-- A altura do painel sai da MESMA conta, então o rodapé com os botões nunca
+	-- fica fora: era o outro corte visível, o "Voltar pro lobby" saindo embaixo.
+	-- Uma linha só de botões agora, não duas: 44 de altura mais 30 de respiro
+	-- acima e 30 abaixo. Foi o que devolveu 56 de altura ao painel, e é o que
+	-- tira ele de cima da tela num celular deitado.
+	local footer = 44 + 60
+	resultPanel.Size = UDim2.new(0, math.clamp(width, 460, 840),
+		0, cursor + RESULT_CARD_H + 18 + footer)
 
 	-- O selo é por uid, e um PEDAÇO pode ter sido o destaque da partida. Sem
 	-- olhar os filhos, o card do Golem ficaria sem faixa nenhuma enquanto o
@@ -2442,7 +2493,6 @@ function renderResultTeam(state)
 		buildResultCard(hero, badgeKey, index)
 	end
 
-	resultSubtitle.Text = summary.turns and ("%d turnos"):format(summary.turns) or ""
 end
 
 -- Implementacao do heroByUid declarado la em cima. Em Lua uma funcao so enxerga
@@ -3114,10 +3164,10 @@ mouse.Button1Down:Connect(function()
 	-- Checado ANTES do resto porque uma lápide também bate `heroUid and
 	-- hero.isMine` lá embaixo, e a casa cairia no movimento do herói selecionado.
 	local resurrectUid = nil
-	if heroUid and promotionOptionUids[heroUid] then
+	if heroUid and promo.optionUids[heroUid] then
 		resurrectUid = heroUid
 	elseif hexId then
-		for uid in pairs(promotionOptionUids) do
+		for uid in pairs(promo.optionUids) do
 			local option = heroByUid(uid)
 			if option and option.position == hexId then
 				resurrectUid = uid
@@ -3468,7 +3518,7 @@ MatchUpdate.OnClientEvent:Connect(function(newState)
 
 	turnLabel.Text = ("Turno %d%s"):format(
 		state.turnNumber,
-		state.suddenDeath and "  ☠" or ""
+		state.suddenDeath and "" or ""
 	)
 	turnLabel.TextColor3 = state.suddenDeath
 		and Color3.fromRGB(255, 140, 140) or Color3.new(1, 1, 1)

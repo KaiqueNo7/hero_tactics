@@ -132,6 +132,12 @@ function GameConfig.HasAgility(hero)
 end
 
 GameConfig.TURN_TIME_LIMIT = 60
+
+-- Ranqueada anda mais rápido. Um turno cheio são até seis ações (três heróis
+-- andando e atacando), então 30 dá 4,4s por ação depois de descontar a animação,
+-- contra 9,4s dos 60 do casual. Vinte e cinco daria 3,6s, e o meio segundo a
+-- menos cai justamente sobre quem joga de celular mirando hexágono com o dedo.
+GameConfig.RANKED_TURN_TIME_LIMIT = 30
 GameConfig.PLACEMENT_TIME_LIMIT = 60
 GameConfig.BOT_PLACE_DELAY = 0.8
 GameConfig.RECONNECT_WINDOW = 90
