@@ -1506,13 +1506,6 @@ end
 -- recebe o clique é a caixa, senão o golpe acertaria uma quina do cristal e o
 -- cliente não acharia o BarrelUid.
 local function AttachObjectModel(part, visual)
-		print(
-			"OBJECT ROTATION:",
-			visual.rotation,
-			visual.rotationX,
-			visual.rotationZ
-	)
-
     local model = visual.model:Clone()
 
     model.Name = "ObjectModel"
