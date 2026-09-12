@@ -42,7 +42,7 @@ local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
-local SafeStore = require(ServerScriptService.Modules.SafeStore)
+local SafeStore = require(ServerScriptService.Modules.Data.SafeStore)
 
 local STORE_NAME = "HeroTactics_HeroStats_v1"
 local store = DataStoreService:GetDataStore(STORE_NAME)

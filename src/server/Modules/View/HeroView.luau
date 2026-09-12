@@ -21,14 +21,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
-local InsertService = game:GetService("InsertService")
 local CollectionService = game:GetService("CollectionService")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local PixelIcons = require(ReplicatedStorage.Modules.PixelIcons)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
-local Arenas = require(ReplicatedStorage.Modules.Arenas)
+local ViewStyle = require(script.Parent.ViewStyle)
+local VfxLibrary = require(script.Parent.VfxLibrary)
+local Bolt = require(script.Parent.ProjectileVfx)
+local BoardVfx = require(script.Parent.BoardVfx)
+local MatchAudio = require(script.Parent.MatchAudio)
 
 local Sounds = ReplicatedStorage:WaitForChild("Sounds")
 
@@ -48,7 +51,7 @@ end
 -- tabuleiro visto de cima. 5,2 dá presença sem transbordar pra casa vizinha nem
 -- tapar o vizinho de trás. Tudo que é derivado (altura, elevação da âncora,
 -- posição dos selos de ATK/HP e do texto flutuante) acompanha sozinho.
-local SPRITE_WIDTH = 5.8
+local SPRITE_WIDTH = ViewStyle.SPRITE_WIDTH
 
 -- ===== PISO EM PIXELS DO SPRITE =====
 -- BillboardGui com Size em Scale mede STUDS: encolhe com o zoom. Com Size em
@@ -68,15 +71,12 @@ local SPRITE_WIDTH = 5.8
 local SPRITE_PIXEL_FLOOR_H = 18
 local SPRITE_PIXEL_FLOOR_W = 13 -- mesma proporção do quadro (165x231)
 
-local TILE_TOP_Y = 0.5
+local TILE_TOP_Y = ViewStyle.TILE_TOP_Y
 
-local HERO_GUI_MAX_DISTANCE = 200
+local HERO_GUI_MAX_DISTANCE = ViewStyle.GUI_MAX_DISTANCE
 local MOVE_STEP_TIME = 0.22
 local BOT_ID = "BOT"
 
-local RING_SCALE = 0.64
-local RING_THICKNESS = 0.32
-local RING_HEIGHT = 0.08
 
 -- Giro da lápide em torno do eixo vertical. A laje é chata (2,6 de largura por
 -- 0,7 de espessura), então o ângulo decide se o jogador vê a FACE dela ou só um
@@ -90,8 +90,6 @@ local RING_HEIGHT = 0.08
 -- cemitério em vez de fileira de peças.
 local GRAVE_YAW = 45
 
-local TEAM_COLOR_PLAYER_1 = Color3.fromRGB(70, 150, 255)
-local TEAM_COLOR_PLAYER_2 = Color3.fromRGB(230, 70, 70)
 
 -- ===== CRACHÁ DE STATUS (abaixo do herói) =====
 -- Cada valor tem ícone próprio (espada = ataque, coração = vida), e a moldura
@@ -112,8 +110,8 @@ local STAT_BADGE_WIDTH = 36
 local SQUARE_BADGE_WIDTH = 20
 local BADGE_PADDING = 2
 
-local BADGE_BG = Color3.fromRGB(26, 23, 32)
-local BADGE_GOLD = Color3.fromRGB(255, 205, 90)
+local BADGE_BG = ViewStyle.BADGE_BG
+local BADGE_GOLD = ViewStyle.BADGE_GOLD
 local ICON_RED = Color3.fromRGB(238, 82, 82)
 
 -- Ataque acima do base acende em verde. Verde e não dourado de propósito: o
@@ -146,8 +144,8 @@ local ABILITY_BADGES = {
 	Agility = { icon = "agility", color = Color3.fromRGB(255, 170, 90) },
 }
 
-local SPRITE_HEIGHT = SPRITE_WIDTH * (HeroData.FRAME_HEIGHT / HeroData.FRAME_WIDTH)
-local ANCHOR_LIFT = SPRITE_HEIGHT * 0.4
+local SPRITE_HEIGHT = ViewStyle.SPRITE_HEIGHT
+local ANCHOR_LIFT = ViewStyle.ANCHOR_LIFT
 
 -- ===== PÉS PLANTADOS COM ScaleType.Fit =====
 -- O SizeOffset lá embaixo planta na casa o pé da MOLDURA. Só que o Fit
@@ -244,32 +242,7 @@ local TEXT_STYLES = {
 local sayQueue, sayRunning = {}, {}
 
 -- ===== SOM =====
--- Sons de gameplay tocam em 2D, não presos ao Part do herói: a câmera fica
--- travada a ~90 studs do tabuleiro, e som 3D com EmitterSize padrão (10) cairia
--- pra ~10% do volume nessa distância.
---
--- Mas 2D no servidor toca pra TODO MUNDO. Com partidas simultâneas, o jogador
--- ouviria o golpe da arena vizinha como se fosse na dele. Então o servidor não
--- toca nada: manda o nome do som pelos clientes daquela partida, e cada um toca
--- localmente (SoundClient). `view.players` é a plateia — em partida contra bot,
--- é uma pessoa só.
-local MatchSound = ReplicatedStorage:WaitForChild("Remotes"):FindFirstChild("MatchSound")
-if not MatchSound then
-	MatchSound = Instance.new("RemoteEvent")
-	MatchSound.Name = "MatchSound"
-	MatchSound.Parent = ReplicatedStorage.Remotes
-end
-
-local function PlaySound(name, view, volumeScale)
-	if not Sounds:FindFirstChild(name) then return end
-	if not view then return end
-
-	for _, player in ipairs(view.players or {}) do
-		if player.Parent then
-			MatchSound:FireClient(player, name, volumeScale)
-		end
-	end
-end
+local PlaySound = MatchAudio.Play
 
 HeroView.PlaySound = PlaySound
 
@@ -380,8 +353,8 @@ end
 --
 -- As texturas são as que já vêm no cliente (rbxasset://), então não há upload
 -- nem risco de quadrado cinza no lugar do efeito.
-local FX_SPARK = "rbxasset://textures/particles/sparkles_main.dds"
-local FX_SMOKE = "rbxasset://textures/particles/smoke_main.dds"
+local FX_SPARK = ViewStyle.FX_SPARK
+local FX_SMOKE = ViewStyle.FX_SMOKE
 
 -- shape: "burst" explode pra fora (impacto), "rise" sobe do chão (buff/cura)
 --
@@ -640,384 +613,6 @@ function HeroView.PlaySkillEffect(hero, key, boost)
 	emitter:Emit(math.floor(spec.count * (boost or 1)))
 end
 
--- As duas peças do tiro (a bolinha e a retícula) são criadas UMA vez por
--- partida e reaproveitadas. Antes nasciam e morriam a cada ataque à distância —
--- e como o servidor só resolve uma ação por vez, nunca houve mais de um tiro no
--- ar: criar e destruir era trabalho de replicação puro, no meio do golpe.
-local Bolt = {
-	SIZE = 0.9,
-	SPEED = 60,
-	MIN_TIME = 0.16,
-	MAX_TIME = 0.5,
-	TRAIL_LIFETIME = 0.32,
-	RETICLE_SPAN = RING_THICKNESS * 9,
-	RETICLE_HOLD = 0.24,
-	ARCANE_TAIL = Color3.fromRGB(120, 205, 255),
-	SPELL_TAIL = Color3.fromRGB(190, 255, 235),
-	STYLES = { gustPush = "wind", clean = "arcane", longShot = "spell" },
-
-	TRAIL_WIDTH = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1),
-		NumberSequenceKeypoint.new(0.6, 0.55),
-		NumberSequenceKeypoint.new(1, 0),
-	}),
-	TRAIL_FADE = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.1),
-		NumberSequenceKeypoint.new(1, 1),
-	}),
-
-	WIND_WIDTH = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 2.6),
-		NumberSequenceKeypoint.new(0.35, 3.4),
-		NumberSequenceKeypoint.new(1, 0.6),
-	}),
-	WIND_FADE = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.55),
-		NumberSequenceKeypoint.new(0.4, 0.72),
-		NumberSequenceKeypoint.new(1, 1),
-	}),
-
-	ARCANE_WIDTH = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1.4),
-		NumberSequenceKeypoint.new(0.5, 1.1),
-		NumberSequenceKeypoint.new(1, 0),
-	}),
-	ARCANE_FADE = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.15),
-		NumberSequenceKeypoint.new(0.55, 0.35),
-		NumberSequenceKeypoint.new(1, 1),
-	}),
-
-	SPELL_WIDTH = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 2.2),
-		NumberSequenceKeypoint.new(0.3, 1.6),
-		NumberSequenceKeypoint.new(1, 0),
-	}),
-	SPELL_FADE = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.05),
-		NumberSequenceKeypoint.new(0.5, 0.3),
-		NumberSequenceKeypoint.new(1, 1),
-	}),
-}
-
-function Bolt.Ensure(view)
-	if view.bolt and view.bolt.Parent then return view.bolt, view.reticle end
-
-	local part = Instance.new("Part")
-	part.Name = "RangedBolt"
-	part.Shape = Enum.PartType.Ball
-	part.Size = Vector3.new(Bolt.SIZE, Bolt.SIZE, Bolt.SIZE)
-	part.Color = Color3.fromRGB(255, 235, 150)
-	part.Material = Enum.Material.Neon
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CastShadow = false
-	part.Transparency = 1
-	part.Parent = view.heroesFolder
-
-	local top = Instance.new("Attachment")
-	top.Name = "TrailTop"
-	top.Position = Vector3.new(0, Bolt.SIZE * 0.62, 0)
-	top.Parent = part
-
-	local bottom = Instance.new("Attachment")
-	bottom.Name = "TrailBottom"
-	bottom.Position = Vector3.new(0, -Bolt.SIZE * 0.62, 0)
-	bottom.Parent = part
-
-	local trail = Instance.new("Trail")
-	trail.Name = "BoltTrail"
-	trail.Attachment0 = top
-	trail.Attachment1 = bottom
-	trail.Lifetime = Bolt.TRAIL_LIFETIME
-	trail.MinLength = 0
-	trail.FaceCamera = true
-	trail.LightEmission = 1
-	trail.LightInfluence = 0
-	trail.WidthScale = Bolt.TRAIL_WIDTH
-	trail.Transparency = Bolt.TRAIL_FADE
-	trail.Enabled = false
-	trail.Parent = part
-
-	local glow = Instance.new("PointLight")
-	glow.Name = "BoltGlow"
-	glow.Range = 10
-	glow.Brightness = 2.2
-	glow.Enabled = false
-	glow.Parent = part
-
-	local reticle = Instance.new("Part")
-	reticle.Name = "RangedTarget"
-	reticle.Shape = Enum.PartType.Cylinder
-	reticle.Size = Vector3.new(0.15, Bolt.RETICLE_SPAN, Bolt.RETICLE_SPAN)
-	reticle.Color = Color3.fromRGB(255, 90, 80)
-	reticle.Material = Enum.Material.Neon
-	reticle.Anchored = true
-	reticle.CanCollide = false
-	reticle.CanQuery = false
-	reticle.CastShadow = false
-	reticle.Transparency = 1
-	reticle.Parent = view.heroesFolder
-
-	view.bolt, view.reticle, view.boltTrail, view.boltGlow = part, reticle, trail, glow
-	return part, reticle
-end
-
-function Bolt.Wind(part)
-	local existing = part:FindFirstChild("BoltWind")
-	if existing then return existing end
-
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Name = "BoltWind"
-	emitter.Texture = FX_SMOKE
-	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.55),
-		NumberSequenceKeypoint.new(0.3, 0.4),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.8),
-		NumberSequenceKeypoint.new(0.45, 3.2),
-		NumberSequenceKeypoint.new(1, 0.4),
-	})
-	emitter.Lifetime = NumberRange.new(0.22, 0.42)
-	emitter.Rate = 260
-	emitter.Speed = NumberRange.new(1, 5)
-	emitter.SpreadAngle = Vector2.new(45, 45)
-	emitter.Rotation = NumberRange.new(0, 360)
-	emitter.RotSpeed = NumberRange.new(-260, 260)
-	emitter.Drag = 3
-	emitter.LightEmission = 0.45
-	emitter.LightInfluence = 0
-	emitter.Enabled = false
-	emitter.Parent = part
-
-	return emitter
-end
-
-function Bolt.Motes(part)
-	local existing = part:FindFirstChild("BoltMotes")
-	if existing then return existing end
-
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Name = "BoltMotes"
-	emitter.Texture = FX_SPARK
-	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.1),
-		NumberSequenceKeypoint.new(0.6, 0.45),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.5),
-		NumberSequenceKeypoint.new(0.35, 1.7),
-		NumberSequenceKeypoint.new(1, 0),
-	})
-	emitter.Lifetime = NumberRange.new(0.35, 0.62)
-	emitter.Rate = 160
-	emitter.Speed = NumberRange.new(0.5, 2.5)
-	emitter.SpreadAngle = Vector2.new(70, 70)
-	emitter.Rotation = NumberRange.new(0, 360)
-	emitter.RotSpeed = NumberRange.new(-90, 90)
-	emitter.Acceleration = Vector3.new(0, 5, 0)
-	emitter.Drag = 4
-	emitter.LightEmission = 1
-	emitter.LightInfluence = 0
-	emitter.Enabled = false
-	emitter.Parent = part
-
-	return emitter
-end
-
-function Bolt.Sparks(part)
-	local existing = part:FindFirstChild("BoltSparks")
-	if existing then return existing end
-
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Name = "BoltSparks"
-	emitter.Texture = FX_SPARK
-	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0),
-		NumberSequenceKeypoint.new(0.55, 0.3),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.4),
-		NumberSequenceKeypoint.new(0.3, 1.5),
-		NumberSequenceKeypoint.new(1, 0),
-	})
-	emitter.Lifetime = NumberRange.new(0.18, 0.34)
-	emitter.Rate = 240
-	emitter.Speed = NumberRange.new(0, 1.5)
-	emitter.SpreadAngle = Vector2.new(180, 180)
-	emitter.Rotation = NumberRange.new(0, 360)
-	emitter.RotSpeed = NumberRange.new(-420, 420)
-	emitter.Drag = 8
-	emitter.LightEmission = 1
-	emitter.LightInfluence = 0
-	emitter.Enabled = false
-	emitter.Parent = part
-
-	return emitter
-end
-
-function Bolt.Style(hero)
-	for _, key in ipairs(hero.abilities or {}) do
-		local style = Bolt.STYLES[key]
-		if style then return style end
-	end
-	return nil
-end
-
-function Bolt.Color(hero)
-	local data = hero and hero.dataId and HeroData.GetById(hero.dataId)
-	local color = (data and data.color) or Color3.fromRGB(255, 235, 150)
-	return color:Lerp(Color3.new(1, 1, 1), 0.42)
-end
-
-function Bolt.SpellSpectrum(color)
-	return ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
-		ColorSequenceKeypoint.new(0.35, color),
-		ColorSequenceKeypoint.new(1, Bolt.SPELL_TAIL),
-	})
-end
-
-function Bolt.Spectrum(color)
-	return ColorSequence.new({
-		ColorSequenceKeypoint.new(0, color:Lerp(Color3.new(1, 1, 1), 0.55)),
-		ColorSequenceKeypoint.new(0.45, color),
-		ColorSequenceKeypoint.new(1, Bolt.ARCANE_TAIL),
-	})
-end
-
-function Bolt.Quiet(part)
-	for _, name in ipairs({ "BoltWind", "BoltMotes", "BoltSparks" }) do
-		local emitter = part:FindFirstChild(name)
-		if emitter then emitter.Enabled = false end
-	end
-end
-
-function Bolt.ApplyStyle(part, trail, glow, color, style)
-	if not (trail and glow) then return end
-
-	Bolt.Quiet(part)
-	part.Size = Vector3.new(Bolt.SIZE, Bolt.SIZE, Bolt.SIZE)
-	glow.Range = 10
-
-	if style == "wind" then
-		part.Transparency = 0.8
-		trail.Color = ColorSequence.new(color)
-		trail.WidthScale = Bolt.WIND_WIDTH
-		trail.Transparency = Bolt.WIND_FADE
-		glow.Brightness = 1.1
-
-		local emitter = Bolt.Wind(part)
-		emitter.Color = ColorSequence.new(color)
-		emitter.Enabled = true
-		return
-	end
-
-	if style == "spell" then
-		local spectrum = Bolt.SpellSpectrum(color)
-
-		part.Size = Vector3.new(Bolt.SIZE * 1.3, Bolt.SIZE * 1.3, Bolt.SIZE * 1.3)
-		part.Transparency = 0.05
-		trail.Color = spectrum
-		trail.WidthScale = Bolt.SPELL_WIDTH
-		trail.Transparency = Bolt.SPELL_FADE
-		glow.Brightness = 3.2
-		glow.Range = 14
-
-		local emitter = Bolt.Sparks(part)
-		emitter.Color = spectrum
-		emitter.Enabled = true
-		return
-	end
-
-	if style == "arcane" then
-		local spectrum = Bolt.Spectrum(color)
-
-		part.Transparency = 0.25
-		trail.Color = spectrum
-		trail.WidthScale = Bolt.ARCANE_WIDTH
-		trail.Transparency = Bolt.ARCANE_FADE
-		glow.Brightness = 2.6
-
-		local emitter = Bolt.Motes(part)
-		emitter.Color = spectrum
-		emitter.Enabled = true
-		return
-	end
-
-	part.Transparency = 0
-	trail.Color = ColorSequence.new(color)
-	trail.WidthScale = Bolt.TRAIL_WIDTH
-	trail.Transparency = Bolt.TRAIL_FADE
-	glow.Brightness = 2.2
-end
-
-function Bolt.Reticle(view, groundPos, color, delay)
-	local _, reticle = Bolt.Ensure(view)
-
-	reticle.Color = color
-	reticle.CFrame = CFrame.new(groundPos) * CFrame.Angles(0, 0, math.rad(90))
-	reticle.Size = Vector3.new(0.15, Bolt.RETICLE_SPAN * 1.7, Bolt.RETICLE_SPAN * 1.7)
-	reticle.Transparency = 0.25
-
-	TweenService:Create(reticle, TweenInfo.new(math.max(delay, 0.08), Enum.EasingStyle.Quad), {
-		Size = Vector3.new(0.15, Bolt.RETICLE_SPAN, Bolt.RETICLE_SPAN),
-		Transparency = 0.1,
-	}):Play()
-
-	task.delay(delay + Bolt.RETICLE_HOLD, function()
-		if not reticle.Parent then return end
-		TweenService:Create(reticle, TweenInfo.new(0.2), {
-			Size = Vector3.new(0.15, Bolt.RETICLE_SPAN * 1.35, Bolt.RETICLE_SPAN * 1.35),
-			Transparency = 1,
-		}):Play()
-	end)
-end
-
-function Bolt.Launch(view, fromPos, toPos, color, speed, style)
-	local part = Bolt.Ensure(view)
-	local trail, glow = view.boltTrail, view.boltGlow
-	local travel = math.clamp((toPos - fromPos).Magnitude / (speed or Bolt.SPEED),
-		Bolt.MIN_TIME, Bolt.MAX_TIME)
-
-	part.Color = color
-	part.CFrame = CFrame.new(fromPos)
-
-	if trail then trail.Enabled = false end
-	if glow then
-		glow.Color = color
-		glow.Enabled = true
-	end
-
-	Bolt.ApplyStyle(part, trail, glow, color, style)
-
-	task.defer(function()
-		if trail and trail.Parent then trail.Enabled = true end
-	end)
-
-	local tween = TweenService:Create(part, TweenInfo.new(travel, Enum.EasingStyle.Linear), {
-		CFrame = CFrame.new(toPos),
-	})
-	tween:Play()
-	tween.Completed:Once(function()
-		if part.Parent then part.Transparency = 1 end
-		if trail and trail.Parent then trail.Enabled = false end
-		if glow and glow.Parent then glow.Enabled = false end
-		if part.Parent then Bolt.Quiet(part) end
-	end)
-
-	return travel
-end
-
--- Bolinha de energia viajando do atacante até o alvo + retícula no impacto,
--- pra deixar ataques à distância (Ranged) mais perceptíveis. A Wren é a exceção:
--- o tiro dela é o tracejante montado no place (ver Bolt.Tracer, lá embaixo, ao
--- lado do carregador de VFX que ele precisa).
 function HeroView.ShowRangedAttack(attacker, target)
 	if not attacker.part or not target.part then return end
 
@@ -1084,1291 +679,22 @@ function HeroView.DestroyView(view)
 	end
 end
 
-local function GroundCFrame(hexId, origin)
-	return CFrame.new(HexGrid.GetWorldPosition(hexId, origin) + Vector3.new(0, TILE_TOP_Y, 0))
-end
+local GroundCFrame = ViewStyle.GroundCFrame
 
 local function AnchorCFrame(hexId, origin)
 	return GroundCFrame(hexId, origin) * CFrame.new(0, ANCHOR_LIFT, 0)
 end
 
--- ===== BARRIL =====
--- O asset (130205426920176) é um Model com um MeshPart dentro. Aqui ele é
--- remontado como Part + SpecialMesh a partir da malha e da textura dele: assim o
--- barril nasce por código, versionado junto com o resto, sem depender de um
--- modelo guardado no place — que não entra no Rojo nem no git.
---
--- A malha nasce com ~3,0 x 3,6 studs. A casa mede ~9,8 de ponta a ponta e o
--- herói desenhado tem ~8 de altura: sem ampliar, o barril viraria um pontinho no
--- meio do hexágono. 1,45 deixa ele com pouco mais de 5 de altura — objeto de
--- cenário que dá pra acertar, sem competir com o herói.
-local BARREL_MESH = "rbxassetid://119956806509588"
-local BARREL_TEXTURE = "rbxassetid://137018550249951"
-local BARREL_NATIVE = Vector3.new(3.011, 3.583, 3.011)
-local BARREL_SCALE = 1.45
 
-local BARREL_DUST = Color3.fromRGB(196, 150, 96)
 
--- O objeto neutro muda de cara com a arena (ver Arenas): barril na clareira,
--- bloco de gelo na geleira, urna no santuário. A REGRA é a mesma — mesma
--- contagem de golpes, mesma casa ocupada, mesmo prêmio. Sem tema (simulação de
--- balanceamento, partida antiga) cai no barril de sempre.
-local function ObjectSpec(view)
-	return view and view.theme and view.theme.object or nil
-end
-
--- Asset do catálogo, carregado UMA vez e guardado fora da DataModel pra ser
--- clonado a cada objeto. Antes eu só extraía MeshId/textura pra remontar como
--- Part + SpecialMesh, e isso só funciona pra asset que É uma malha: o cristal
--- do gelo é um Model de Parts, então não sobrava nada e o tema caía no cubo de
--- reserva. Agora vale qualquer modelo — Part, Union ou MeshPart.
---
--- Falhou o carregamento (asset privado, sem rede), o tema usa o `part` de
--- reserva e a partida segue: objeto invisível no tabuleiro seria bem pior.
-local assetModelCache = {}
-
--- O que separa "achei alguma coisa" de "tenho um molde": embrulha BasePart solta
--- num Model (pro resto do código só existir uma forma), recusa o que não tem
--- geometria nenhuma e estaciona o molde FORA da DataModel.
---
--- Vale pras duas origens de objeto — o modelo do catálogo e o montado à mão no
--- place —, e é por isso que a limpeza de scripts mora aqui: modelo grátis é o
--- vetor de backdoor mais antigo do Roblox, e este código roda no SERVIDOR. Um
--- modelo do próprio place não é código de terceiro, mas passar pela mesma peneira
--- não custa nada e tira a pergunta de cima da mesa.
-local function PrepareTemplate(found)
-	if found and found:IsA("BasePart") then
-		local wrapper = Instance.new("Model")
-		found.Parent = wrapper
-		found = wrapper
-	end
-
-	if not (found and found:FindFirstChildWhichIsA("BasePart", true)) then return nil end
-
-	for _, descendant in ipairs(found:GetDescendants()) do
-		if descendant:IsA("LuaSourceContainer") then descendant:Destroy() end
-	end
-
-	-- Parent nil, e não Destroy: o molde segue vivo pela referência do cache,
-	-- fora da árvore, sem replicar pra ninguém.
-	found.Parent = nil
-	return found
-end
-
-local function ModelFromAsset(assetId)
-	if assetModelCache[assetId] ~= nil then
-		return assetModelCache[assetId] or nil
-	end
-
-	local ok, container = pcall(function()
-		return InsertService:LoadAsset(assetId)
-	end)
-
-	local template = false
-	if ok and container then
-		template = PrepareTemplate(
-			container:FindFirstChildWhichIsA("Model") or container:FindFirstChildWhichIsA("BasePart")
-		) or false
-		container:Destroy()
-	end
-
-	if not template then
-		warn(("HeroView: nao consegui carregar o modelo do asset %s — objeto do board no visual de reserva.")
-			:format(tostring(assetId)))
-	end
-
-	assetModelCache[assetId] = template
-	return template or nil
-end
-
--- Objeto MONTADO À MÃO no place, em vez de vindo do catálogo. Mesma fronteira do
--- resto do cenário Studio-owned (o LobbyTrail, os pads, os Sounds): o Rojo não
--- versiona aquilo, então o tema guarda só o CAMINHO relativo ao Workspace
--- ("Objects.MeshPart") e quem resolve é aqui.
---
--- CLONA em vez de adotar: o que está no place é a fonte, e ela continua lá,
--- intocada, pra ser editada no Explorer. Arrancá-la pra dentro do cache faria o
--- objeto sumir do cenário no primeiro combate.
-local instanceModelCache = {}
-
-local function ModelFromInstance(path)
-	if instanceModelCache[path] ~= nil then
-		return instanceModelCache[path] or nil
-	end
-
-	local node = Workspace
-	for name in path:gmatch("[^%.]+") do
-		node = node and node:FindFirstChild(name)
-	end
-
-	local template = node and PrepareTemplate(node:Clone()) or false
-	if not template then
-		warn(("HeroView: nao achei Workspace.%s (ou ele nao tem geometria) — objeto do board no visual de reserva.")
-			:format(path))
-	end
-
-	instanceModelCache[path] = template
-	return template or nil
-end
-
-local function TemplateVisual(template, height, skin, rotation)
-	if not template then return nil end
-
-	local extents = template:GetExtentsSize()
-	local scale = height and (height / math.max(extents.Y, 0.001)) or 1
-	return {
-		model = template,
-		scale = scale,
-		size = extents * scale,
-		skin = skin,
-		rotation = rotation,
-	}
-end
-
-local function ObjectVisual(view)
-    local spec = ObjectSpec(view)
-
-    if not spec then
-        return nil
-    end
-
-    local function FinishVisual(visual, sourceSpec)
-        if not visual then
-            return nil
-        end
-
-        visual.rotationX = sourceSpec.rotationX
-        visual.rotationZ = sourceSpec.rotationZ
-
-        return visual
-    end
-
-    local visual
-
-    if spec.instance then
-        visual = TemplateVisual(
-            ModelFromInstance(spec.instance),
-            spec.height,
-            spec.skin,
-            spec.rotation
-        )
-
-        visual = FinishVisual(visual, spec)
-
-        if visual then
-            return visual
-        end
-    end
-
-    if spec.asset then
-        visual = TemplateVisual(
-            ModelFromAsset(spec.asset),
-            spec.height,
-            spec.skin,
-            spec.rotation
-        )
-
-        visual = FinishVisual(visual, spec)
-
-        if visual then
-            return visual
-        end
-    end
-
-    local fallback = Arenas.DEFAULT_OBJECT
-
-    if fallback and fallback.asset then
-        visual = TemplateVisual(
-            ModelFromAsset(fallback.asset),
-            spec.height or fallback.height,
-            spec.skin or fallback.skin,
-            spec.rotation or fallback.rotation
-        )
-
-        if visual then
-            visual.rotationX = spec.rotationX or fallback.rotationX
-            visual.rotationZ = spec.rotationZ or fallback.rotationZ
-
-            return visual
-        end
-    end
-
-    if spec.mesh then
-        return {
-            mesh = spec.mesh
-        }
-    end
-
-    if spec.part then
-        return {
-            part = spec.part
-        }
-    end
-
-    return nil
-end
-
-local function ObjectSize(barrel)
-	local visual = ObjectVisual(barrel.view)
-	if visual then
-		if visual.model then return visual.size end
-		if visual.mesh then return visual.mesh.native * visual.mesh.scale end
-		if visual.part then return visual.part.size end
-	end
-	return BARREL_NATIVE * BARREL_SCALE
-end
-
-local function ObjectDust(view)
-	local spec = ObjectSpec(view)
-	return spec and spec.dust or BARREL_DUST
-end
-
--- Gelo não estala como madeira. O tema pede o som pelo NOME, e o nome tem que
--- existir em ReplicatedStorage.Sounds — os áudios são do place, como todos os
--- outros. Faltando, cai no som do barril e avisa UMA vez por nome: silêncio
--- seria pior, e um aviso por pancada seria spam.
-local warnedSounds = {}
-
-local function ObjectSound(view, key, fallback)
-	local spec = ObjectSpec(view)
-	local name = spec and spec[key]
-	if not name then return fallback end
-
-	if Sounds:FindFirstChild(name) then return name end
-
-	if not warnedSounds[name] then
-		warnedSounds[name] = true
-		warn(("HeroView: som '%s' nao existe em ReplicatedStorage.Sounds — usando '%s'.")
-			:format(name, fallback))
-	end
-
-	return fallback
-end
-
-local function IsLyingCylinder(barrel)
-	local visual = ObjectVisual(barrel.view)
-	return visual ~= nil and visual.part ~= nil and visual.part.shape == Enum.PartType.Cylinder
-end
-
-local function BarrelCFrame(barrel)
-	local size = ObjectSize(barrel)
-	local base = GroundCFrame(barrel.position, barrel.view.origin) * CFrame.new(0, size.Y / 2, 0)
-
-	-- Part cilíndrica do Roblox nasce deitada no eixo X: a rotação entra na CFrame
-	-- BASE pra sobreviver aos tweens de pancada.
-	if IsLyingCylinder(barrel) then
-		base = base * CFrame.Angles(0, 0, math.rad(90))
-	end
-
-	return base
-end
-
--- ===== VIDA DO BARRIL =====
--- Um quadradinho por golpe que ele ainda aguenta, na mesma casca escura com
--- moldura dourada dos crachás de herói. Bolinhas e não número porque a vida do
--- barril não é vida: são DUAS pancadas, e duas pecinhas se leem sem contar.
--- Apaga da direita pra esquerda conforme apanha.
-local BARREL_PIP_ON = Color3.fromRGB(232, 172, 74) -- o mesmo âmbar que o cliente pinta na casa
-local BARREL_PIP_OFF = Color3.fromRGB(64, 54, 44)
-local BARREL_PIP = 9
-
-local function BuildBarrelBadge(part, barrel)
-	local gui = Instance.new("BillboardGui")
-	gui.MaxDistance = HERO_GUI_MAX_DISTANCE
-	gui.Name = "BarrelInfo"
-	gui.Size = UDim2.new(0, barrel.hitsLeft * (BARREL_PIP + 3) + 7, 0, BARREL_PIP + 8)
-	gui.StudsOffset = Vector3.new(0, ObjectSize(barrel).Y * 0.72, 0)
-	-- sem AlwaysOnTop: nada fica na frente do barril no tabuleiro, e assim ele
-	-- não atravessa cenário nem rouba o clique de quem estiver atrás
-	gui.Parent = part
-
-	local shell = Instance.new("Frame")
-	shell.Name = "Shell"
-	shell.Size = UDim2.fromScale(1, 1)
-	shell.BackgroundColor3 = BADGE_BG
-	shell.BorderSizePixel = 0
-	shell.Parent = gui
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 4)
-	corner.Parent = shell
-
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = BADGE_GOLD
-	stroke.Thickness = 1.1
-	stroke.Transparency = 0.15
-	stroke.Parent = shell
-
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	layout.VerticalAlignment = Enum.VerticalAlignment.Center
-	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Padding = UDim.new(0, 3)
-	layout.Parent = shell
-
-	for index = 1, barrel.hitsLeft do
-		local pip = Instance.new("Frame")
-		pip.Name = "Pip" .. index
-		pip.LayoutOrder = index
-		pip.Size = UDim2.new(0, BARREL_PIP, 0, BARREL_PIP)
-		pip.BackgroundColor3 = BARREL_PIP_ON
-		pip.BorderSizePixel = 0
-		pip.Parent = shell
-
-		local pipCorner = Instance.new("UICorner")
-		pipCorner.CornerRadius = UDim.new(0, 2)
-		pipCorner.Parent = pip
-	end
-
-	return gui
-end
-
-function HeroView.UpdateBarrelBadge(barrel)
-	local part = barrel.part
-	if not (part and part.Parent) then return end
-
-	local gui = part:FindFirstChild("BarrelInfo")
-	local shell = gui and gui:FindFirstChild("Shell")
-	if not shell then return end
-
-	for _, pip in ipairs(shell:GetChildren()) do
-		local index = tonumber(pip.Name:match("^Pip(%d+)$") or "")
-		if index then
-			local aceso = index <= barrel.hitsLeft
-			TweenService:Create(pip, TweenInfo.new(0.2), {
-				BackgroundColor3 = aceso and BARREL_PIP_ON or BARREL_PIP_OFF,
-			}):Play()
-		end
-	end
-end
-
--- Rajada de lascas/poeira presa ao barril. Usada no golpe e na quebra.
-local function BarrelBurst(part, count, speed, color)
-	local attachment = part:FindFirstChild("Dust")
-	if not attachment then
-		attachment = Instance.new("Attachment")
-		attachment.Name = "Dust"
-		attachment.Parent = part
-
-		local emitter = Instance.new("ParticleEmitter")
-		emitter.Name = "Emitter"
-		emitter.Enabled = false
-		emitter.Rate = 0
-		emitter.Texture = FX_SMOKE
-		emitter.Color = ColorSequence.new(color or BARREL_DUST)
-		emitter.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.2),
-			NumberSequenceKeypoint.new(1, 1),
-		})
-		emitter.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 2.2),
-			NumberSequenceKeypoint.new(1, 0),
-		})
-		emitter.Lifetime = NumberRange.new(0.35, 0.8)
-		emitter.Rotation = NumberRange.new(0, 360)
-		emitter.RotSpeed = NumberRange.new(-160, 160)
-		emitter.SpreadAngle = Vector2.new(180, 180)
-		emitter.Acceleration = Vector3.new(0, -12, 0)
-		emitter.Drag = 3
-		emitter.LightEmission = 0.2
-		emitter.Parent = attachment
-	end
-
-	local emitter = attachment:FindFirstChild("Emitter")
-	if emitter then
-		emitter.Speed = NumberRange.new(speed * 0.5, speed)
-		emitter:Emit(count)
-	end
-end
-
--- Modelo de catálogo vem com a aparência de quem o publicou — o cristal do gelo
--- é uma Union PRETA, e Union ignora Color enquanto UsePartColor for falso. Aqui
--- ele veste a pele do tema: cor, material e brilho do gelo, sem textura de
--- terceiro por cima. Sem `skin` no tema, o modelo fica como veio.
-local function PaintSkin(part, skin)
-	if part:IsA("UnionOperation") then part.UsePartColor = true end
-	if part:IsA("MeshPart") then part.TextureID = "" end
-
-	for _, child in ipairs(part:GetChildren()) do
-		if child:IsA("SurfaceAppearance") or child:IsA("Decal") then child:Destroy() end
-	end
-
-	if skin.color then part.Color = skin.color end
-	if skin.material then part.Material = skin.material end
-	part.Transparency = skin.transparency or 0
-	part.Reflectance = skin.reflectance or 0
-end
-
--- O modelo do asset vira FILHO da caixa: as peças dele ficam sem âncora e
--- soldadas nela, que é o que faz o conjunto inteiro acompanhar os tweens de
--- pancada (a caixa é a raiz ancorada da montagem). Sem colisão e sem query: quem
--- recebe o clique é a caixa, senão o golpe acertaria uma quina do cristal e o
--- cliente não acharia o BarrelUid.
-local function AttachObjectModel(part, visual)
-    local model = visual.model:Clone()
-
-    model.Name = "ObjectModel"
-    model.Parent = part
-
-    if math.abs(visual.scale - 1) > 0.01 then
-        model:ScaleTo(visual.scale)
-    end
-
-    local anchor = part.CFrame
-
-    -- Mantém a rotação Y que o sistema já utilizava.
-    if visual.rotation then
-        anchor = anchor * CFrame.Angles(
-            0,
-            math.rad(visual.rotation),
-            0
-        )
-    end
-
-    -- Primeiro posiciona o modelo normalmente.
-    local boxCFrame = model:GetBoundingBox()
-
-    model:PivotTo(
-        (anchor * boxCFrame:Inverse()) * model:GetPivot()
-    )
-
-    -- Depois aplica a correção de orientação diretamente
-    -- no pivot do ObjectModel.
-    local rotationX = visual.rotationX or 0
-    local rotationZ = visual.rotationZ or 0
-
-    if rotationX ~= 0 or rotationZ ~= 0 then
-        model:PivotTo(
-            model:GetPivot()
-            * CFrame.Angles(
-                math.rad(rotationX),
-                0,
-                math.rad(rotationZ)
-            )
-        )
-    end
-
-    for _, descendant in ipairs(model:GetDescendants()) do
-        if descendant:IsA("BasePart") then
-            descendant.Anchored = false
-            descendant.CanCollide = false
-            descendant.CanQuery = false
-            descendant.CanTouch = false
-            descendant.Massless = true
-            descendant.CastShadow = false
-
-            if visual.skin then
-                PaintSkin(descendant, visual.skin)
-            end
-
-            local weld = Instance.new("WeldConstraint")
-            weld.Part0 = part
-            weld.Part1 = descendant
-            weld.Parent = descendant
-        end
-    end
-
-    return model
-end
-
-function HeroView.CreateBarrel(barrel)
-	local visual = ObjectVisual(barrel.view)
-	local size = ObjectSize(barrel)
-
-	local part = Instance.new("Part")
-	part.Name = "Barrel_" .. barrel.uid
-	-- A caixa é o que recebe o clique. Na arena que usa MALHA é ela quem aparece:
-	-- NÃO adianta pôr Transparency em 1 achando que esconde só o bloco — com
-	-- SpecialMesh a transparência vale pro desenho todo e o objeto some.
-	part.Size = IsLyingCylinder(barrel) and Vector3.new(size.Y, size.X, size.Z) or size
-	part.Transparency = 0
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = true
-	part.CFrame = BarrelCFrame(barrel)
-	part:SetAttribute("BarrelUid", barrel.uid)
-	part.Parent = barrel.view.heroesFolder
-
-	if visual and visual.model then
-		part.Transparency = 1
-		AttachObjectModel(part, visual)
-	elseif visual and visual.part then
-		part.Shape = visual.part.shape or Enum.PartType.Block
-		part.Color = visual.part.color
-		part.Material = visual.part.material
-		part.Transparency = visual.part.transparency or 0
-		part.Reflectance = visual.part.reflectance or 0
-	else
-		local mesh = Instance.new("SpecialMesh")
-		mesh.MeshType = Enum.MeshType.FileMesh
-		mesh.MeshId = (visual and visual.mesh and visual.mesh.id) or BARREL_MESH
-		mesh.TextureId = (visual and visual.mesh and visual.mesh.texture) or BARREL_TEXTURE
-		local scale = (visual and visual.mesh and visual.mesh.scale) or BARREL_SCALE
-		mesh.Scale = Vector3.new(scale, scale, scale)
-		mesh.Parent = part
-	end
-
-	BuildBarrelBadge(part, barrel)
-
-	barrel.part = part
-	return part
-end
-
--- Primeiro golpe: apaga um quadradinho do crachá, sacode, solta poeira e fica
--- TORTO até a próxima pancada. A inclinação é redundante com o crachá de
--- propósito: o barril fica óbvio mesmo pra quem está com a câmera longe.
-function HeroView.PlayBarrelHit(barrel)
-	local part = barrel.part
-	if not (part and part.Parent) then return end
-
-	PlaySound(ObjectSound(barrel.view, "hitSound", "Hit"), barrel.view)
-	BarrelBurst(part, 10, 9, ObjectDust(barrel.view))
-	HeroView.UpdateBarrelBadge(barrel)
-
-	local base = BarrelCFrame(barrel)
-	local tombado = base * CFrame.Angles(math.rad(9), 0, math.rad(13))
-	local repouso = (barrel.hitsLeft <= 1) and tombado or base
-
-	TweenService:Create(part, TweenInfo.new(0.08, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-		CFrame = base * CFrame.new(0, 0.5, 0) * CFrame.Angles(math.rad(-12), 0, math.rad(10)),
-	}):Play()
-
-	task.delay(0.1, function()
-		if part.Parent then
-			TweenService:Create(part, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { CFrame = repouso }):Play()
-		end
-	end)
-end
-
-function HeroView.BreakBarrel(barrel)
-	local part = barrel.part
-	barrel.part = nil
-	if not (part and part.Parent) then return end
-
-	-- Som próprio, e não o HeroDeath: barril quebrando é madeira estourando, não
-	-- alguém morrendo. Emprestar o som de morte fazia o jogador olhar pro
-	-- tabuleiro procurando qual herói tinha caído.
-	PlaySound(ObjectSound(barrel.view, "breakSound", "BarrelBreak"), barrel.view)
-	BarrelBurst(part, 30, 20, ObjectDust(barrel.view))
-
-	-- o crachá some junto com o barril, não com o Part: ele ainda vive ~1s pra
-	-- as partículas terminarem, e um placar de vida boiando sobre os cacos seria
-	-- a única coisa na tela dizendo que ainda tem barril ali
-	local badge = part:FindFirstChild("BarrelInfo")
-	if badge then badge.Enabled = false end
-
-	-- o barril some rápido, mas o Part só é destruído depois: destruir na hora
-	-- levaria as partículas junto e a quebra não apareceria
-	local mesh = part:FindFirstChildWhichIsA("SpecialMesh")
-	if mesh then
-		TweenService:Create(mesh, TweenInfo.new(0.25), { Scale = Vector3.new(0.1, 0.1, 0.1) }):Play()
-	end
-
-	-- Modelo do asset some por transparência, não por escala: as peças estão
-	-- soldadas, e encolher briga com a solda.
-	local model = part:FindFirstChild("ObjectModel")
-	if model then
-		for _, descendant in ipairs(model:GetDescendants()) do
-			if descendant:IsA("BasePart") then
-				TweenService:Create(descendant, TweenInfo.new(0.25), { Transparency = 1 }):Play()
-			end
-		end
-	end
-	part.CanQuery = false
-	Debris:AddItem(part, 1.2)
-end
-
--- ===== FOGO NO CHÃO (Karo) =====
--- Nasce por código como o barril, e pelo mesmo motivo: nada que dependa de um
--- modelo guardado no place, que não entra no Rojo nem no git.
---
--- Vive na pasta de heróis da partida (não numa terceira pasta) porque o
--- ClearMatch já apaga aquela pasta inteira no fim do jogo — chama esquecida
--- queimando numa arena vazia seria um vazamento silencioso entre partidas.
---
--- O nome do Part carrega o hexId: é assim que o DestroyFlame acha a chama certa
--- sem o servidor ter que guardar uma segunda tabela de Parts em paralelo à
--- match.flames.
-local FLAME_COLOR = Color3.fromRGB(255, 140, 60)
-local FLAME_CORE = Color3.fromRGB(255, 225, 150)
-
-local SideColor, AttachTo, BuildTeamRing
-
-local function FlameName(hexId)
-	return "Flame_" .. hexId
-end
-
-function HeroView.CreateFlame(view, hexId, sideIndex)
-	if not view then return end
-
-	local existing = view.heroesFolder:FindFirstChild(FlameName(hexId))
-	if existing then existing:Destroy() end -- reacendeu a mesma casa: começa limpo
-
-	local center = HexGrid.GetWorldPosition(hexId, view.origin)
-	local size = HexGrid.GetHexSize()
-
-	-- Âncora invisível e fina, rente ao topo da casa. O fogo em si é partícula:
-	-- um bloco laranja sólido tamparia a casa e brigaria com a pintura de
-	-- movimento que o cliente já faz por cima do tabuleiro.
-	local part = Instance.new("Part")
-	part.Name = FlameName(hexId)
-	part.Size = Vector3.new(size * 0.9, 0.2, size * 0.9)
-	part.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y, 0))
-	part.Transparency = 1
-	part.Anchored = true
-	part.CanCollide = false
-	-- CanQuery false: a chama não pode roubar o clique da casa embaixo dela, ou
-	-- o jogador perderia a jogada tentando andar pro fogo.
-	part.CanQuery = false
-	part.CastShadow = false
-	part.Parent = view.heroesFolder
-
-	if sideIndex then
-		BuildTeamRing(part, hexId, SideColor(sideIndex), view.origin)
-	end
-
-	local attachment = Instance.new("Attachment")
-	attachment.Parent = part
-
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Name = "Emitter"
-	emitter.Texture = FX_SMOKE
-	emitter.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, FLAME_CORE),
-		ColorSequenceKeypoint.new(1, FLAME_COLOR),
-	})
-	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.35),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 2.4),
-		NumberSequenceKeypoint.new(1, 0.2),
-	})
-	emitter.Lifetime = NumberRange.new(0.5, 0.9)
-	emitter.Rate = 14
-	emitter.Speed = NumberRange.new(3, 5.5)
-	emitter.SpreadAngle = Vector2.new(18, 18)
-	emitter.Acceleration = Vector3.new(0, 5, 0)
-	emitter.EmissionDirection = Enum.NormalId.Top
-	emitter.Rotation = NumberRange.new(0, 360)
-	emitter.RotSpeed = NumberRange.new(-90, 90)
-	emitter.LightEmission = 0.8
-	emitter.LightInfluence = 0
-	emitter.Parent = attachment
-
-	return part
-end
-
-function HeroView.DestroyFlame(view, hexId)
-	if not view then return end
-
-	local part = view.heroesFolder:FindFirstChild(FlameName(hexId))
-	if not part then return end
-
-	-- Para de EMITIR e só então destrói: apagar o Part na hora levaria junto as
-	-- partículas ainda no ar, e a chama sumiria num corte seco.
-	local emitter = part:FindFirstChildWhichIsA("ParticleEmitter", true)
-	if emitter then emitter.Enabled = false end
-
-	Debris:AddItem(part, 1.2)
-end
-
--- Quanto tempo o brilho de alcance do Karo fica na casa — só um telegraph
--- visual, não um efeito de jogo (não mora em match.flames, ninguém pisa
--- "nele"), então some rápido em vez dos 2 turnos do fogo de verdade.
-local ATTACK_RANGE_FLASH_LIFETIME = 0.5
-
--- Karo: brilho rápido nas casas a distância 1 dele, sincronizado com o golpe
--- giratório do Soco de Chamas — mostra ONDE o golpe alcança antes/durante o
--- impacto, mesmo nas casas vazias que GetEnemiesInRange nem chega a marcar
--- (só quem está lá dentro leva efeito de acerto). Mesma construção do
--- CreateFlame (âncora fina rente ao topo da casa, mesma paleta laranja do
--- Karo) — pra ficar reconhecível como "o mesmo fogo dele", só que num pulso
--- só em vez de rastro persistente.
-function HeroView.FlashAttackRange(view, hexIds, coreColor, edgeColor)
-	if not view then return end
-
-	local size = HexGrid.GetHexSize()
-	coreColor = coreColor or FLAME_CORE
-	edgeColor = edgeColor or FLAME_COLOR
-
-	for _, hexId in ipairs(hexIds) do
-		local center = HexGrid.GetWorldPosition(hexId, view.origin)
-
-		local part = Instance.new("Part")
-		part.Name = "RangeFlash_" .. hexId
-		part.Size = Vector3.new(size * 0.9, 0.2, size * 0.9)
-		part.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y, 0))
-		part.Transparency = 1
-		part.Anchored = true
-		part.CanCollide = false
-		part.CanQuery = false -- não pode roubar o clique da casa embaixo, mesma regra da chama
-		part.CastShadow = false
-		part.Parent = view.heroesFolder
-
-		local attachment = Instance.new("Attachment")
-		attachment.Parent = part
-
-		local emitter = Instance.new("ParticleEmitter")
-		emitter.Name = "Emitter"
-		emitter.Texture = FX_SPARK
-		emitter.Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, coreColor),
-			ColorSequenceKeypoint.new(1, edgeColor),
-		})
-		emitter.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.2),
-			NumberSequenceKeypoint.new(1, 1),
-		})
-		-- cresce pra preencher a casa e desaparece — o "anel" da área de
-		-- alcance, não fumaça subindo (isso já é a linguagem visual do rastro)
-		emitter.Size = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, size * 0.7),
-			NumberSequenceKeypoint.new(1, size * 0.95),
-		})
-		emitter.Lifetime = NumberRange.new(ATTACK_RANGE_FLASH_LIFETIME, ATTACK_RANGE_FLASH_LIFETIME)
-		emitter.Rate = 0
-		emitter.Speed = NumberRange.new(0, 0)
-		emitter.EmissionDirection = Enum.NormalId.Top
-		emitter.LightEmission = 0.9
-		emitter.LightInfluence = 0
-		emitter.Parent = attachment
-		emitter:Emit(1)
-
-		Debris:AddItem(part, ATTACK_RANGE_FLASH_LIFETIME + 0.2)
-	end
-end
-
-local POISON_CORE = Color3.fromRGB(196, 255, 150)
-local POISON_EDGE = Color3.fromRGB(96, 200, 70)
-local POISON_BOMB_TIME = 1.1
-
-local function PlayBlast(view, hexId, coreColor, edgeColor)
-	if not view then return end
-
-	local size = HexGrid.GetHexSize()
-	local center = HexGrid.GetWorldPosition(hexId, view.origin)
-
-	local hexIds = { hexId }
-	for _, hex in ipairs(HexGrid.GetNeighbors(hexId)) do
-		table.insert(hexIds, hex.id)
-	end
-	HeroView.FlashAttackRange(view, hexIds, coreColor, edgeColor)
-
-	local cloud = Instance.new("Part")
-	cloud.Name = "Blast"
-	cloud.Shape = Enum.PartType.Ball
-	cloud.Size = Vector3.new(size * 0.5, size * 0.5, size * 0.5)
-	cloud.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y + size * 0.4, 0))
-	cloud.Color = coreColor
-	cloud.Material = Enum.Material.Neon
-	cloud.Transparency = 0.45
-	cloud.Anchored = true
-	cloud.CanCollide = false
-	cloud.CanQuery = false
-	cloud.CastShadow = false
-	cloud.Parent = view.heroesFolder
-
-	local blast = size * 3.6
-	TweenService:Create(cloud,
-		TweenInfo.new(POISON_BOMB_TIME, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-			Size = Vector3.new(blast, blast, blast),
-			Transparency = 1,
-			Color = edgeColor,
-		}):Play()
-
-	Debris:AddItem(cloud, POISON_BOMB_TIME + 0.15)
-end
-
-function HeroView.PlayPoisonBomb(view, hexId)
-	PlayBlast(view, hexId, POISON_CORE, POISON_EDGE)
-end
-
-local ICE_CORE = Color3.fromRGB(236, 252, 255)
-local ICE_EDGE = Color3.fromRGB(120, 200, 245)
-local ICE_STORM_TIME = 0.7
-
-local FIRE_CIRCLE_GROW = 0.22
-local FIRE_CIRCLE_HOLD = 0.14
-local FIRE_CIRCLE_CLOSE = 0.26
-local FIRE_CIRCLE_SEED = 0.06
-local FIRE_CIRCLE_TAIL = 1.6
-
-local function SetEmitters(model, enabled)
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("ParticleEmitter") then descendant.Enabled = enabled end
-	end
-end
-
-local FIRE_CIRCLE_HOME = { "VFX", "Karo", "FireCircle" }
-
-local function DescendFrom(root, path)
-	local node = root
-	for _, name in ipairs(path) do
-		node = node and node:FindFirstChild(name)
-	end
-	return node
-end
-
-local function UsableAsVfx(instance)
-	if not instance then return false end
-	if instance:IsA("BasePart") then return true end
-	for _, descendant in ipairs(instance:GetDescendants()) do
-		if descendant:IsA("BasePart") or descendant:IsA("ParticleEmitter")
-			or descendant:IsA("Beam") or descendant:IsA("Trail") then
-			return true
-		end
-	end
-	return false
-end
-
--- ===== VFX MONTADO À MÃO NO PLACE =====
--- Mesma fronteira do resto do cenário Studio-owned: o Rojo não versiona efeito
--- montado no Explorer, então o código guarda só o CAMINHO e procura em dois
--- lugares — ReplicatedStorage primeiro (onde um VFX "de biblioteca" ficaria) e
--- Workspace depois, que é onde eles realmente estão hoje (Workspace.VFX.*).
---
--- O aviso antigo já prometia essa segunda busca; ela é que nunca existiu, e por
--- isso o anel de fogo do Karo nunca apareceu — o efeito estava em
--- Workspace.VFX.Karo.FireCircle e a procura só olhava ReplicatedStorage.
---
--- Clonado UMA vez e guardado fora da árvore: cada uso clona o molde, e os
--- emissores nascem desligados pra nenhum deles cuspir partícula no molde.
-local vfxTemplates = {}
-
-local function PrepareVfx(source)
-	local template = source:Clone()
-	SetEmitters(template, false)
-
-	local parts = template:GetDescendants()
-	if template:IsA("BasePart") then table.insert(parts, template) end
-
-	for _, part in ipairs(parts) do
-		if part:IsA("BasePart") then
-			part.Anchored = true
-			part.CanCollide = false
-			part.CanQuery = false
-			part.CanTouch = false
-			part.CastShadow = false
-		end
-	end
-
-	return template
-end
-
--- Diz ONDE o caminho quebrou, e o que existe naquele nível. Um VFX que não
--- aparece é sempre a mesma dúvida — "o nome está errado, a pasta está errada, ou
--- o objeto está vazio?" —, e sem isso a única saída era caçar no Explorer.
--- Nomes do Roblox distinguem maiúscula, então listar os irmãos entrega de bandeja
--- um "KIra" escrito "Kira" ou um "Fire Circle" com espaço.
-local function DescribeVfxMiss(path)
-	for _, root in ipairs({ ReplicatedStorage, Workspace }) do
-		local node, walked = root, root.Name
-
-		for _, name in ipairs(path) do
-			local child = node:FindFirstChild(name)
-			if not child then
-				local irmaos = {}
-				for _, sibling in ipairs(node:GetChildren()) do
-					table.insert(irmaos, sibling.Name)
-				end
-				return ("em %s nao existe '%s'. O que tem la: %s"):format(
-					walked, name,
-					#irmaos > 0 and table.concat(irmaos, ", ") or "(vazio)")
-			end
-			node, walked = child, walked .. "." .. name
-		end
-
-		-- chegou ao fim do caminho: existe, mas não serve como VFX
-		return ("%s existe mas nao tem geometria nem emissor dentro (e um %s vazio nao desenha nada)")
-			:format(walked, node.ClassName)
-	end
-
-	return "caminho nao resolvido"
-end
-
--- ===== OPACIDADE DE UM VFX INTEIRO =====
--- Transparência não mora num lugar só. Uma Part guarda um NÚMERO; ParticleEmitter,
--- Beam e Trail guardam uma NumberSequence (transparência ao longo da vida da
--- partícula / do comprimento do feixe); Decal e Texture guardam outro número.
---
--- É por isso que mexer só em `part.Transparency` não pegava na bolha da Kira: se
--- o que desenha a esfera é um emissor (ou um decalque numa Part invisível), a
--- Part já estava em 1 e o ajuste caía no vazio — a peça ficava "mais
--- transparente" sem nunca ter sido ela quem aparecia.
-local function FadeNumber(value, opacity)
-	return math.clamp(1 - (1 - value) * opacity, 0, 1)
-end
-
-local function FadeSequence(sequence, opacity)
-	local keys = {}
-	for _, key in ipairs(sequence.Keypoints) do
-		local value = FadeNumber(key.Value, opacity)
-		-- o envelope não pode estourar [0,1] em volta do novo valor, senão o
-		-- construtor da NumberSequence recusa
-		local envelope = math.min(key.Envelope, value, 1 - value)
-		table.insert(keys, NumberSequenceKeypoint.new(key.Time, value, envelope))
-	end
-	return NumberSequence.new(keys)
-end
-
-local function FadeVfx(root, opacity)
-	if opacity >= 1 then return end
-
-	local pieces = root:GetDescendants()
-	table.insert(pieces, root)
-
-	for _, piece in ipairs(pieces) do
-		if piece:IsA("ParticleEmitter") or piece:IsA("Beam") or piece:IsA("Trail") then
-			piece.Transparency = FadeSequence(piece.Transparency, opacity)
-		elseif piece:IsA("BasePart") or piece:IsA("Decal") then
-			-- Texture herda de Decal, então entra aqui junto
-			piece.Transparency = FadeNumber(piece.Transparency, opacity)
-		end
-	end
-end
-
-local function StripLights(instance)
-	for _, descendant in ipairs(instance:GetDescendants()) do
-		if descendant:IsA("Light") then descendant:Destroy() end
-	end
-	if instance:IsA("Light") then instance:Destroy() end
-end
-
-local function VfxTemplate(path, label)
-	local key = table.concat(path, "/")
-	if vfxTemplates[key] ~= nil then return vfxTemplates[key] or nil end
-
-	local source = DescendFrom(ReplicatedStorage, path)
-	if not UsableAsVfx(source) then
-		source = DescendFrom(Workspace, path)
-	end
-
-	if not UsableAsVfx(source) then
-		vfxTemplates[key] = false
-		warn(("HeroView: VFX %s nao encontrado — %s.\n  %s"):format(
-			key:gsub("/", "."), label, DescribeVfxMiss(path)))
-		return nil
-	end
-
-	local template = PrepareVfx(source)
-	vfxTemplates[key] = template
-	return template
-end
-
--- ===== O TRACEJANTE DA WREN =====
--- O tiro dela deixou de ser a bolinha genérica e passou a ser o risco montado à
--- mão em ReplicatedStorage.VFX.Wren.Bullet_Tracer — oito esferas neon esticadas,
--- ~16 studs de comprimento, sem emissor e sem animação própria. Quem anima é
--- daqui: o risco cruza o tabuleiro e some.
---
--- ELE MORA NO EIXO Z. O modelo é fino em X e Y e comprido em Z, e o pivô dele
--- já está alinhado com esse comprimento (foi assim que a caixa envolvente saiu
--- 0.74 x 0.74 x 16.30). Por isso `CFrame.lookAt` basta pra apontar: o risco cai
--- em cima da linha do tiro sem correção de rotação nenhuma.
---
--- ANDA SOLDADO, não peça por peça. O PrepareVfx ancora tudo; aqui a primeira
--- peça vira o boneco que o tween move e as outras sete soltam a âncora e
--- acompanham por WeldConstraint. É o mesmo arranjo da bolha da Kira, e é o que
--- evita um laço por quadro pra reposicionar oito peças.
-local WREN_TRACER_HOME = { "VFX", "Wren", "Bullet_Tracer" }
-
-function Bolt.Tracer(view, fromPos, toPos, travel)
-	local template = VfxTemplate(WREN_TRACER_HOME, "o tiro da Wren sai com a bolinha generica")
-	if not template then return false end
-
-	local _, size = template:GetBoundingBox()
-	local tracer = template:Clone()
-
-	-- parenteia ANTES de posicionar e soldar: mesma ordem do AttachObjectModel e
-	-- da bolha da Kira, que é a que engata a solda
-	tracer.Parent = view.heroesFolder
-
-	-- Meio comprimento pra trás: quem chega na casa do alvo é a PONTA do risco,
-	-- não o meio dele. O `+Z` é o que sobra atrás no lookAt (a frente dele é -Z).
-	local aim = CFrame.lookAt(fromPos, toPos)
-	local tail = CFrame.new(0, 0, size.Z / 2)
-	tracer:PivotTo(aim * tail)
-
-	local root = tracer:FindFirstChildWhichIsA("BasePart", true)
-	if not root then
-		tracer:Destroy()
-		return false
-	end
-
-	for _, piece in ipairs(tracer:GetDescendants()) do
-		if piece:IsA("BasePart") and piece ~= root then
-			local weld = Instance.new("WeldConstraint")
-			weld.Part0 = root
-			weld.Part1 = piece
-			weld.Parent = root
-			piece.Anchored = false
-		end
-	end
-
-	-- A direção não muda no caminho, só a posição: o destino é o mesmo risco
-	-- deslocado pelo vetor do tiro. Translação pura, sem remontar CFrame nenhum.
-	TweenService:Create(root, TweenInfo.new(travel, Enum.EasingStyle.Linear), {
-		CFrame = root.CFrame + (toPos - fromPos),
-	}):Play()
-
-	Debris:AddItem(tracer, travel + 0.15)
-	return true
-end
-
-
-local function FireCircleTemplate()
-	return VfxTemplate(FIRE_CIRCLE_HOME, "o giro do Karo sai sem o anel de fogo")
-end
-
-function HeroView.PlayFireCircle(view, hexId)
-	if not view then return end
-
-	local template = FireCircleTemplate()
-	if not template then return end
-
-	local circle = template:Clone()
-	StripLights(circle)
-	local center = HexGrid.GetWorldPosition(hexId, view.origin)
-		+ Vector3.new(0, TILE_TOP_Y + 0.15, 0)
-
-	-- SÓ pega a peça solta quando o efeito INTEIRO é uma peça. Antes ele pescava
-	-- a primeira BasePart de dentro de um Model e movia/encolhia só ela: num
-	-- efeito de várias peças, uma ia pro hexágono e as outras ficavam onde o
-	-- molde estava. Model tem PivotTo e é assim que ele se move — inteiro.
-	local part = circle:IsA("BasePart") and circle or nil
-
-	if not part and not circle:IsA("PVInstance") then
-		local host = Instance.new("Part")
-		host.Name = "FireCircleHost"
-		host.Size = Vector3.new(0.2, 0.2, 0.2)
-		host.Transparency = 1
-		host.Anchored = true
-		host.CanCollide = false
-		host.CanQuery = false
-		host.CastShadow = false
-		circle.Parent = host
-		circle = host
-		part = host
-	end
-
-	local anchor = part or circle
-	-- a orientação com que o efeito foi montado no Explorer é preservada: um anel
-	-- deitado no chão continua deitado, e não é endireitado pelo reposicionamento
-	local spin = part and part.CFrame.Rotation
-		or (circle:IsA("PVInstance") and circle:GetPivot().Rotation)
-		or CFrame.identity
-	local full, seed = nil, nil
-
-	if part then
-		full = part.Size
-		seed = Vector3.new(full.X, full.Y * FIRE_CIRCLE_SEED, full.Z * FIRE_CIRCLE_SEED)
-		part.Size = seed
-	end
-
-	if anchor:IsA("BasePart") then
-		anchor.CFrame = CFrame.new(center) * spin
-	else
-		anchor:PivotTo(CFrame.new(center) * spin)
-	end
-
-	circle.Parent = view.heroesFolder
-	SetEmitters(circle, true)
-
-	if part then
-		TweenService:Create(part,
-			TweenInfo.new(FIRE_CIRCLE_GROW, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-			{ Size = full }):Play()
-	end
-
-	task.delay(FIRE_CIRCLE_GROW + FIRE_CIRCLE_HOLD, function()
-		if not circle.Parent then return end
-
-		if part and part.Parent then
-			TweenService:Create(part,
-				TweenInfo.new(FIRE_CIRCLE_CLOSE, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-				{ Size = seed }):Play()
-		end
-
-		task.delay(FIRE_CIRCLE_CLOSE, function()
-			if circle.Parent then SetEmitters(circle, false) end
-		end)
-	end)
-
-	Debris:AddItem(circle, FIRE_CIRCLE_GROW + FIRE_CIRCLE_HOLD + FIRE_CIRCLE_CLOSE + FIRE_CIRCLE_TAIL)
-end
-
-local CHAIN_CORE_COLOR = Color3.fromRGB(255, 250, 190)
-local CHAIN_GLOW_COLOR = Color3.fromRGB(255, 214, 40)
-local CHAIN_STEP = 0.07
-local CHAIN_LIFE = 0.26
-local CHAIN_SEGMENTS = 3
-local CHAIN_JITTER = 0.9
-local CHAIN_THICKNESS = 0.22
-
-local function BuildArcSegment(parent, fromPoint, toPoint, thickness, color)
-	local delta = toPoint - fromPoint
-	local segment = Instance.new("Part")
-	segment.Name = "ChainArc"
-	segment.Size = Vector3.new(thickness, thickness, delta.Magnitude)
-	segment.CFrame = CFrame.new(fromPoint + delta * 0.5, toPoint)
-	segment.Color = color
-	segment.Material = Enum.Material.Neon
-	segment.Anchored = true
-	segment.CanCollide = false
-	segment.CanQuery = false
-	segment.CastShadow = false
-	segment.Parent = parent
-	return segment
-end
-
-local function PlayArc(view, fromHex, toHex)
-	local lift = Vector3.new(0, TILE_TOP_Y + SPRITE_HEIGHT * 0.35, 0)
-	local origin = HexGrid.GetWorldPosition(fromHex, view.origin) + lift
-	local target = HexGrid.GetWorldPosition(toHex, view.origin) + lift
-
-	local previous = origin
-	for index = 1, CHAIN_SEGMENTS do
-		local straight = origin:Lerp(target, index / CHAIN_SEGMENTS)
-		local point = index < CHAIN_SEGMENTS and straight + Vector3.new(
-			(math.random() - 0.5) * CHAIN_JITTER,
-			(math.random() - 0.5) * CHAIN_JITTER,
-			(math.random() - 0.5) * CHAIN_JITTER
-		) or target
-
-		local glow = BuildArcSegment(view.heroesFolder, previous, point, CHAIN_THICKNESS * 2.1, CHAIN_GLOW_COLOR)
-		glow.Transparency = 0.55
-		local core = BuildArcSegment(view.heroesFolder, previous, point, CHAIN_THICKNESS, CHAIN_CORE_COLOR)
-
-		for _, part in ipairs({ glow, core }) do
-			TweenService:Create(part, TweenInfo.new(CHAIN_LIFE), { Transparency = 1 }):Play()
-			Debris:AddItem(part, CHAIN_LIFE + 0.05)
-		end
-
-		previous = point
-	end
-end
-
-function HeroView.PlayChainArcs(view, edges)
-	if not view then return end
-
-	for _, edge in ipairs(edges) do
-		local delay = edge.depth * CHAIN_STEP
-		if delay <= 0 then
-			PlayArc(view, edge.from, edge.to)
-		else
-			task.delay(delay, function()
-				if view.heroesFolder and view.heroesFolder.Parent then
-					PlayArc(view, edge.from, edge.to)
-				end
-			end)
-		end
-	end
-end
-
-function HeroView.PlayIceStorm(view, hexId)
-	if not view then return end
-
-	PlayBlast(view, hexId, ICE_CORE, ICE_EDGE)
-
-	local size = HexGrid.GetHexSize()
-	local center = HexGrid.GetWorldPosition(hexId, view.origin)
-
-	local hexIds = {}
-	for _, hex in ipairs(HexGrid.GetNeighbors(hexId)) do
-		table.insert(hexIds, hex.id)
-	end
-	table.insert(hexIds, hexId)
-	HeroView.FlashAttackRange(view, hexIds, ICE_CORE, ICE_EDGE)
-
-	local ring = Instance.new("Part")
-	ring.Name = "IceStormRing"
-	ring.Shape = Enum.PartType.Cylinder
-	ring.Size = Vector3.new(0.2, size * 0.6, size * 0.6)
-	ring.CFrame = CFrame.new(center + Vector3.new(0, TILE_TOP_Y + 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90))
-	ring.Color = ICE_CORE
-	ring.Material = Enum.Material.Neon
-	ring.Transparency = 0.35
-	ring.Anchored = true
-	ring.CanCollide = false
-	ring.CanQuery = false
-	ring.CastShadow = false
-	ring.Parent = view.heroesFolder
-
-	local grow = TweenInfo.new(ICE_STORM_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(ring, grow, {
-		Size = Vector3.new(0.2, size * 4.2, size * 4.2),
-		Transparency = 1,
-		Color = ICE_EDGE,
-	}):Play()
-
-	Debris:AddItem(ring, ICE_STORM_TIME + 0.15)
-end
-
--- Alguém atravessou a chama: lufada curta pra amarrar o número de dano à casa.
--- Toca sempre que uma chama é CONSUMIDA — o pedágio que mata o fogo (ver
--- MatchManager.MoveHero: dano, depois ClearFlame na mesma casa). Som próprio,
--- não o "Hit" genérico de golpe corpo a corpo: isto é a chama acabando, não
--- uma pancada.
-function HeroView.PlayFlameHit(view, hexId)
-	if not view then return end
-
-	local part = view.heroesFolder:FindFirstChild(FlameName(hexId))
-	if not part then return end
-
-	PlaySound("FlameConsume", view)
-
-	local emitter = part:FindFirstChildWhichIsA("ParticleEmitter", true)
-	if emitter then emitter:Emit(18) end
-end
-
--- A cor vem do lado (1 = azul, 2 = vermelho), não de "é o bot?": em PvP os
--- dois lados são jogadores e a câmera é a mesma pros dois.
-function SideColor(sideIndex)
-	return sideIndex == 2 and TEAM_COLOR_PLAYER_2 or TEAM_COLOR_PLAYER_1
-end
+local SideColor = ViewStyle.SideColor
+local AttachTo = ViewStyle.AttachTo
+local BuildTeamRing = ViewStyle.BuildTeamRing
 
 local function TeamColor(hero)
 	return SideColor(hero.sideIndex)
 end
 
--- Pendura uma parte na âncora: sem Anchored e presa por WeldConstraint,
--- então acompanha qualquer movimento/tween da âncora.
-function AttachTo(anchor, part)
-	part.Anchored = false
-	part.CanCollide = false
-	part.CanQuery = false
-	part.Massless = true
-	part.Parent = anchor
-
-	local weld = Instance.new("WeldConstraint")
-	weld.Part0 = anchor
-	weld.Part1 = part
-	weld.Parent = anchor
-end
-
-function BuildTeamRing(anchor, hexId, color, origin)
-	local center = HexGrid.GetWorldPosition(hexId, origin) + Vector3.new(0, TILE_TOP_Y + RING_HEIGHT, 0)
-	local circumradius = HexGrid.GetHexSize() * RING_SCALE
-	local apothem = circumradius * math.sqrt(3) / 2
-
-	for side = 0, 5 do
-		local midAngle = math.rad(side * 60 + 30)
-		local outward = Vector3.new(math.cos(midAngle), 0, math.sin(midAngle))
-		local tangent = Vector3.new(-math.sin(midAngle), 0, math.cos(midAngle))
-		local position = center + outward * apothem
-
-		local edge = Instance.new("Part")
-		edge.Name = "RingEdge" .. side
-		edge.Size = Vector3.new(RING_THICKNESS, RING_THICKNESS, circumradius + RING_THICKNESS)
-		edge.CFrame = CFrame.new(position, position + tangent)
-		edge.Color = color
-		edge.Material = Enum.Material.SmoothPlastic
-		AttachTo(anchor, edge)
-	end
-end
 
 -- ===== TEXTO FLUTUANTE =====
 -- O balão é REAPROVEITADO, não recriado.
@@ -2645,8 +971,6 @@ function HeroView.Create(hero)
 	statBadge("Atk", "sword", ICON_RED, 1)
 	statBadge("Hp", "heart", ICON_RED, 2)
 
-	-- Passiva: só existe pra quem tem uma. Nada aqui muda durante a partida, por
-	-- isso é montado uma vez e o UpdateStats nem olha pra ele.
 	local abilityBadge = ABILITY_BADGES[hero.ability]
 	if abilityBadge then
 		local frame = shell("Ability", SQUARE_BADGE_WIDTH, 3)
@@ -2663,8 +987,6 @@ function HeroView.Create(hero)
 		PixelIcons.Build(abilityBadge.icon, iconSlot, abilityBadge.color, 2)
 	end
 
-	-- Veneno ganha a mesma casca dos outros, pra não ser o único selo solto no
-	-- meio de uma fileira emoldurada. O recorte da tira mora no slot interno.
 	local status = shell("Status", SQUARE_BADGE_WIDTH, 5)
 	status.Visible = false
 
@@ -2686,8 +1008,6 @@ function HeroView.Create(hero)
 	boltIcon.Name = "BoltIcon"
 	boltIcon.Visible = false
 
-	-- Gelo do Kor: mesma casca dos outros selos, com o floco desenhado (PixelIcons)
-	-- em vez de tira de imagem. Montado uma vez; o UpdateStats só liga e desliga.
 	local chill = shell("Chill", SQUARE_BADGE_WIDTH, 6)
 	chill.Visible = false
 
@@ -2768,49 +1088,12 @@ local function SetParalysisSpark(hero, on)
 end
 
 -- ===== ESCUDO DOURADO (Kira) =====
--- Mesmo arranjo do brilho de paralisia acima — anexo + emissor guardados NO
--- próprio modelo, ligados e desligados por nome — porque o problema é o mesmo:
--- é um estado que fica de pé por tempo indeterminado, e não um estouro de um
--- quadro. Ligar duas vezes reaproveita o que já está lá, então reaplicar não
--- empilha emissor.
---
--- ReplicatedStorage.VFX.KIra.Shield. O nome vem do Explorer, com o I maiúsculo e
--- tudo: o caminho é uma STRING pro engine, e "Kira" não acharia a pasta "KIra".
 local SHIELD_BUBBLE_HOME = { "VFX", "KIra", "Shield" }
 local SHIELD_AURA = "ShieldAura"
 
--- ===== AJUSTE DA BOLHA =====
--- MULTIPLICADORES sobre o asset, não valores absolutos: o desenho continua sendo
--- do Explorer (cor, formato, emissores), e estes dois números só dizem o quanto
--- dele entra em cima do herói. Mexer aqui não desfaz nada de lá, e mexer lá
--- continua valendo — os dois se multiplicam, então não ajuste os mesmos dois
--- lados ao mesmo tempo ou o efeito vira o dobro do que você pediu.
---
--- Por que no código e não só no Studio: a bolha existe em RELAÇÃO ao herói, e o
--- tamanho do herói é uma constante daqui (SPRITE_HEIGHT). Deixar a proporção
--- versionada junto do sprite é o que impede o escudo de sair de escala quando
--- alguém mexer no zoom do tabuleiro.
---
--- 1 = exatamente o asset. Abaixo de 1 encolhe / deixa mais transparente.
---
--- Os dois números saíram de comparação lado a lado no Studio, não de chute:
---   escala  0.69 -> 9.52 studs. O hexágono tem 9.8 de ponta a ponta e o herói
---           8.12 de altura, então esta é a maior bolha que ENVOLVE o herói
---           inteiro sem invadir a casa do vizinho. Dois aliados protegidos lado
---           a lado não encostam as bolhas.
---   opacidade 0.45 -> Transparency 0.82 (o asset já vem em 0.6). Testado contra
---           Neon e ForceField no mesmo tamanho: acima disso o amarelo lava o
---           sprite, abaixo a bolha some e ninguém vê que o aliado está protegido.
 local SHIELD_SCALE = 0.69
 local SHIELD_OPACITY = 0.45
 
--- A bolha é MONTADA À MÃO no place, não desenhada aqui: tamanho, cor e ritmo são
--- decisão de quem edita o Explorer, e o código só a acende no herói certo.
---
--- SOLDADA e sem âncora, ao contrário do resto do VFX: ela precisa ACOMPANHAR o
--- aliado enquanto o escudo durar, e o herói anda por tween de CFrame na caixa
--- dele (ver WalkStep). Ancorada, ela ficaria plantada na casa onde o escudo foi
--- concedido e o herói sairia de dentro dela no primeiro passo.
 function HeroView.SetShieldAura(hero, on)
 	if not (hero.part and hero.part.Parent) then return end
 
@@ -2818,42 +1101,28 @@ function HeroView.SetShieldAura(hero, on)
 
 	if not on then
 		if existing then
-			SetEmitters(existing, false)
+			VfxLibrary.SetEmitters(existing, false)
 			Debris:AddItem(existing, 0.6)
 		end
 		return
 	end
 
-	-- Já está de pé: reacende em vez de pendurar uma segunda bolha. Conceder
-	-- escudo duas vezes não deveria acontecer (o servidor recusa), mas empilhar
-	-- emissor é o tipo de coisa que só aparece três partidas depois.
 	if existing then
-		SetEmitters(existing, true)
+		VfxLibrary.SetEmitters(existing, true)
 		return
 	end
 
-	local template = VfxTemplate(SHIELD_BUBBLE_HOME, "o escudo da Kira fica sem a bolha dourada")
+	local template = VfxLibrary.Template(SHIELD_BUBBLE_HOME, "o escudo da Kira fica sem a bolha dourada")
 	if not template then return end
 
 	local bubble = template:Clone()
 	bubble.Name = SHIELD_AURA
 
-	-- PARENTEIA ANTES de posicionar e soldar — mesma ordem do AttachObjectModel,
-	-- que é a que funciona com pai ancorado sendo movido por tween. Soldar peça
-	-- que ainda está fora da DataModel é onde a solda não engata e a bolha fica
-	-- pra trás no primeiro passo do herói.
 	bubble.Parent = hero.part
 
-	-- ENCOLHE ANTES DE CENTRAR. O ScaleTo do Model escala em volta do PIVÔ dele,
-	-- então redimensionar depois de posicionar arrastaria a bolha pra longe do
-	-- herói de novo — a ordem aqui não é estilo, é o que mantém o centro no lugar.
 	if math.abs(SHIELD_SCALE - 1) > 0.01 then
 		if bubble:IsA("BasePart") then
 			bubble.Size *= SHIELD_SCALE
-			-- O Size de uma Part não encolhe a PARTÍCULA que ela emite: quem
-			-- desenha a esfera pode ser o emissor, e ele tem tamanho próprio (uma
-			-- NumberSequence). Num Model o ScaleTo já faz isso sozinho; numa Part
-			-- solta é aqui.
 			for _, piece in ipairs(bubble:GetDescendants()) do
 				if piece:IsA("ParticleEmitter") then
 					local keys = {}
@@ -2869,22 +1138,15 @@ function HeroView.SetShieldAura(hero, on)
 		end
 	end
 
-	-- CENTRO DA BOLHA NO CENTRO VISUAL DO HERÓI. A caixa do herói já está na
-	-- altura do peito do sprite (o AnchorCFrame sobe ANCHOR_LIFT do chão, e o
-	-- BillboardGui desce o mesmo tanto pra plantar o pé), então o meio dela é o
-	-- meio do desenho — é aí que a bolha fica, e não no pé nem acima da cabeça.
 	if bubble:IsA("BasePart") then
 		bubble.CFrame = CFrame.new(hero.part.Position) * bubble.CFrame.Rotation
 	else
-		-- leva o CENTRO da caixa delimitadora até o alvo, porque o pivô do modelo
-		-- pode estar em qualquer canto. A rotação de origem entra no alvo pra
-		-- bolha não ser endireitada à força.
 		local box = bubble:GetBoundingBox()
 		local target = CFrame.new(hero.part.Position) * box.Rotation
 		bubble:PivotTo((target * box:Inverse()) * bubble:GetPivot())
 	end
 
-	FadeVfx(bubble, SHIELD_OPACITY)
+	VfxLibrary.Fade(bubble, SHIELD_OPACITY)
 
 	local parts = bubble:GetDescendants()
 	if bubble:IsA("BasePart") then table.insert(parts, bubble) end
@@ -2894,19 +1156,10 @@ function HeroView.SetShieldAura(hero, on)
 			part.Anchored = false
 			part.Massless = true
 
-			-- NÃO ROUBA O CLIQUE. A bolha fica DENTRO da caixa do herói, que é
-			-- justamente o alvo clicável (ela carrega o atributo HeroUid). Com
-			-- CanQuery ligado, o mouse.Target passaria a acertar a bolha, o
-			-- GetAttribute("HeroUid") viria nil e clicar no aliado protegido não
-			-- faria nada — o escudo viraria uma redoma contra o próprio jogador.
 			part.CanQuery = false
 			part.CanTouch = false
 			part.CanCollide = false
 
-			-- CARIMBA a transparência de nascença. A furtividade do cliente
-			-- (paintHero) repinta todo filho BasePart do herói a cada snapshot;
-			-- sem esta marca ela achatava a bolha em opaca, e o efeito piscava
-			-- entre certo e sólido várias vezes por turno.
 			part:SetAttribute("BaseTransparency", part.Transparency)
 
 			local weld = Instance.new("WeldConstraint")
@@ -2916,7 +1169,7 @@ function HeroView.SetShieldAura(hero, on)
 		end
 	end
 
-	SetEmitters(bubble, true)
+	VfxLibrary.SetEmitters(bubble, true)
 end
 
 local MERLIN_EYE_HOME = { "VFX", "Merlin", "Red Eye" }
@@ -3007,14 +1260,14 @@ function HeroView.SetFrenzyAura(hero, on)
 
 	if not on then
 		if existing then
-			SetEmitters(existing, false)
+			VfxLibrary.SetEmitters(existing, false)
 			Debris:AddItem(existing, 0.6)
 		end
 		return
 	end
 
 	if existing then
-		SetEmitters(existing, true)
+		VfxLibrary.SetEmitters(existing, true)
 		return
 	end
 
@@ -3039,13 +1292,13 @@ function HeroView.SetFrenzyAura(hero, on)
 
 	BuildFrenzyEmber(host)
 
-	local template = VfxTemplate(MERLIN_EYE_HOME, "o Frenesi do Merlin sai sem os olhos vermelhos")
+	local template = VfxLibrary.Template(MERLIN_EYE_HOME, "o Frenesi do Merlin sai sem os olhos vermelhos")
 	if template then
 		AttachEye(hero, host, template, -1)
 		AttachEye(hero, host, template, 1)
 	end
 
-	SetEmitters(host, true)
+	VfxLibrary.SetEmitters(host, true)
 end
 
 local WEAK_POINT_EDGE = "WeakPointEdge"
@@ -3253,16 +1506,9 @@ function HeroView.UpdateStats(hero)
 	local chill = row:FindFirstChild("Chill")
 
 	if atk then
-		-- EffectiveAttack, e não `hero.attack` cru: é o MESMO número que o
-		-- Snapshot manda pra coluna de retratos, então o crachá em cima do
-		-- boneco e a ficha da lateral nunca discordam. Quem muda por aqui é o
-		-- Nash invisível — 2 de ficha, 6 na mão.
 		local attack = GameConfig.EffectiveAttack(hero)
 		atk.Value.Text = tostring(attack)
 
-		-- Buffado = fundo e número em verde, com a moldura mais grossa. O ícone
-		-- de espada continua vermelho: ele é a identidade do crachá, e trocar a
-		-- cor dele junto faria os dois selos ficarem verdes e indistinguíveis.
 		local buffed = attack > hero.baseAttack
 		local edge = atk:FindFirstChild("Edge")
 
@@ -3287,9 +1533,6 @@ function HeroView.UpdateStats(hero)
 		local ratio = hero.maxHp > 0 and math.max(hero.currentHp, 0) / hero.maxHp or 0
 		hp.Value.Text = tostring(math.max(hero.currentHp, 0))
 
-		-- Aqui quem muda de cor é o NÚMERO, não o fundo: com o coração vermelho
-		-- fixo do lado, pintar o crachá inteiro de vermelho aos 20% de vida
-		-- apagava o próprio ícone contra o fundo.
 		local target = ratio > 0.5 and HP_TEXT_FULL
 			or (ratio > 0.25 and HP_TEXT_HURT or HP_TEXT_CRITICAL)
 		TweenService:Create(hp.Value, TweenInfo.new(0.25), { TextColor3 = target }):Play()
@@ -3307,8 +1550,6 @@ function HeroView.UpdateStats(hero)
 			elseif effect.type == "paralysis" then paralysis = effect end
 		end
 
-		-- o selo inteiro some sem veneno: crachá vazio com moldura dourada
-		-- parecia um ícone que não carregou
 		status.Visible = poison ~= nil or charge ~= nil or paralysis ~= nil
 
 		SetParalysisSpark(hero, paralysis ~= nil)
@@ -3338,14 +1579,6 @@ function HeroView.UpdateStats(hero)
 	end
 end
 
--- ===== TROCA DE SOMBRA (SHIN) =====
--- Some, troca, volta. O sumiço é do DESENHO (ImageTransparency), não da peça: o
--- crachá de vida, o anel de time e a área clicável continuam onde estão, e é o
--- que impede a troca de parecer que o herói morreu por meio segundo.
---
--- Só ESPERA e desenha; quem move é o MatchManager, entre a ida e a volta desta
--- função. Rápido de propósito — meio segundo somado, porque isto acontece no
--- meio de um turno e não é uma finalização.
 local Swap = {
 	FADE = 0.12,
 	HOLD = 0.1,
@@ -3384,10 +1617,6 @@ function HeroView.SetPosition(hero, hexId)
 	hero.part.CFrame = AnchorCFrame(hexId, hero.view.origin)
 end
 
--- Anda UMA casa: tween + som + espera o passo terminar. Extraído de propósito
--- pra separar do que o Karo precisa fazer casa por casa (cobrar pedágio de
--- fogo com o herói já logicamente NAQUELA casa) — ver MatchManager.MoveHero.
--- Devolve `false` se o modelo sumiu no meio do caminho (herói destruído).
 function HeroView.WalkStep(hero, hexId, step)
 	if not (hero.part and hero.part.Parent) then return false end
 
@@ -3398,9 +1627,6 @@ function HeroView.WalkStep(hero, hexId, step)
 	)
 	tween:Play()
 
-	-- Zeff: passo de vento, som e rastro próprios em vez do FootstepWood
-	-- genérico de todo mundo — mesmo padrão do PlayAttackSound, por
-	-- habilidade e não por nome.
 	if table.find(hero.abilities, "gustPush") then
 		PlaySound("WindStep", hero.view)
 		HeroView.PlaySkillEffect(hero, "windStep")
@@ -3416,12 +1642,6 @@ function HeroView.WalkStep(hero, hexId, step)
 end
 
 -- ===== ANIMAÇÃO =====
--- Com sprites estáticos, feedback é feito por tween. Quando os modelos do
--- Blender entrarem, é aqui que o Animator toca as animações de verdade.
--- `silent` corta só o SOM, nunca o desenho. Serve pro dano sem autor (veneno,
--- morte súbita), que acontece em vários heróis ao mesmo tempo: o clarão vermelho
--- é por herói e continua legível empilhado, mas seis "Hit" disparados no mesmo
--- quadro viram um estouro só e fazem a virada de turno soar como engasgo.
 function HeroView.PlayAnimation(hero, animationName, silent)
 	if not hero.part or not hero.part.Parent then return end
 
@@ -3452,7 +1672,6 @@ function HeroView.PlayAnimation(hero, animationName, silent)
 	end
 end
 
--- ===== MORTE =====
 function HeroView.Destroy(hero)
 	sayQueue[hero.uid] = nil
 	if hero.part then
@@ -3461,21 +1680,12 @@ function HeroView.Destroy(hero)
 	end
 end
 
--- Pura função de (herói morto) -> CFrame da lápide dele: nunca muda enquanto o
--- herói não se move (e herói morto não se move), então recalcular aqui do zero
--- a cada golpe/quebra é o que evita a lápide "derivar" de tremida em tremida —
--- mesma lógica do BarrelCFrame pro barril.
 local function GraveCFrame(hero)
 	return GroundCFrame(hero.position, hero.view.origin)
 		* CFrame.new(0, 1.5, 0)
 		* CFrame.Angles(0, math.rad(GRAVE_YAW), 0)
 end
 
--- ===== LÁPIDE DESTRUTÍVEL =====
--- Só o time INIMIGO quebra (a checagem de dono mora no MatchManager). Mesma
--- casca escura com moldura roxa dos outros crachás — roxo, e não o âmbar do
--- barril, porque quebrar isto não é neutro: é profanar o túmulo de alguém, e
--- carrega a maldição de 1 de dano em quem desfere o golpe final.
 local GRAVE_PIP_ON = Color3.fromRGB(186, 150, 220)
 local GRAVE_PIP_OFF = Color3.fromRGB(56, 52, 64)
 local GRAVE_PIP = 8
@@ -3485,7 +1695,7 @@ local function BuildGraveBadge(part, hero)
 	gui.MaxDistance = HERO_GUI_MAX_DISTANCE
 	gui.Name = "GraveInfo"
 	gui.Size = UDim2.new(0, hero.graveHitsLeft * (GRAVE_PIP + 3) + 7, 0, GRAVE_PIP + 8)
-	-- acima da etiqueta do nome, que já ocupa o pé da lápide
+
 	gui.StudsOffset = Vector3.new(0, 3.3, 0)
 	gui.Parent = part
 
@@ -3556,23 +1766,15 @@ function HeroView.CreateGrave(hero)
 	local stone = Instance.new("Part")
 	stone.Name = "Grave_" .. hero.uid
 	stone.Size = Vector3.new(2.6, 3, 0.7)
-	-- O giro entra ANTES de qualquer coisa presa à lápide: o topo arredondado e a
-	-- etiqueta do nome são montados a partir deste CFrame, então acompanham
-	-- sozinhos e continuam encaixados por mais que o ângulo mude.
+
 	stone.CFrame = GraveCFrame(hero)
 	stone.Color = Color3.fromRGB(105, 108, 118)
 	stone.Material = Enum.Material.Slate
 	stone.Anchored = true
 	stone.CanCollide = false
-	-- Clicável, ao contrário de antes: a lápide agora é um alvo de ataque como o
-	-- barril, e precisa aparecer no mouse.Target do cliente pra isso funcionar.
+
 	stone.CanQuery = true
 	stone.Transparency = 1
-	-- MESMO atributo que o anchor do herói vivo usa (ver HeroView.Create). É de
-	-- propósito: o cliente resolve clique/mira/seleção de herói por este
-	-- atributo, e herói morto continua na lista de heroes do snapshot — reusar o
-	-- nome faz a lápide entrar de graça em todo esse cano sem precisar de um
-	-- caminho de clique paralelo só pra ela.
 	stone:SetAttribute("HeroUid", hero.uid)
 	stone.Parent = folder
 
@@ -3589,14 +1791,9 @@ function HeroView.CreateGrave(hero)
 	top.Transparency = 1
 	top.Parent = stone
 
-	-- o túmulo surge desbotando pra dentro em vez de aparecer seco
 	TweenService:Create(stone, TweenInfo.new(0.45), { Transparency = 0 }):Play()
 	TweenService:Create(top, TweenInfo.new(0.45), { Transparency = 0 }):Play()
 
-	-- O nome ficava grande e flutuando ACIMA da lápide, bem em cima das casas
-	-- vizinhas — e BillboardGui come o clique de quem estiver atrás dela. Agora
-	-- é uma etiqueta pequena no pé do túmulo, dentro da própria casa, e sem a
-	-- caveira (que só engordava o texto).
 	local label = Instance.new("BillboardGui")
 	label.MaxDistance = HERO_GUI_MAX_DISTANCE
 	label.Name = "GraveLabel"
@@ -3615,23 +1812,16 @@ function HeroView.CreateGrave(hero)
 	text.Font = Enum.Font.GothamBold
 	text.Parent = label
 
-	-- `hero.part` volta a apontar pra alguma coisa: era a âncora do sprite vivo,
-	-- HeroView.Destroy zerou, e agora é a pedra. Reusar o mesmo campo (em vez de
-	-- inventar `hero.gravePart`) é o que deixa PlayGraveHit/DestroyGrave lerem
-	-- "o Part atual deste herói" sem precisar saber se ele está vivo ou morto.
 	hero.part = stone
 	BuildGraveBadge(stone, hero)
 end
 
--- Primeiro golpe (e os seguintes, até faltar um): sacode, solta poeira, apaga
--- um quadradinho e inclina mais a cada pancada — no último golpe antes de
--- quebrar, a lápide já está visivelmente caindo.
 function HeroView.PlayGraveHit(hero)
 	local part = hero.part
 	if not (part and part.Parent) then return end
 
 	PlaySound("Hit", hero.view)
-	BarrelBurst(part, 10, 7)
+	ViewStyle.DustBurst(part, 10, 7)
 	UpdateGraveBadge(hero)
 
 	local base = GraveCFrame(hero)
@@ -3649,17 +1839,13 @@ function HeroView.PlayGraveHit(hero)
 	end)
 end
 
--- Lápide destruída pelo inimigo: vira pó, e aquele herói nunca mais pode ser
--- escolhido numa casa de promoção (a marca `graveDestroyed` mora no
--- MatchManager). Nome próprio pra não confundir com HeroView.Destroy, que
--- limpa o SPRITE do herói vivo — aqui quem some é a pedra.
 function HeroView.DestroyGrave(hero)
 	local part = hero.part
 	hero.part = nil
 	if not (part and part.Parent) then return end
 
 	PlaySound("GraveBreak", hero.view)
-	BarrelBurst(part, 30, 16)
+	ViewStyle.DustBurst(part, 30, 16)
 
 	local badge = part:FindFirstChild("GraveInfo")
 	if badge then badge.Enabled = false end
@@ -3675,18 +1861,12 @@ function HeroView.DestroyGrave(hero)
 	Debris:AddItem(part, 1.2)
 end
 
--- Lápide consumida por RESSURREIÇÃO (não por ataque): some na hora, sem
--- pancada nem poeira — o efeito visual da volta é o próprio herói renascendo,
--- a lápide só precisa desocupar a casa.
 function HeroView.ClearGrave(hero)
 	local part = hero.part
 	hero.part = nil
 	if part and part.Parent then part:Destroy() end
 end
 
--- Limpa só o que é daquela partida: as outras continuam rodando ao lado.
--- As filas de fala são varridas pelo prefixo do uid (matchId_...), porque herói
--- morto já perdeu o Part e não apareceria mais na pasta.
 function HeroView.ClearMatch(view)
 	if not view then return end
 

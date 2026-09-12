@@ -16,9 +16,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local Progression = require(ReplicatedStorage.Modules.Progression)
-local CoinService = require(ServerScriptService.Modules.CoinService)
-local RewardQueueService = require(ServerScriptService.Modules.RewardQueueService)
-local SafeStore = require(ServerScriptService.Modules.SafeStore)
+local CoinService = require(ServerScriptService.Modules.Data.CoinService)
+local RewardQueueService = require(ServerScriptService.Modules.Data.RewardQueueService)
+local SafeStore = require(ServerScriptService.Modules.Data.SafeStore)
 
 local XP_STORE_NAME = "HeroTactics_Xp_v1"
 local xpStore = DataStoreService:GetDataStore(XP_STORE_NAME)

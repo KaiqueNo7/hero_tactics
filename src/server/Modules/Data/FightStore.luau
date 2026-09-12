@@ -26,7 +26,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
-local SafeStore = require(ServerScriptService.Modules.SafeStore)
+local SafeStore = require(ServerScriptService.Modules.Data.SafeStore)
 
 local GameAction = ReplicatedStorage.Remotes:WaitForChild("GameAction")
 

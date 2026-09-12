@@ -15,7 +15,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local SafeStore = require(ServerScriptService.Modules.SafeStore)
+local SafeStore = require(ServerScriptService.Modules.Data.SafeStore)
 
 local COIN_STORE_NAME = "HeroTactics_Coins_v1"
 

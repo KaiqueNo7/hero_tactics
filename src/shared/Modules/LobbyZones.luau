@@ -26,7 +26,7 @@
 	Foi o contrário até agora, e era o pior dos mundos: o play desfazia o
 	alinhamento feito à mão sem erro nenhum na saída. Se quiser mesmo jogar fora
 	a montagem do place e voltar pra esta planta, é explícito, pela barra de
-	comando: `require(game.ServerScriptService.Modules.LobbyZoneBuilder).Build(true)`.
+	comando: `require(game.ServerScriptService.Modules.Lobby.LobbyZoneBuilder).Build(true)`.
 
 	Os números abaixo continuam valendo pra três coisas mesmo com a trilha
 	adotada: onde o ar da zona troca (ZoneAt), onde os quadrados nascem num place
@@ -35,7 +35,7 @@
 	discordam viram bug silencioso.
 
 	Este módulo é só a PLANTA (números e paleta). Quem levanta as peças é
-	ServerScriptService.Modules.LobbyZoneBuilder; quem troca o ar quando o
+	ServerScriptService.Modules.Lobby.LobbyZoneBuilder; quem troca o ar quando o
 	jogador atravessa a ponte é o LobbyClient. Mora em ReplicatedStorage porque
 	os dois lados leem a mesma planta — igual ao Campaign.
 ]]

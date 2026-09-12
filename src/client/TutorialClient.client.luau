@@ -4,7 +4,7 @@
 
 	Mostra o cartão da lição certa na hora certa. As lições e os gatilhos moram
 	em ReplicatedStorage.Modules.Tutorial; o que já foi visto mora no servidor
-	(ServerScriptService.Modules.TutorialService). Aqui é só a tela.
+	(ServerScriptService.Modules.Data.TutorialService). Aqui é só a tela.
 
 	SCRIPT SEPARADO, e não mais um pedaço do BattleClient. O MatchUpdate é um
 	RemoteEvent: dois ouvintes escutam o mesmo snapshot sem um atrapalhar o

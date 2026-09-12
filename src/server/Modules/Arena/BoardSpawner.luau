@@ -10,8 +10,8 @@ local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local Arenas = require(ReplicatedStorage.Modules.Arenas)
-local LightingSetup = require(script.Parent.LightingSetup)
-local ArenaBuilder = require(script.Parent.ArenaBuilder)
+local LightingSetup = require(game:GetService("ServerScriptService").Modules.Arena.LightingSetup)
+local ArenaBuilder = require(game:GetService("ServerScriptService").Modules.Arena.ArenaBuilder)
 
 local RunService = game:GetService("RunService")
 
@@ -157,8 +157,8 @@ end
 -- ===== EDITAR UMA ARENA À MÃO =====
 -- Ponto de partida pra trabalhar a região no Studio, em modo Edit:
 --
---     require(game.ServerScriptService.Modules.BoardSpawner).BuildMaster("geleira")
---     require(game.ServerScriptService.Modules.BoardSpawner).BuildAllMasters()
+--     require(game.ServerScriptService.Modules.Arena.BoardSpawner).BuildMaster("geleira")
+--     require(game.ServerScriptService.Modules.Arena.BoardSpawner).BuildAllMasters()
 --
 -- Ele levanta o diorama do tema numa área livre (depois do último slot de
 -- partida, pra não cair em cima de ninguém), junto com um tabuleiro de

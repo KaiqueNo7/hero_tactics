@@ -26,7 +26,7 @@
 
 	Pra jogar fora a montagem do place e voltar pra planta, é explícito:
 
-		require(game.ServerScriptService.Modules.LobbyZoneBuilder).Build(true)
+		require(game.ServerScriptService.Modules.Lobby.LobbyZoneBuilder).Build(true)
 
 	Igual ao LightingSetup e ao LeaderboardBoardView, dá pra chamar em modo Edit
 	pra ver o resultado sem dar play (aqui sem argumento não faz nada, porque a

@@ -4,7 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local HeroChallenges = require(ReplicatedStorage.Modules.HeroChallenges)
-local SafeStore = require(ServerScriptService.Modules.SafeStore)
+local SafeStore = require(ServerScriptService.Modules.Data.SafeStore)
 
 local STORE_NAME = "HeroTactics_Challenges_v1"
 local store = DataStoreService:GetDataStore(STORE_NAME)

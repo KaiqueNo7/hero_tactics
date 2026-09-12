@@ -22,7 +22,7 @@
 local DataStoreService = game:GetService("DataStoreService")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local SafeStore = require(ServerScriptService.Modules.SafeStore)
+local SafeStore = require(ServerScriptService.Modules.Data.SafeStore)
 
 local STORE_NAME = "HeroTactics_Rewards_v1"
 local store = DataStoreService:GetDataStore(STORE_NAME)

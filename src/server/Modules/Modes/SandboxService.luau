@@ -20,9 +20,10 @@ local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
-local BoardSpawner = require(ServerScriptService.Modules.BoardSpawner)
-local DevAccess = require(ServerScriptService.Modules.DevAccess)
-local HeroView = require(ServerScriptService.Modules.HeroView)
+local BoardSpawner = require(ServerScriptService.Modules.Arena.BoardSpawner)
+local DevAccess = require(ServerScriptService.Modules.Data.DevAccess)
+local HeroView = require(ServerScriptService.Modules.View.HeroView)
+local BoardVfx = require(ServerScriptService.Modules.View.BoardVfx)
 local MatchManager = require(ServerScriptService.Modules.MatchManager)
 
 local Internal = MatchManager.Internal
@@ -887,7 +888,7 @@ COMMANDS.flame = function(_player, match, words)
 		duration = GameConfig.FLAME_DURATION,
 		appliedTurnToken = match.turnToken,
 	}
-	HeroView.CreateFlame(match.view, hexId, sideIndex)
+	BoardVfx.CreateFlame(match.view, hexId, sideIndex)
 	Internal.Broadcast(match)
 end
 
@@ -1089,7 +1090,7 @@ COMMANDS.stop = function(player)
 end
 
 COMMANDS.challenge = function(player, _match, words)
-	local ChallengeService = require(ServerScriptService.Modules.ChallengeService)
+	local ChallengeService = require(ServerScriptService.Modules.Modes.ChallengeService)
 	local HeroChallenges = require(ReplicatedStorage.Modules.HeroChallenges)
 
 	local data = DataFrom(words[1])

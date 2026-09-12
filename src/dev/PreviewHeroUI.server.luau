@@ -35,7 +35,7 @@ local Workspace = game:GetService("Workspace")
 
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
-local HeroView = require(ServerScriptService.Modules.HeroView)
+local HeroView = require(ServerScriptService.Modules.View.HeroView)
 
 
 local PREVIEW = {

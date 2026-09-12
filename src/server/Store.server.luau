@@ -10,4 +10,4 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 
-require(ServerScriptService.Modules.CoinService)
+require(ServerScriptService.Modules.Data.CoinService)

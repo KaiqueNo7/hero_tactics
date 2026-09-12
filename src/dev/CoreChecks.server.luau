@@ -4,12 +4,12 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
-local MatchQuery = require(ServerScriptService.Modules.MatchQuery)
+local MatchQuery = require(ServerScriptService.Modules.Match.MatchQuery)
 local Campaign = require(ReplicatedStorage.Modules.Campaign)
 local Progression = require(ReplicatedStorage.Modules.Progression)
 local Arenas = require(ReplicatedStorage.Modules.Arenas)
-local Skills = require(ServerScriptService.Modules.Skills)
-local BotBrain = require(ServerScriptService.Modules.BotBrain)
+local Skills = require(ServerScriptService.Modules.Combat.Skills)
+local BotBrain = require(ServerScriptService.Modules.AI.BotBrain)
 
 local KOR_ID = HeroData.GetByName("Kor").id
 local RUSH_ID = HeroData.GetByName("Rush").id
@@ -2355,7 +2355,7 @@ end
 
 do
 	local HeroChallenges = require(ReplicatedStorage.Modules.HeroChallenges)
-	local ChallengeService = require(ServerScriptService.Modules.ChallengeService)
+	local ChallengeService = require(ServerScriptService.Modules.Modes.ChallengeService)
 
 	local problems = ChallengeService.Validate()
 	check("Desafios) configuracao valida", #problems == 0, table.concat(problems, " | "))
@@ -2492,7 +2492,7 @@ end
 -- que é redundante: sem ela, vencer rápido com o time inteiro E promoção usada
 -- passa a valer 2 estrelas em vez de 1.
 do
-	local Objectives = require(ServerScriptService.Modules.Objectives)
+	local Objectives = require(ServerScriptService.Modules.Modes.Objectives)
 
 	local function Cenario(turno, vivos, usouPromocao, golemPartido)
 		local match = {

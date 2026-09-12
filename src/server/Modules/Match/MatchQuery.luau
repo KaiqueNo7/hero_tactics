@@ -69,6 +69,22 @@ local function PromotionLocked(match, hexId)
 	return number < GameConfig.PROMOTION_UNLOCK_TURN
 end
 
+-- A cota da Casa de Promoção é da PARTIDA, não do lado. O que conta os usos é o
+-- `promotionUsed` de cada lado, que já existia e continua sendo a marca de "este
+-- time gastou" (é o que a estrela de campanha lê). Aqui só se soma — nada de um
+-- contador novo em `match` pra sair de sincronia com aquele.
+function MatchQuery.PromotionTeamsUsed(match)
+	local used = 0
+	for _, side in ipairs(match.sides) do
+		if side.promotionUsed then used += 1 end
+	end
+	return used
+end
+
+function MatchQuery.PromotionOpen(match)
+	return MatchQuery.PromotionTeamsUsed(match) < GameConfig.PROMOTION_TEAMS_PER_MATCH
+end
+
 function MatchQuery.IsFree(match, hexId)
 	return HexGrid.Exists(hexId)
 		and match.occupied[hexId] == nil
@@ -193,6 +209,27 @@ function MatchQuery.ActiveShieldOf(match, source)
 	return nil
 end
 
+function MatchQuery.WeakPointHunters(match)
+	local hunters = nil
+
+	for _, hero in pairs(match.heroes) do
+		if hero.isAlive and MatchQuery.HasSkill(hero, "weakPoint") then
+			hunters = hunters or {}
+			hunters[hero.ownerId] = true
+		end
+	end
+
+	return hunters
+end
+
+function MatchQuery.WeakPointOf(hero, hunters)
+	if not (hunters and hero.isAlive) or hero.stealth then return nil end
+	for ownerId in pairs(hunters) do
+		if ownerId ~= hero.ownerId then return hero.weakPoint end
+	end
+	return nil
+end
+
 function MatchQuery.FindStatusEffect(hero, effectType)
 	for _, effect in ipairs(hero.statusEffects) do
 		if effect.type == effectType then return effect end
@@ -204,6 +241,34 @@ end
 -- ou de Sprint. Descontando uma casa, o Sprint congelado ainda andava 2 — mais
 -- do que um herói normal inteiro, o que fazia o gelo do Kor valer menos
 -- justamente contra quem corre mais.
+-- A casa livre mais perto desta, em anel: serve pra invocacao, empurrao e
+-- ressurreicao, que precisam de "perto do ponto X" quando o ponto X esta ocupado.
+function MatchQuery.FindNearestFreeHex(match, fromHex, avoid)
+	local function Serve(hexId)
+		return MatchQuery.IsFree(match, hexId) and not (avoid and avoid[hexId])
+	end
+
+	if Serve(fromHex) then return fromHex end
+
+	local seen = { [fromHex] = true }
+	local queue = { fromHex }
+	local head = 1
+
+	while head <= #queue do
+		local id = queue[head]
+		head += 1
+		for _, neighbor in ipairs(HexGrid.GetNeighbors(id)) do
+			if not seen[neighbor.id] then
+				seen[neighbor.id] = true
+				if Serve(neighbor.id) then return neighbor.id end
+				table.insert(queue, neighbor.id)
+			end
+		end
+	end
+
+	return nil
+end
+
 function MatchQuery.MoveRangeOf(match, hero)
 	local range = hero.moveRange
 

@@ -13,9 +13,9 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local HeroUsageService = require(ServerScriptService.Modules.HeroUsageService)
-local LeaderboardService = require(ServerScriptService.Modules.LeaderboardService)
-local LeaderboardBoardView = require(ServerScriptService.Modules.LeaderboardBoardView)
+local HeroUsageService = require(ServerScriptService.Modules.Data.HeroUsageService)
+local LeaderboardService = require(ServerScriptService.Modules.Data.LeaderboardService)
+local LeaderboardBoardView = require(ServerScriptService.Modules.Lobby.LeaderboardBoardView)
 
 local REFRESH_INTERVAL = 60
 local HERO_SLOTS = 3

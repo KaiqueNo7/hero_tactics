@@ -46,7 +46,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
 local HexGrid = require(ReplicatedStorage.Modules.HexGrid)
-local MatchQuery = require(ServerScriptService.Modules.MatchQuery)
+local MatchQuery = require(ServerScriptService.Modules.Match.MatchQuery)
 -- Apelidos locais: o corpo abaixo veio do MatchManager, onde estas eram funções
 -- locais do arquivo. Alias em vez de reescrever 200 chamadas pra
 -- `MatchQuery.X(...)` — o código que decide continua lendo igual, e a busca de
@@ -173,10 +173,12 @@ local function BuildBoardContext(match, botId, enemies)
   end
   -- ===== CASA DE PROMOÇÃO =====
   -- Só vira objetivo se a jogada existir de verdade: o lado ainda não gastou o
-  -- uso, tem lápide de pé pra trazer alguém de volta, e o turno já está perto
-  -- da liberação (começa a andar pra lá ANTES, senão chega tarde).
+  -- uso, a cota da partida ainda está aberta (o adversário pode ter fechado a
+  -- casa pros dois), tem lápide de pé pra trazer alguém de volta, e o turno já
+  -- está perto da liberação (começa a andar pra lá ANTES, senão chega tarde).
   local hexId = side and GameConfig.PROMOTION_HEX_FOR_SLOT[side.index]
   if hexId and side and not side.promotionUsed
+    and MatchQuery.PromotionOpen(match)
     and ctx.turn >= GameConfig.PROMOTION_UNLOCK_TURN - 2 then
     local hasGrave = false
     for _, other in pairs(match.heroes) do

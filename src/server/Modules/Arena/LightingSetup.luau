@@ -8,7 +8,7 @@
 	de um Script) pra poder ser chamada no Studio em modo Edit e ver o resultado
 	sem dar play:
 
-		require(game.ServerScriptService.Modules.LightingSetup).Apply()
+		require(game.ServerScriptService.Modules.Arena.LightingSetup).Apply()
 
 	O que já existir em Lighting é reaproveitado: Apply() ajusta as propriedades
 	dos efeitos, nunca recria o que está lá. O Sky é intocado de propósito — a

@@ -143,9 +143,17 @@ GameConfig.BOT_PLACE_DELAY = 0.8
 GameConfig.RECONNECT_WINDOW = 90
 GameConfig.PROMOTION_UNLOCK_TURN = 10
 GameConfig.PROMOTION_HEX_FOR_SLOT = { [1] = "C0", [2] = "C7" }
+
+-- Quantos TIMES podem gastar a Casa de Promoção numa partida. Em 1, quem pisar
+-- primeiro fecha a casa do adversário também: a corrida vale o jogo, e não só o
+-- próprio herói de volta. Em 2, cada lado tem o seu uso, como era antes.
+GameConfig.PROMOTION_TEAMS_PER_MATCH = 1
+
 GameConfig.GRAVE_HITS = 3
 GameConfig.GRAVE_CURSE_DAMAGE = 1
-GameConfig.RESURRECT_HP = 5
+
+-- Vida de quem volta pela Casa de Promoção.
+GameConfig.RESURRECT_HP = 10
 GameConfig.PLAYER_STAND_OUTSET_HEXES = 0.55
 GameConfig.PLAYER_STAND_SCALE = 2.2 
 GameConfig.UI_FONT_BODY = Enum.Font.BuilderSansMedium

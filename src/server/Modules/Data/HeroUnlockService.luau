@@ -29,9 +29,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local HeroData = require(ReplicatedStorage.Modules.HeroData)
-local DevAccess = require(ServerScriptService.Modules.DevAccess)
-local SafeStore = require(ServerScriptService.Modules.SafeStore)
-local RewardQueueService = require(ServerScriptService.Modules.RewardQueueService)
+local DevAccess = require(ServerScriptService.Modules.Data.DevAccess)
+local SafeStore = require(ServerScriptService.Modules.Data.SafeStore)
+local RewardQueueService = require(ServerScriptService.Modules.Data.RewardQueueService)
 
 local HERO_STORE_NAME = "HeroTactics_Heroes_v1"
 local heroStore = DataStoreService:GetDataStore(HERO_STORE_NAME)

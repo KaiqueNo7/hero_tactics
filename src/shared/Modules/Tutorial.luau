@@ -153,9 +153,11 @@ Tutorial.LESSONS = {
 		title = "Casa de Promoção",
 		text = ("A partir do turno %d as duas casas douradas das pontas acendem. Leve " ..
 			"um herói até a sua e escolha um companheiro caído pra voltar ao jogo " ..
-			"com %d de vida. Só dá pra usar UMA vez na partida inteira — e a lápide " ..
-			"dele precisa estar de pé."):format(
-			GameConfig.PROMOTION_UNLOCK_TURN, GameConfig.RESURRECT_HP),
+			"com %d de vida. %s — e a lápide dele precisa estar de pé."):format(
+			GameConfig.PROMOTION_UNLOCK_TURN, GameConfig.RESURRECT_HP,
+			GameConfig.PROMOTION_TEAMS_PER_MATCH <= 1
+				and "É uma corrida: quem pisar primeiro fecha a casa dos DOIS times"
+				or "Cada time pode usar UMA vez na partida"),
 		when = function(state)
 			for _, square in ipairs(state.promotionSquares or {}) do
 				if square.state == "active" then return true end

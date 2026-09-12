@@ -7,7 +7,7 @@
 	A construção mora aqui (e não no Script) pra poder ser chamada no Studio em
 	modo Edit — assim dá pra ver e personalizar o template sem dar play:
 
-		require(game.ServerScriptService.Modules.LeaderboardBoardView).EnsureBoard()
+		require(game.ServerScriptService.Modules.Lobby.LeaderboardBoardView).EnsureBoard()
 
 	O que já existir no Workspace é reaproveitado: só as linhas do ranking são
 	regeradas em runtime, então mover/repintar o quadro à mão sobrevive.

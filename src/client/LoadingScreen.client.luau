@@ -29,7 +29,7 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
--- Mesma string de ServerScriptService.Modules.LightingSetup.READY_ATTRIBUTE.
+-- Mesma string de ServerScriptService.Modules.Arena.LightingSetup.READY_ATTRIBUTE.
 -- Repetida (e não exigida) porque o cliente não enxerga ServerScriptService.
 local LIGHTING_READY_ATTRIBUTE = "HeroTacticsLightingReady"
 

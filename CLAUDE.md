@@ -64,6 +64,66 @@ Image/sound assets also live outside Rojo's reach: sound names are read from
 - `src/client/*.client.luau` — one `LocalScript` per concern (input, camera, HUD, lobby menu,
   sound), all driven by `RemoteEvent`s firing from server modules.
 
+### Where a server module lives
+
+`src/server/Modules/` is foldered by domain. The folder IS the instance path, so a require reads
+`ServerScriptService.Modules.<Folder>.<Module>` — always absolute, never `script.Parent`, except
+between two modules in the same folder.
+
+| Folder | What belongs there |
+|---|---|
+| (root) | `MatchManager` only — the orchestrator, and the door everything outside comes through |
+| `Match/` | the match as data: registry, queries, clock, snapshot, broadcast, log, outcome, rewards |
+| `Combat/` | the rules of acting: `CombatCore`, movement, attack, placement, promotion, board objects, guard, `Skills` |
+| `AI/` | `BotBrain` decides, `BotTurn` executes |
+| `View/` | everything that only exists to be looked at |
+| `Arena/` | building the arena and the board |
+| `Lobby/` | building the lobby: trail, seats, leaderboard |
+| `Data/` | anything backed by a DataStore, plus `SafeStore` and `DevAccess` |
+| `Modes/` | match flavours that are not the normal game: challenges, sandbox, objectives |
+
+### Who owns what on the server (the SRP split)
+
+`MatchManager` and `HeroView` were the two files that grew into everything; these modules carved
+responsibilities out of them and are the place new code of that kind belongs:
+
+| Module | Owns | Never does |
+|---|---|---|
+| `CombatCore` | the combat ring: damage, shields, death and graves, heal, attack buffs, status effects, ground flames, the skill triggers and the `api` skills call into | own the turn, validate a player action, decide the match is over |
+| `MovementService` / `AttackService` | one player action each, end to end: validate, execute, log, broadcast | decide damage (that is `CombatCore`) |
+| `ActionGuard` | the single question every action asks first: can this hero act right now | know which action is being attempted |
+| `PlacementService` | the draft: whose turn to place, what is available, where the bot puts it | anything after the first turn begins |
+| `PromotionService` | promotion squares, resurrection, stance flip, the Shin swap, ally choices | combat |
+| `BoardObjectService` | the match-side rules of destructible objects: spawn, hit, break, the prize | how they look (`BoardObjectView`) |
+| `MatchOutcome` | whether the match is over and who won, plus the `Resolvers` registry other modes plug into | pay the rewards (`MatchRewards`) |
+| `MatchRegistry` | which matches exist on this server, their slots, and finding a player's match | anything inside a match |
+| `BotTurn` | executing a bot's turn: ask `BotBrain`, then spend the actions | decide which action is best |
+| `ArenaObjectBuilder` | reading `theme.object`, resolving the model (`instance` → `asset` → `Arenas.DEFAULT_OBJECT` → `mesh`/`part`), scale, rotation X/Y/Z, size, skin, the hitbox `Part`, and the theme's dust colour / sound names | know a barrel has hit points |
+| `BoardObjectView` | the destructible object's life on screen — pip badge, hit shake, dust, break fade | resolve models or read the theme |
+| `BoardVfx` | effects that belong to a HEX, not to a hero: ground flames, range flash, blasts, fire circle, chain arcs, ice storm | know what a hero is |
+| `VfxLibrary` | finding and preparing the hand-built VFX under `ReplicatedStorage.VFX` (or Workspace): cache, anchor, strip scripts/lights, fade a whole effect | know what any single effect means |
+| `ViewStyle` | shared board-view vocabulary: `TILE_TOP_Y`, sprite metrics, badge colours, GUI distance, dust, team colours, `GroundCFrame`, `DustBurst`, `AttachTo`, `BuildTeamRing` | anything match-specific |
+| `MatchAudio` | firing sound names to the players of one match (2D on the client, never on the server) | — |
+| `MatchClock` | every "how many seconds are left" question (turn, reconnect, placement) | change the clock |
+| `MatchLog` | the three cross-cutting writes: match log entries, per-hero tallies, action rejections to the client | know about turns or combat |
+| `MatchBroadcast` | publishing state to the clients and the bookkeeping that follows a publish | decide what changed |
+| `MatchSnapshot` | serialising a match into the table the client renders, per viewer | mutate the match |
+| `MatchRewards` | what a finished match pays: XP, fight stars, campaign hero unlock, hero telemetry | decide who won |
+
+Two seams use an injected dependency instead of a require, both bound once at load:
+`MatchSnapshot.Bind` receives `AllyOptionsFor` and `NextOpenFight`, and `CombatCore.Bind`
+receives `CreateHero` (the Golem's Estilhaçar summons through the skill api, which is built long
+before `CreateHero` exists in `MatchManager`). Everything else is a plain require.
+
+`CombatCore` is one module and not four on purpose: `ApplyDamage` calls `KillHero`, which fires
+`TriggerSkills`, which runs a skill, which calls back into the `api` built by `BuildSkillApi`,
+which calls `ApplyDamage` again. That ring cannot be split across modules without a circular
+require, so the rule is: a function that the ring calls, or that calls into the ring, belongs
+here.
+
+Anything extracted from `MatchManager` from here on can require `MatchLog` and `MatchBroadcast`
+directly — that is what those two exist for, and it is why they came out before the combat split.
+
 ### Match lifecycle (the core loop)
 
 `GameStartTrigger.server.luau` is the lobby entry point: touch/click pads (`StartBotMatch`,
