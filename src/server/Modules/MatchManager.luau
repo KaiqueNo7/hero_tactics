@@ -194,6 +194,7 @@ function CreateHero(match, dataId, ownerId, hexId)
 		stealth = false,
 
 		weakPoint = math.random(HexGrid.DIRECTION_COUNT),
+		weakPointTurn = match.turn and match.turn.number or 0,
 
 		stats = {
 			dealt = 0,
@@ -308,6 +309,8 @@ function BeginTurn(match, ownerId, number)
 	-- sozinho), o que fecha a oferta que o jogador escolheu ignorar, e o que
 	-- limita a Troca do Shin a uma por turno sem inventar contador de ação.
 	match.pendingAlly = {}
+
+	CombatCore.AgeWeakPoints(match)
 
 	-- onTurnStart dispara pros heróis dos DOIS lados (igual ao Phaser)
 	for _, hero in pairs(match.heroes) do

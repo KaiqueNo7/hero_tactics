@@ -10,7 +10,6 @@ local LeaderboardService = require(ServerScriptService.Modules.Data.LeaderboardS
 
 local MatchOutcome = {}
 
--- Quem decide o fim fora da eliminação: o `rules.resolve` nomeia um destes.
 MatchOutcome.Resolvers = {}
 
 local LivingHeroesOf = MatchQuery.LivingHeroesOf

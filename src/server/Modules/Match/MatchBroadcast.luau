@@ -14,7 +14,8 @@ function MatchBroadcast.RefreshWeakPoints(match)
 
 	for _, hero in pairs(match.heroes) do
 		if hero.part and hero.part.Parent then
-			HeroView.SetWeakPoint(hero, MatchQuery.WeakPointOf(hero, hunters))
+			HeroView.SetWeakPoint(hero, MatchQuery.WeakPointOf(hero, hunters),
+				MatchQuery.WeakPointFreshness(match, hero))
 		end
 	end
 end

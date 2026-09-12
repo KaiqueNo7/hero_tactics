@@ -718,10 +718,22 @@ end
 local WeakPointHunters = MatchQuery.WeakPointHunters
 local WeakPointOf = MatchQuery.WeakPointOf
 
-local function RerollWeakPoint(hero)
+local function RerollWeakPoint(match, hero)
 	hero.weakPoint = HexGrid.RandomDirection(hero.weakPoint)
+	hero.weakPointTurn = match.turn and match.turn.number or 0
 end
 
+function CombatCore.AgeWeakPoints(match)
+	local life = GameConfig.WEAK_POINT_TURNS
+	if life <= 0 then return end
+
+	local number = match.turn and match.turn.number or 0
+	for _, hero in pairs(match.heroes) do
+		if hero.isAlive and (number - (hero.weakPointTurn or 0)) >= life then
+			RerollWeakPoint(match, hero)
+		end
+	end
+end
 
 local function ChainHits(match, hero)
 	if not match.turn then return nil end
@@ -932,7 +944,7 @@ local function BuildSkillApi(match)
 		OfferAllyChoice = function(hero, kind) OfferAllyChoice(match, hero, kind) end,
 
 		RecordChainHit = function(hero, target) RecordChainHit(match, hero, target) end,
-		RerollWeakPoint = RerollWeakPoint,
+		RerollWeakPoint = function(hero) RerollWeakPoint(match, hero) end,
 		WeakPointDirection = HexGrid.DirectionBetween,
 		DirectionName = HexGrid.DirectionName,
 		BreakWeakPoint = function(hero) HeroView.BreakWeakPoint(hero) end,

@@ -69,10 +69,6 @@ local function PromotionLocked(match, hexId)
 	return number < GameConfig.PROMOTION_UNLOCK_TURN
 end
 
--- A cota da Casa de Promoção é da PARTIDA, não do lado. O que conta os usos é o
--- `promotionUsed` de cada lado, que já existia e continua sendo a marca de "este
--- time gastou" (é o que a estrela de campanha lê). Aqui só se soma — nada de um
--- contador novo em `match` pra sair de sincronia com aquele.
 function MatchQuery.PromotionTeamsUsed(match)
 	local used = 0
 	for _, side in ipairs(match.sides) do
@@ -222,6 +218,14 @@ function MatchQuery.WeakPointHunters(match)
 	return hunters
 end
 
+function MatchQuery.WeakPointFreshness(match, hero)
+	local life = GameConfig.WEAK_POINT_TURNS
+	if life <= 0 then return 1 end
+
+	local age = (match.turn and match.turn.number or 0) - (hero.weakPointTurn or 0)
+	return math.clamp(1 - age / life, 0, 1)
+end
+
 function MatchQuery.WeakPointOf(hero, hunters)
 	if not (hunters and hero.isAlive) or hero.stealth then return nil end
 	for ownerId in pairs(hunters) do
@@ -241,8 +245,6 @@ end
 -- ou de Sprint. Descontando uma casa, o Sprint congelado ainda andava 2 — mais
 -- do que um herói normal inteiro, o que fazia o gelo do Kor valer menos
 -- justamente contra quem corre mais.
--- A casa livre mais perto desta, em anel: serve pra invocacao, empurrao e
--- ressurreicao, que precisam de "perto do ponto X" quando o ponto X esta ocupado.
 function MatchQuery.FindNearestFreeHex(match, fromHex, avoid)
 	local function Serve(hexId)
 		return MatchQuery.IsFree(match, hexId) and not (avoid and avoid[hexId])
