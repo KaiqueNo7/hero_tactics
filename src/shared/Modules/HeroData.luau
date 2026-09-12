@@ -151,7 +151,7 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(240, 205, 120),
 		sprite = "86628005150597", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 
-	{ id = 28, name = "Zaro", attack = 3, hp = 15, ability = nil, attackSound = "SwordSwing",
+	{ id = 28, name = "Zaro", attack = 2, hp = 15, ability = nil, attackSound = "SwordSwing",
 		abilities = { "weakPoint" },
 		color = Color3.fromRGB(190, 200, 225),
 		sprite = "73708047829791", spriteSize = Vector2.new(400, 400), scale = 1.00 },
@@ -164,10 +164,6 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(96, 92, 130),
 		sprite = "111181083283158", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 
-	-- Ranged pelo attackRange, e não pela ability: a vaga de `ability` é da
-	-- Agility. As duas coisas convivem sem caso especial — o GetAttackRange
-	-- respeita o campo explícito, e o GetAbilityDescription já junta os dois
-	-- textos quando o alcance passa de uma casa (a Wren estreou esse arranjo).
 	{ id = 30, name = "Ryder", attack = 2, hp = 19, ability = "Agility",
 		attackRange = GameConfig.RANGED_ATTACK_RANGE,
 		abilities = { "gunCharge" },
@@ -267,8 +263,9 @@ HeroData.SKILL_INFO = {
 		:format(GameConfig.RYDER_IMPULSE_ATTACK) },
 
 	-- Shin
-	shadowSwap = { name = "Troca de Sombra", desc = ("Uma vez por turno, escolha QUALQUER aliado vivo — sem limite de distância — e troque de lugar com ele. Cada troca vira a postura do Shin: %s com %d de ataque vira %s com %d de ataque, e a próxima troca desfaz. Ele começa a partida em %s, e a postura nova já vale no golpe do mesmo turno.")
+	shadowSwap = { name = "Troca de Sombra", desc = ("Uma vez por turno, escolha QUALQUER aliado vivo — sem limite de distância — e troque de lugar com ele, recuperando %d de vida. Cada troca vira a postura do Shin: %s com %d de ataque vira %s com %d de ataque, e a próxima troca desfaz. Ele começa a partida em %s, e a postura nova já vale no golpe do mesmo turno.")
 		:format(
+			GameConfig.SHIN_SWAP_HEAL,
 			GameConfig.SHIN_STANCES.ranged.ability, GameConfig.SHIN_STANCES.ranged.attack,
 			GameConfig.SHIN_STANCES.melee.ability, GameConfig.SHIN_STANCES.melee.attack,
 			GameConfig.SHIN_STANCES[GameConfig.SHIN_FIRST_STANCE].ability) },

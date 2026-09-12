@@ -193,7 +193,8 @@ function CreateHero(match, dataId, ownerId, hexId)
 		frenzyHealed = false, -- Merlin: a cura de entrada do Frenesi já saiu
 		stealth = false,
 
-		weakPoint = math.random(HexGrid.DIRECTION_COUNT),
+		weakPoint = not HeroData.IsSummon(dataId)
+			and math.random(HexGrid.DIRECTION_COUNT) or nil,
 		weakPointTurn = match.turn and match.turn.number or 0,
 
 		stats = {

@@ -1239,18 +1239,6 @@ Skills.aegis = {
 	end,
 }
 
--- ===== SHIN: O NINJA =====
--- Troca de Sombra — uma vez por turno ele troca de lugar com QUALQUER aliado
--- vivo, sem limite de distância, e cada troca vira a postura dele: Ranged com 2
--- de ataque vira Melee com 3, e a próxima desfaz.
---
--- A skill não troca ninguém de lugar: ela só ABRE a oferta, exatamente como a
--- Égide da Kira. Quem escolhe é o jogador (ou o BotBrain.PickSwapTarget) e quem
--- executa é o MatchManager.ResolveAllyChoice. Essa divisão é o que faz a Troca
--- aparecer na seleção normal do herói — casa pinta de passo, inimigo de ataque,
--- aliado de troca — sem modo à parte, sem botão de habilidade e sem gastar o
--- passo nem o golpe do turno. Andar antes de trocar continua valendo porque a
--- oferta não olha pro movimento: ela vive até ser usada ou até o BeginTurn.
 Skills.shadowSwap = {
 	triggers = { "onTurnStart" },
 	apply = function(ctx)

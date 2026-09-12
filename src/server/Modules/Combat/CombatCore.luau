@@ -648,8 +648,6 @@ local ALLY_CHOICE = {
 	},
 
 	swap = {
-		-- Sem alcance nenhum, e é o ponto da habilidade. Fora invocado, que é
-		-- peça de outro herói, e o próprio Shin, que o GetAlliesInRange já tira.
 		Options = function(match, hero)
 			local options = {}
 			for _, ally in ipairs(GetAlliesInRange(match, hero, math.huge)) do
@@ -671,14 +669,6 @@ local function AllyOptionsFor(match, hero, kind)
 	return options
 end
 
--- UMA OFERTA POR HERÓI, e não uma por partida. Era um slot só, e como a Égide
--- da Kira e a Troca do Shin abrem as duas no mesmo onTurnStart, quem disparasse
--- primeiro tomava o lugar e a habilidade do outro sumia sem aviso naquele turno.
---
--- A infraestrutura continua compartilhada (mesma lista de alvos, mesmo destaque,
--- mesmo clique, mesma limpeza no BeginTurn); o que deixou de ser compartilhado é
--- o ESTADO. Cada herói tem a própria entrada, some sozinha quando é usada, e o
--- uso de uma não encosta na outra.
 local function OfferAllyChoice(match, hero, kind)
 	if not match.turn or match.turn.ownerId ~= hero.ownerId then return end
 	if match.pendingAlly[hero.uid] then return end
@@ -715,10 +705,9 @@ local function ConductsChain(origin, occupant)
 	return IsChainTarget(origin, occupant)
 end
 
-local WeakPointHunters = MatchQuery.WeakPointHunters
-local WeakPointOf = MatchQuery.WeakPointOf
 
 local function RerollWeakPoint(match, hero)
+	if not hero.weakPoint then return end
 	hero.weakPoint = HexGrid.RandomDirection(hero.weakPoint)
 	hero.weakPointTurn = match.turn and match.turn.number or 0
 end

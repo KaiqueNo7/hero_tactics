@@ -86,6 +86,7 @@ GameConfig.SHIN_STANCES = {
 	melee = { ability = "Melee", attack = 3, attackRange = 1, next = "ranged", label = "MELEE" },
 }
 GameConfig.SHIN_FIRST_STANCE = "ranged"
+GameConfig.SHIN_SWAP_HEAL = 2
 
 GameConfig.RUSH_MOVE_RANGE = 4
 GameConfig.MOMENTUM_PER_HEX = 1
@@ -109,7 +110,7 @@ end
 GameConfig.STEALTH_OWNER_TRANSPARENCY = 0.65
 
 GameConfig.WEAK_POINT_HEAL = 2
-GameConfig.WEAK_POINT_BONUS_DAMAGE = 2
+GameConfig.WEAK_POINT_BONUS_DAMAGE = 4
 
 GameConfig.WEAK_POINT_TURNS = 4
 GameConfig.GOLEM_SUMMON_IDS = { 15, 16 }

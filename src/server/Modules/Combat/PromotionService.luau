@@ -28,6 +28,7 @@ local TriggerSkills = CombatCore.TriggerSkills
 local ConsumeFlame = CombatCore.ConsumeFlame
 local ApplyStatusEffect = CombatCore.ApplyStatusEffect
 local IncreaseAttack = CombatCore.IncreaseAttack
+local Heal = CombatCore.Heal
 local AllyOptionsFor = CombatCore.AllyOptionsFor
 local IsDisabled = CombatCore.IsDisabled
 
@@ -144,9 +145,6 @@ end
 local function SwapPlaces(match, hero, ally)
 	local from, to = hero.position, ally.position
 
-	-- `busy` fecha a porta do turno enquanto as duas peças estão no ar: é a mesma
-	-- trava que o passo e o contra-ataque usam, e sem ela um segundo clique
-	-- resolveria alcance contra um tabuleiro que ainda não terminou de mudar.
 	match.busy = true
 	HeroView.PlaySwap(hero, ally)
 
@@ -159,18 +157,12 @@ local function SwapPlaces(match, hero, ally)
 	HeroView.FinishSwap(hero, ally)
 	match.busy = false
 
-	-- A postura vira ANTES do pedágio de fogo e das varreduras: o golpe do mesmo
-	-- turno já sai com a ficha nova, e quem for recalculado abaixo lê o Shin que
-	-- ele é agora, não o que ele era antes de sumir na fumaça.
 	local current = GameConfig.SHIN_STANCES[hero.stance]
 	if current then PromotionService.SetStance(match, hero, current.next) end
 
 	ConsumeFlame(match, hero, to)
 	ConsumeFlame(match, ally, from)
 
-	-- Duas chegadas, duas varreduras: adjacência, aura do Spyke, Confiança do
-	-- Dante e furtividade do Nash são recalculadas pelo MESMO gatilho que o passo
-	-- normal dispara, então nada aqui precisa saber quais habilidades existem.
 	if hero.isAlive then AnnounceArrival(match, hero) end
 	if ally.isAlive then AnnounceArrival(match, ally) end
 
@@ -212,6 +204,9 @@ local ALLY_RESOLVE = {
 	swap = function(match, source, target)
 		Tally(source, "shadowSwaps")
 		SwapPlaces(match, source, target)
+
+		local healed = Heal(match, source, GameConfig.SHIN_SWAP_HEAL, source)
+		Tally(source, "shadowSwapHealing", healed)
 	end,
 }
 
