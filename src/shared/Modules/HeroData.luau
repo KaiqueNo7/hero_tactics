@@ -9,6 +9,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+local Ability = require(ReplicatedStorage.Modules.GameConfig).ABILITIES
 
 local HeroData = {}
 
@@ -65,17 +66,23 @@ function HeroData.GetPoisonStageIndex(durationRemaining)
 end
 
 HeroData.CATALOG = {
-	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      abilities = { "firstPunch", "autoDefense" }, color = Color3.fromRGB(205, 92, 70), starter = true, sprite = "136396565767790", spriteSize = Vector2.new(301, 441), scale = 0.84 },
+	{ id = 1, name = "Ralph",   frame = 2, attack = 3, hp = 18, ability = nil,      
+			abilities = { "firstPunch", "autoDefense" }, 
+			color = Color3.fromRGB(205, 92, 70), starter = true, 
+			sprite = "136396565767790", 
+			spriteSize = Vector2.new(301, 441), 
+			scale = 0.84 
+	},
 	{ id = 2, name = "Vic",     frame = 1, attack = 1, hp = 21, ability = nil,      abilities = { "poisonAttack" },              color = Color3.fromRGB(120, 180, 90), sprite = "122742882947541", spriteSize = Vector2.new(855, 1024), scale = 0.98 },
-	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = "Sprint", abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), sprite = "139532054857999", spriteSize = Vector2.new(385, 439), scale = 1.03 },
+	{ id = 3, name = "Mineiro", frame = 0, attack = 1, hp = 18, ability = Ability.SPRINT, abilities = { "goodLuck" },                  color = Color3.fromRGB(180, 140, 70), sprite = "139532054857999", spriteSize = Vector2.new(385, 439), scale = 1.03 },
 	{ id = 4, name = "Blade",   frame = 4, attack = 3, hp = 16, ability = nil,      abilities = { "beyondFront" },               color = Color3.fromRGB(150, 150, 165), sprite = "100992479929680", spriteSize = Vector2.new(400, 429), scale = 1.09 },
-	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = "Ranged", abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true, sprite = "76020534312617", spriteSize = Vector2.new(407, 426), scale = 1.12 },
-	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = "Taunt",  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true, sprite = "125070102363421", spriteSize = Vector2.new(438, 454), scale = 1.26 },
-	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = "Sprint", abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110), sprite = "126479088125110", spriteSize = Vector2.new(256, 307), scale = 0.85 },
-	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = "Ranged", abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "98874918804932", spriteSize = Vector2.new(254, 323), scale = 0.92 },
-	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = "Taunt",  abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "97869309543381", spriteSize = Vector2.new(358, 319), scale = 1.47 },
+	{ id = 5, name = "Dante",   frame = 5, attack = 2, hp = 18, ability = Ability.RANGED, abilities = { "brokenDefense", "trustInTeam" }, color = Color3.fromRGB(90, 150, 200), starter = true, sprite = "76020534312617", spriteSize = Vector2.new(407, 426), scale = 1.12 },
+	{ id = 6, name = "Ceos",    frame = 3, attack = 1, hp = 33, ability = Ability.TAUNT,  abilities = { "absorbRoots" },               color = Color3.fromRGB(110, 160, 120), starter = true, sprite = "125070102363421", spriteSize = Vector2.new(438, 454), scale = 1.26 },
+	{ id = 7, name = "Noctin",  frame = 8, attack = 3, hp = 14, ability = Ability.SPRINT, abilities = { "aloneIsBetter" },             color = Color3.fromRGB(80, 80, 110), sprite = "126479088125110", spriteSize = Vector2.new(256, 307), scale = 0.85 },
+	{ id = 8, name = "Elaria",  frame = 7, attack = 1, hp = 20, ability = Ability.RANGED, abilities = { "health", "clean" },           color = Color3.fromRGB(190, 130, 200), sprite = "98874918804932", spriteSize = Vector2.new(254, 323), scale = 0.92 },
+	{ id = 9, name = "Bramm",   frame = 6, attack = 1, hp = 30, ability = Ability.TAUNT, abilities = { "rage" },                      color = Color3.fromRGB(160, 110, 60), sprite = "97869309543381", spriteSize = Vector2.new(358, 319), scale = 1.47 },
 
-	{ id = 10, name = "Kor", attack = 1, hp = 23, ability = "Ranged", attackRange = 3,
+	{ id = 10, name = "Kor", attack = 1, hp = 23, ability = Ability.RANGED, attackRange = 3,
 		abilities = { "iceEffect", "iceStorm" },
 		color = Color3.fromRGB(150, 210, 240),
 		sprite = "127914513925837", spriteSize = Vector2.new(299, 358), scale = 0.98
@@ -92,12 +99,12 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(255, 140, 70),
 		sprite = "73283114537576", spriteSize = Vector2.new(304, 354), scale = 1.01 },
 
-	{ id = 13, name = "Nash", attack = 2, hp = 14, ability = "Sprint",
+	{ id = 13, name = "Nash", attack = 1, hp = 12, ability = Ability.SPRINT,
 		abilities = { "stealth", "stealthHeal", "ambush", "huntInstinct" },
 		color = Color3.fromRGB(80, 90, 120),
 		sprite = "95643253305726", spriteSize = Vector2.new(312, 306), scale = 1.04 },
 
-	{ id = 14, name = "Golem", attack = 1, hp = 38, ability = "Taunt",
+	{ id = 14, name = "Golem", attack = 1, hp = 38, ability = Ability.TAUNT,
 		abilities = { "shatter" },
 		color = Color3.fromRGB(140, 140, 140),
 		sprite = "95596148134035", spriteSize = Vector2.new(447, 361), scale = 1.62 },
@@ -107,19 +114,19 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(240, 150, 120),
 		sprite = "108465334355138", spriteSize = Vector2.new(312, 416), scale = 0.88 },
 
-	{ id = 18, name = "Zeff", attack = 2, hp = 17, ability = "Sprint",
+	{ id = 18, name = "Zeff", attack = 2, hp = 17, ability = Ability.SPRINT,
 		attackRange = GameConfig.RANGED_ATTACK_RANGE,
 		abilities = { "gustPush", "tailwind" },
 		color = Color3.fromRGB(150, 230, 220),
 		sprite = "86076939045382", spriteSize = Vector2.new(412, 405), scale = 1.19 },
 
-	{ id = 19, name = "Wren", attack = 3, hp = 12, ability = "Ranged",
+	{ id = 19, name = "Wren", attack = 3, hp = 12, ability = Ability.RANGED,
 		attackRange = GameConfig.WREN_RANGE,
 		abilities = { "longShot" },
 		color = Color3.fromRGB(100, 210, 180),
 		sprite = "94273398199775", spriteSize = Vector2.new(382, 412), scale = 1.09 },
 
-	{ id = 20, name = "Morn", attack = 1, hp = 18, ability = nil,
+	{ id = 20, name = "Morn", attack = 1, hp = 18, ability = Ability.RANGED,
 		abilities = { "raiseSkulls", "lanternReturn"},
 		color = Color3.fromRGB(90, 160, 150),
 		sprite = "106777398591637", spriteSize = Vector2.new(400, 601), scale = 0.84 },
@@ -130,7 +137,7 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(120, 190, 110),
 		sprite = "125043635721594", spriteSize = Vector2.new(734, 866), scale = 0.99 },
 
-	{ id = 24, name = "Rush", attack = 0, hp = 13, ability = GameConfig.ABILITIES.SPRINT,
+	{ id = 24, name = "Rush", attack = 1, hp = 13, ability = Ability.SPRINT,
 		moveRange = GameConfig.RUSH_MOVE_RANGE,
 		abilities = { "momentum", "dodge" },
 		color = Color3.fromRGB(80, 170, 255),
@@ -141,12 +148,12 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(120, 200, 255),
 		sprite = "78746546330925", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 
-	{ id = 26, name = "Spyke", attack = 1, hp = 22, ability = "Agility",
+	{ id = 26, name = "Spyke", attack = 1, hp = 22, ability = Ability.AGILITY,
 		abilities = { "rallyAura", "vengeance" },
 		color = Color3.fromRGB(255, 190, 90),
 		sprite = "111811180757505", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 
-	{ id = 27, name = "Kira", attack = 1, hp = 33, ability = "Taunt",
+	{ id = 27, name = "Kira", attack = 1, hp = 33, ability = Ability.TAUNT,
 		abilities = { "aegis" },
 		color = Color3.fromRGB(240, 205, 120),
 		sprite = "86628005150597", spriteSize = Vector2.new(400, 400), scale = 1.00 },
@@ -164,11 +171,11 @@ HeroData.CATALOG = {
 		color = Color3.fromRGB(96, 92, 130),
 		sprite = "111181083283158", spriteSize = Vector2.new(400, 400), scale = 1.00 },
 
-	{ id = 30, name = "Ryder", attack = 2, hp = 19, ability = "Agility",
+	{ id = 30, name = "Ryder", attack = 2, hp = 19, ability = Ability.AGILITY,
 		attackRange = GameConfig.RANGED_ATTACK_RANGE,
 		abilities = { "gunCharge" },
 		color = Color3.fromRGB(120, 215, 235),
-		sprite = "109917512616108", spriteSize = Vector2.new(400, 400), scale = 1.00 },
+		sprite = "109917512616108", spriteSize = Vector2.new(400, 400), scale = 1.35 },
 }
 
 local MINI_GOLEM_SPRITE = "125545602412754"
